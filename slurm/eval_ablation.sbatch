@@ -130,8 +130,19 @@ if [[ -n "${MODALITY_CONFIG}" ]]; then
   SERVER_CMD+=(--modality-config-path "${MODALITY_CONFIG}")
 fi
 
+# The server must NOT inherit the UniVTAC environment's CUDA settings. UniVTAC's
+# conda env carries CUDA 12.4 (libuipc's env.yaml) and its installer exports
+#     CUDA_HOME=$CONDA_PREFIX; LD_LIBRARY_PATH=$CUDA_HOME/lib
+# while GR00T's torch is cu128 with its own bundled cuDNN, resolved through its
+# venv. A leaked LD_LIBRARY_PATH makes the server load the wrong cuDNN, which
+# surfaces as `cuDNN error: CUDNN_STATUS_NOT_INITIALIZED` on the first
+# get_action -- long after the weights loaded fine, so it looks like a model bug.
+# `env -u` scrubs them for the server only; the evaluator keeps them, since
+# Isaac Sim genuinely needs them.
+SERVER_ENV=(env -u LD_LIBRARY_PATH -u CUDA_HOME -u CUDA_PATH -u CONDA_PREFIX)
+
 echo "[job] starting server: ${SERVER_CMD[*]}"
-( cd "${REPO_ROOT}" && PYTHONPATH="${REPO_ROOT}" "${SERVER_CMD[@]}" ) >"${SERVER_LOG}" 2>&1 &
+( cd "${REPO_ROOT}" && PYTHONPATH="${REPO_ROOT}" "${SERVER_ENV[@]}" "${SERVER_CMD[@]}" )   >"${SERVER_LOG}" 2>&1 &
 SERVER_PID=$!
 
 cleanup() {
