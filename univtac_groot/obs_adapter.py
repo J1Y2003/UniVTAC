@@ -189,8 +189,22 @@ def reduce_marker_field(marker: np.ndarray, layout: MarkerLayout = "auto") -> np
     ``auto`` treats a trailing axis of width 4 as ``[x, y, dx, dy]`` and keeps
     the last two columns, passes width 2 through unchanged, and otherwise keeps
     the array as-is (``raw``).
+
+    One shape needs special handling. UniVTAC's released ``isaac45`` dumps store
+    ``tactile/<sensor>/marker`` as ``(N, 2, M, 2)`` -- per frame, a *pair* of
+    ``(M, 2)`` marker rasters. Flattening that to ``(2M, 2)`` would treat the
+    two rasters as twice as many markers and quietly destroy the signal, so a
+    leading axis of exactly 2 is differenced instead: ``arr[1] - arr[0]``.
+
+    That difference is an assumption about ordering (initial raster first,
+    current second) which UniVTAC does not document. It only affects
+    ``TactileMode='marker'``; the default ``depth_pool`` path does not use this
+    function. If you rely on marker mode, verify the sign against a frame where
+    the gripper is known to be in contact.
     """
     arr = to_numpy(marker).astype(np.float32)
+    if arr.ndim == 3 and arr.shape[0] == 2 and arr.shape[-1] == 2:
+        arr = arr[1] - arr[0]
     arr = arr.reshape(-1, arr.shape[-1]) if arr.ndim > 1 else arr.reshape(-1, 1)
     width = arr.shape[-1]
 

@@ -82,13 +82,15 @@ UniVTAC's tactile sensors are **camera-based**: `envs/sensors/tactile.py` wraps
 TacEx GelSight Mini, ViTai GF225 and XenseWS, and a reading is an image, not a
 short vector. `TactileManager.get_observations` can emit `rgb`, `rgb_marker`,
 `depth` (a gel height map), `marker` (a marker-motion field), `points` and
-`pose`. For a GelSight Mini the height map is 320×240 and the marker grid is
-9×7 = 64 markers.
+`pose`. For a GelSight Mini the height map is 320×240. The marker field is
+larger than the sensor's `create_*_cfg` grid suggests: the released `isaac45`
+dumps store `marker` as `(N, 2, 1200, 2)` — a *pair* of 1200-point rasters per
+frame, not a 9×7 = 64 grid. Size nothing off 64.
 
 Proprioception spends 17 of GR00T's 132 state dimensions
 (`eef_9d` 9 + `joint_position` 7 + `gripper_position` 1), leaving **115 for
 tactile across all sensors**. Raw flattening is therefore impossible: 76 800
-dims per sensor for the height map, 128 for the marker field with two sensors.
+dims per sensor for the height map, 4800 for the marker field with two sensors.
 `TactileSpec` offers three routes:
 
 | `--tactile-mode` | What is concatenated | Dims/sensor (default) |

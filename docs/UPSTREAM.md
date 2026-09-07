@@ -74,7 +74,8 @@ fails `check_observation` on the temporal dimension.
 | Proprioception | `joint` = `robot.data.joint_pos` → **9-D**; `ee` = pose → **7-D** (xyz + quat wxyz) | `envs/robot/robot.py::RobotManager.get_observations` |
 | Which obs are populated | only the data types listed under `observations.*` in the task config | `_get_observations` guards on `cfg.obs_data_type` |
 | Tactile data types | `rgb`, `rgb_marker`, `depth` (height map), `marker` (marker motion), `points`, `pose` | `envs/sensors/tactile.py::VisualTactileSensor.get_observations` |
-| Tactile sensors | GelSight Mini (320×240, 9×7 = 64 markers), GF225 (480×480, 81), XenseWS (320×240, 220) | same file's `create_*_cfg` |
+| Tactile sensors | GelSight Mini (320×240), GF225 (480×480), XenseWS (320×240) | same file's `create_*_cfg` |
+| Marker count | the `create_*_cfg` marker grid (9×7 for GelSight Mini) is the *config* default; the released `isaac45` dumps carry **M=1200** per raster, so do not size anything off 64 | config vs. verified on disk |
 | Supported for eval | **GelSight Mini only** | `README.md` |
 | Action signatures | `qpos` → 8-D (7 arm + 1 gripper); `ee` → 8-D (pos3 + quat4 + gripper); `delta_ee` → 7-D | `BaseTask.take_action` docstring and body |
 | Gripper range | `gripper_max_qpos = 0.039` m per finger; larger = more open | `envs/robot/robot.py`, `RobotCfg` |
@@ -84,7 +85,13 @@ fails `check_observation` on the temporal dimension.
 | Env count | forced to 1 | `scripts/eval_policy.py` (`args_cli.num_envs = 1`) |
 | Policy contract | `Policy(args)` / `encode_obs` / `eval(task, obs)` / `reset` under `policy/<Name>/` + `deploy.yml` | `docs/Deploy.md` |
 | Bootstrap order | `AppLauncher` **must** run before importing `envs.*` | `scripts/eval_policy.py` (imports after `app_launcher`) |
-| HDF5 keys | `observation/<cam>/rgb`, `tactile/<sensor>/rgb_marker`, `embodiment/joint_state`, `embodiment/joint_action` | `policy/_base_data_preprocessor.py` |
+| HDF5 keys (on disk) | `observation/<cam>/rgb`, `tactile/<sensor>/{rgb,rgb_marker,depth,marker,pose}`, `embodiment/{joint,ee}`, `actor/<name>`, `step`, `atom/{id,tag}` | verified against `isaac45/lift_bottle/0.hdf5` |
+| Image storage | **JPEG byte stream**, `(N,)` of `\|S<max>`, one buffer per frame; any key whose last segment contains `rgb` | `envs/utils/data.py::HDF5Handler.{img_to_stream,stream_to_img}` |
+| Image colour order | `cv2.imdecode(..., IMREAD_COLOR)` → **BGR**; no `cvtColor` anywhere, so UniVTAC's own ACT trains on BGR | `stream_to_img` |
+| State/action derivation | no `joint_state`/`joint_action` on disk — derived as `joint[:-1]` and `joint[1:]`, so an action is the **absolute next joint position** and N frames give N-1 transitions; all other arrays truncated `[:-1]` | `HDF5Handler.batch_gather_hdf5` |
+| `embodiment/joint` width | **9** (7 arm + 2 fingers) — note ACT's `train_config*.yml` declares `state_dim: 8` | verified on disk |
+| `tactile/*/depth` | `(N, 240, 320)` float32 — present in the released data, so `depth_pool` is viable | verified on disk |
+| `tactile/*/marker` | `(N, 2, M, 2)` float32 (M=1200 for GelSight Mini in this release) — a *pair* of marker rasters per frame, not `(M, 2\|4)` | verified on disk |
 | Sensor name aliases | `left_tactile` (current) and `left_gsmini` (older dumps) | same file's fallback try/except |
 | Prior VLA integration | SmolVLA runs behind a FastAPI service in its own venv | `policy/smolvla/deploy_policy.py` |
 

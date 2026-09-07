@@ -11,16 +11,33 @@ Input — UniVTAC's raw collection dumps, keyed as in
 ``policy/_base_data_preprocessor.py``::
 
     data/<task>/<config>/<episode>.hdf5
-      observation/head/rgb             (N, H, W, 3) uint8
-      observation/wrist/rgb            (N, H, W, 3) uint8
-      tactile/<left|right>_tactile/rgb_marker   (N, H, W, 3) uint8
-      tactile/<left|right>_tactile/depth        (N, h, w)     float
-      tactile/<left|right>_tactile/marker       (N, M, 2|4)   float
-      embodiment/joint_state           (N, 9)  float
-      embodiment/joint_action          (N, 9)  float
-      embodiment/ee                    (N, 7)  float   (when collected)
+      observation/head/rgb             (N,)  |S<max>  JPEG-encoded per frame
+      observation/wrist/rgb            (N,)  |S<max>  JPEG-encoded per frame
+      tactile/<left|right>_gsmini/rgb_marker   (N,) |S<max>  JPEG-encoded
+      tactile/<left|right>_gsmini/depth        (N, 240, 320) float32
+      tactile/<left|right>_gsmini/marker       (N, 2, M, 2)  float32
+      embodiment/joint                 (N, 9)  float32
+      embodiment/ee                    (N, 7)  float32
 
-(Older dumps name the sensors ``*_gsmini``; both are accepted.)
+Two conventions here are inherited from ``envs/utils/data.py::HDF5Handler`` and
+must be matched exactly, or training and evaluation disagree silently:
+
+* **Images are JPEG byte streams, not arrays.** Any dataset whose final path
+  segment contains ``rgb`` holds one encoded buffer per frame
+  (``dict_to_hdf5`` writes them with ``cv2.imencode('.jpg', ...)``).
+  ``stream_to_img`` decodes with ``cv2.IMREAD_COLOR``, which yields **BGR**;
+  UniVTAC's own ACT pipeline then trains on BGR. GR00T's vision backbone
+  expects RGB, so this converter swaps the channels -- see
+  ``decode_image_stream``.
+* **State and action are a one-step shift of a single array.** There is no
+  ``joint_state``/``joint_action`` pair on disk;
+  ``batch_gather_hdf5`` derives them as ``joint[:-1]`` and ``joint[1:]``, so an
+  action is the *absolute next joint position* and an N-frame episode yields
+  N-1 transitions. Every other per-frame array is truncated with ``[:-1]`` to
+  stay aligned. Dumps that do carry the explicit pair are still accepted.
+
+(Older dumps name the sensors ``*_gsmini``, newer ones ``*_tactile``; both are
+accepted. The released ``isaac45`` data uses ``*_gsmini``.)
 
 Output — the layout in ``getting_started/data_preparation.md``::
 
@@ -80,6 +97,87 @@ def _first_present(group: Any, candidates: Sequence[str]) -> str | None:
     return None
 
 
+def decode_image_stream(raw: Any, *, bgr_to_rgb: bool = True) -> list[np.ndarray]:
+    """Decode a UniVTAC image dataset into a list of ``(H, W, 3)`` uint8 frames.
+
+    UniVTAC stores camera and tactile RGB as one JPEG buffer per frame
+    (``HDF5Handler.img_to_stream``), so the dataset is ``(N,)`` of ``|S<max>``
+    rather than an ``(N, H, W, 3)`` array. Mirrors ``stream_to_img``, with one
+    deliberate difference: ``cv2.imdecode`` returns BGR, and GR00T's backbone
+    expects RGB, so the channels are swapped by default.
+
+    Accepts an already-decoded array too, so a re-exported dump still works.
+    """
+    arr = np.asarray(raw)
+
+    # Already decoded: (N, H, W, 3) or (N, H, W, 4).
+    if arr.ndim == 4:
+        return [as_uint8_hwc(frame) for frame in arr]
+
+    if arr.ndim != 1:
+        raise ValueError(
+            f"expected either (N,) encoded buffers or (N, H, W, C) frames, "
+            f"got shape {arr.shape} dtype {arr.dtype}"
+        )
+
+    try:
+        import cv2
+    except ImportError as exc:  # pragma: no cover - environment-dependent
+        raise ImportError(
+            "decoding UniVTAC image streams needs opencv-python (cv2), which is "
+            "how the data was encoded. Install it in the converter environment "
+            "(requirements-convert.txt)."
+        ) from exc
+
+    frames: list[np.ndarray] = []
+    for index, buf in enumerate(arr):
+        if isinstance(buf, (bytes, bytearray, np.bytes_)):
+            payload = np.frombuffer(bytes(buf), dtype=np.uint8)
+        elif isinstance(buf, np.ndarray) and buf.dtype == np.uint8:
+            payload = buf
+        else:
+            raise TypeError(f"frame {index}: unsupported buffer type {type(buf)!r}")
+        image = cv2.imdecode(payload, cv2.IMREAD_COLOR)
+        if image is None:
+            raise ValueError(f"frame {index}: cv2.imdecode failed on a {payload.size}-byte buffer")
+        if bgr_to_rgb:
+            image = image[..., ::-1]
+        frames.append(np.ascontiguousarray(image))
+    return frames
+
+
+def _split_state_action(emb: Any, filename: str) -> tuple[np.ndarray, np.ndarray]:
+    """Derive ``(joint_state, joint_action)`` the way UniVTAC's loader does.
+
+    The raw dumps carry a single ``embodiment/joint`` array;
+    ``HDF5Handler.batch_gather_hdf5`` splits it into ``joint[:-1]`` (state) and
+    ``joint[1:]`` (action), making the action an absolute next-joint target and
+    costing one frame per episode. Explicit ``joint_state``/``joint_action``
+    datasets, if present, are used as-is.
+    """
+    state_key = _first_present(emb, ["joint_state"])
+    action_key = _first_present(emb, ["joint_action"])
+    if state_key is not None and action_key is not None:
+        state = np.asarray(emb[state_key], dtype=np.float32)
+        action = np.asarray(emb[action_key], dtype=np.float32)
+        n = min(len(state), len(action))
+        return state[:n], action[:n]
+
+    if "joint" in emb:
+        joint = np.asarray(emb["joint"], dtype=np.float32)
+        if len(joint) < 2:
+            raise ValueError(
+                f"{filename}: embodiment/joint has {len(joint)} frame(s); at least 2 "
+                f"are needed to form a (state, next-state) transition."
+            )
+        return joint[:-1], joint[1:]
+
+    raise KeyError(
+        f"{filename}: embodiment has none of joint_state/joint_action/joint; found "
+        f"{sorted(emb.keys())}"
+    )
+
+
 def read_episode(path: Path, spec: ObsSpec) -> dict[str, np.ndarray]:
     """Load one UniVTAC episode HDF5 into per-frame arrays.
 
@@ -96,16 +194,10 @@ def read_episode(path: Path, spec: ObsSpec) -> dict[str, np.ndarray]:
     with h5py.File(str(path), "r") as f:
         # -- proprioception ------------------------------------------------
         emb = f["embodiment"]
-        state_key = _first_present(emb, ["joint_state", "joint"])
-        action_key = _first_present(emb, ["joint_action", "action"])
-        if state_key is None or action_key is None:
-            raise KeyError(
-                f"{path.name}: embodiment needs joint_state and joint_action; found "
-                f"{sorted(emb.keys())}"
-            )
-        joint_state = np.asarray(emb[state_key], dtype=np.float32)
-        joint_action = np.asarray(emb[action_key], dtype=np.float32)
-        n_frames = min(len(joint_state), len(joint_action))
+        joint_state, joint_action = _split_state_action(emb, path.name)
+        # N-1 transitions from N frames. Everything below is truncated to this,
+        # which reproduces the `data[:-1]` slicing in batch_gather_hdf5.
+        n_frames = len(joint_state)
 
         ee_key = _first_present(emb, ["ee", "ee_pose"])
         if ee_key is not None:
@@ -128,9 +220,9 @@ def read_episode(path: Path, spec: ObsSpec) -> dict[str, np.ndarray]:
                     f"{path.name}: missing {cam_key}. Available observation groups: "
                     f"{sorted(f['observation'].keys()) if 'observation' in f else '[]'}"
                 )
-            frames = np.asarray(f[cam_key][:n_frames])
+            frames = decode_image_stream(f[cam_key][:n_frames])
             out[f"video.{gr00t_key}"] = np.stack(
-                [resize_nearest(as_uint8_hwc(img), spec.image_size) for img in frames]
+                [resize_nearest(img, spec.image_size) for img in frames]
             )
 
         if spec.tactile.mode == "video":
@@ -142,12 +234,9 @@ def read_episode(path: Path, spec: ObsSpec) -> dict[str, np.ndarray]:
                         f"{path.name}: tactile sensor {sensor!r} has no rgb_marker/rgb; "
                         f"found {sorted(group.keys())}"
                     )
-                frames = np.asarray(group[source][:n_frames])
+                frames = decode_image_stream(group[source][:n_frames])
                 out[f"video.{gr00t_key}"] = np.stack(
-                    [
-                        resize_nearest(as_uint8_hwc(img), spec.tactile_image_size)
-                        for img in frames
-                    ]
+                    [resize_nearest(img, spec.tactile_image_size) for img in frames]
                 )
 
         # -- tactile state -------------------------------------------------
