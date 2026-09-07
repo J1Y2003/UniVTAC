@@ -18,8 +18,6 @@
 #SBATCH --error=logs/%x-%A_%a.err
 #SBATCH --time=12:00:00
 #SBATCH --gres=gpu:1
-#SBATCH --cpus-per-task=8
-#SBATCH --mem=64G
 
 set -euo pipefail
 
@@ -117,8 +115,9 @@ if [[ -z "${HF_TOKEN:-}" && ! -s "${HF_HOME}/token" && ! -s "${HOME}/.cache/hugg
   echo "[job] Fix: export HF_TOKEN=hf_...  then resubmit (see docs/SETUP.md)." >&2
 fi
 export TOKENIZERS_PARALLELISM=false
-# Cap thread pools: 8 CPUs shared between Isaac Sim and the server, and BLAS
-# defaulting to all cores causes heavy contention.
+# Cap thread pools. This cluster rejects --cpus-per-task, so the job gets the
+# node's full core count, and BLAS defaulting to all of them makes Isaac Sim and
+# the inference server fight each other. Two small pools beat one greedy one.
 export OMP_NUM_THREADS="${OMP_NUM_THREADS:-4}"
 export MKL_NUM_THREADS="${MKL_NUM_THREADS:-4}"
 # Unbuffered stdout/stderr so both logs stream live rather than in 8 KB blocks.

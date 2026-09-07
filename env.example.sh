@@ -62,7 +62,18 @@ export HF_TOKEN="hf_REPLACE_ME"
 
 # Clusters that require a wckey need it on sbatch too, not just srun.
 # SLURM reads SBATCH_WCKEY as the default for --wckey.
-export SBATCH_WCKEY="project-short-name:GR00TBenchMark"
+export SBATCH_WCKEY="project-short-name:sub_4dpdata"
+
+# This cluster's submit filter REJECTS any job without MODEL_OUTPUT_DIR set to a
+# path under /rlwrld-unified-checkpoints. The rejection happens at `sbatch` time,
+# so the job never starts and no log is written -- the only clue is
+# "MODEL_OUTPUT_DIR가 없습니다" on stderr. It is also the right place for
+# checkpoints: the shared home mount is far more contended.
+export MODEL_OUTPUT_DIR="/rlwrld-unified-checkpoints/$USER/univtac-groot"
+
+# Where finetuned checkpoints go. Defaults to MODEL_OUTPUT_DIR inside the job
+# scripts, which keeps tens of GB per arm off the home filesystem.
+export CKPT_ROOT="${MODEL_OUTPUT_DIR}"
 
 # Where converted datasets go (only needed for finetuning / the tactile arm).
 export DATA_ROOT="${SCRATCH:-/tmp}/$USER-univtac-datasets"

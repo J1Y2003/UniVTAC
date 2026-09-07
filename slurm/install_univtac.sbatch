@@ -5,7 +5,7 @@
 # multi-hour interactive install is not possible.
 #
 #   sbatch --export=ALL,UNIVTAC_ROOT=$HOME/jaewon/workspace/UniVTAC-sim \
-#          --wckey=project-short-name:GR00TBenchMark \
+#          --wckey=project-short-name:sub_4dpdata \
 #          slurm/install_univtac.sbatch
 #
 # UniVTAC's own scripts/install.sh guards every step with
@@ -20,8 +20,6 @@
 #SBATCH --error=logs/%x-%j.err
 #SBATCH --time=12:00:00
 #SBATCH --gres=gpu:1
-#SBATCH --cpus-per-task=16
-#SBATCH --mem=64G
 
 set -uo pipefail
 

@@ -25,10 +25,8 @@
 #SBATCH --output=logs/%x-%j.out
 #SBATCH --error=logs/%x-%j.err
 #SBATCH --time=48:00:00
-#SBATCH --gres=gpu:2
-#SBATCH --cpus-per-task=16
-#SBATCH --mem=128G
-#SBATCH --wckey=project-short-name:GR00TBenchMark
+#SBATCH --gres=gpu:4
+#SBATCH --wckey=project-short-name:sub_4dpdata
 
 # Deliberately NOT `set -e`: a failing stage must be recorded and stepped over,
 # not abort the job. Stage failures are tracked explicitly instead.
@@ -49,8 +47,9 @@ ARMS="${ARMS:-tactile baseline_finetuned}"
 # --save-total-limit 5. That last one is a disk hazard here: a 3B checkpoint
 # carries optimizer + scheduler + RNG state (needed for --resume-from-checkpoint),
 # which lands around 40 GB each. Five of those per arm is ~200 GB, ~400 GB for
-# both arms, on a shared 15T mount that already sits at 91%. Keep 2 and save
-# less often -- still enough to resume, far less I/O on a network filesystem.
+# both arms, on a shared 15T mount that already sits at 91%. Keep fewer and
+# save less often -- still enough to resume, far less I/O on a network
+# filesystem.
 #
 # With MAX_STEPS=10000 and SAVE_STEPS=2500 the run saves at 2500/5000/7500/
 # 10000 and SAVE_TOTAL_LIMIT=3 keeps a rolling window of the last three, so the
@@ -66,7 +65,12 @@ SAVE_STEPS="${SAVE_STEPS:-2500}"
 SAVE_TOTAL_LIMIT="${SAVE_TOTAL_LIMIT:-3}"
 
 DATA_ROOT="${DATA_ROOT:-${HOME}/jaewon/workspace/groot-data}"
-CKPT_ROOT="${CKPT_ROOT:-${HOME}/jaewon/workspace/groot-ckpt}"
+# This cluster's submit filter requires MODEL_OUTPUT_DIR under
+# /rlwrld-unified-checkpoints and rejects the job at `sbatch` time without it.
+# Honour it as the checkpoint root by default: it is the cluster's designated
+# place for model outputs, and it keeps ~120 GB per arm off the shared home
+# mount. CKPT_ROOT still wins if set explicitly.
+CKPT_ROOT="${CKPT_ROOT:-${MODEL_OUTPUT_DIR:-${HOME}/jaewon/workspace/groot-ckpt}}"
 RESULTS_DIR="${RESULTS_DIR:-${REPO_ROOT}/eval_result}"
 STAGE_DIR="${STAGE_DIR:-${CKPT_ROOT}/.stages}"
 
