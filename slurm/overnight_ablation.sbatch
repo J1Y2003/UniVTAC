@@ -168,6 +168,14 @@ echo " ckpt=${CKPT_ROOT}"
 echo " results=${RESULTS_DIR}"
 echo " disable_cudnn=${DISABLE_CUDNN}"
 echo " stage logs=${STAGE_LOG_DIR}"
+if [[ "${USE_WANDB:-1}" != "1" ]]; then
+  echo " wandb=disabled (USE_WANDB=0) -- stdout logs are the only training record"
+elif [[ -n "${WANDB_API_KEY:-}" ]]; then
+  echo " wandb=online project=${WANDB_PROJECT:-univtac-groot-ablation}"
+else
+  echo " wandb=offline (no WANDB_API_KEY) -- runs recorded under each OUTPUT_DIR/wandb,"
+  echo "       upload later with: wandb sync <dir>/offline-run-*"
+fi
 
 FATAL=0
 fatal() { echo "PREFLIGHT FAIL: $*" >&2; FATAL=1; }
@@ -182,6 +190,13 @@ done
   || fatal "missing ${GROOT_ROOT}/gr00t/experiment/launch_finetune.py"
 "${GROOT_PYTHON}" -c "import gr00t" 2>/dev/null \
   || fatal "${GROOT_PYTHON} cannot import gr00t (try: cd ${GROOT_ROOT} && uv sync)"
+# Same lesson as hf_transfer: do not pass a flag whose package may be absent.
+# --use-wandb with no wandb installed would fail after the weights had loaded.
+if [[ "${USE_WANDB:-1}" == "1" ]]; then
+  "${GROOT_PYTHON}" -c "import wandb" 2>/dev/null \
+    || fatal "USE_WANDB=1 but ${GROOT_PYTHON} cannot import wandb. Install it in
+       that venv, or pass USE_WANDB=0 to rely on the stdout logs alone."
+fi
 
 # A missing or truncated dataset is the classic way an overnight run wastes a
 # night, so verify shape now rather than discovering it at step 0 of training.
@@ -323,11 +338,17 @@ for arm in ${ARMS}; do
   GROOT_ROOT="${GROOT_ROOT}" \
   GROOT_PYTHON="${GROOT_PYTHON}" \
   ARM="${arm}" \
+  TASK="${TASK}" \
   DATASET="${DATA_ROOT}/univtac-${TASK}-${arm}" \
   OUTPUT_DIR="${out_dir}" \
   NUM_GPUS="${NUM_GPUS}" \
   DISABLE_CUDNN="${DISABLE_CUDNN}" \
   HF_HOME="${HF_HOME}" \
+  USE_WANDB="${USE_WANDB:-1}" \
+  WANDB_PROJECT="${WANDB_PROJECT:-univtac-groot-ablation}" \
+  WANDB_RUN_GROUP="${WANDB_RUN_GROUP:-univtac-${TASK}-${SLURM_JOB_ID:-local}}" \
+  WANDB_API_KEY="${WANDB_API_KEY:-}" \
+  WANDB_MODE="${WANDB_MODE:-}" \
   EXTRA_ARGS="--max-steps ${MAX_STEPS} --save-steps ${SAVE_STEPS} --save-total-limit ${SAVE_TOTAL_LIMIT} ${resume_args} ${EXTRA_ARGS:-}" \
     bash "${REPO_ROOT}/slurm/finetune.sbatch" >"${log}" 2>&1
   status=$?

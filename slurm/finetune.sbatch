@@ -82,6 +82,51 @@ if [[ "${DISABLE_CUDNN:-0}" == "1" ]]; then
   echo "[job] cuDNN disabled for every child process via sitecustomize"
 fi
 
+# --------------------------------------------------------------------------- #
+# Experiment tracking
+# --------------------------------------------------------------------------- #
+# Worth enabling: launch_finetune.py exposes no eval metric, so the training
+# loss curve is the only evidence for whether --max-steps under- or over-trains,
+# and a multi-hour unattended run with no record is hard to reason about after
+# the fact.
+#
+# Credentials, on a shared account: NEVER run `wandb login` -- it writes a token
+# into ~/.netrc for the account owner. Export WANDB_API_KEY instead, exactly as
+# with HF_TOKEN.
+#
+# The failure mode to avoid is a hang: with tracking on and no credentials,
+# wandb can block waiting on stdin, and in a batch job stdin never answers, so
+# the job burns its whole walltime having trained nothing. So resolve a mode
+# here rather than leaving it to chance -- offline when there is no key (the run
+# is recorded locally and `wandb sync` can upload it later), disabled only when
+# explicitly asked.
+WANDB_ARGS=()
+if [[ "${USE_WANDB:-1}" == "1" ]]; then
+  export WANDB_DIR="${WANDB_DIR:-${OUTPUT_DIR}/wandb}"
+  mkdir -p "${WANDB_DIR}"
+  # Group both ablation arms under one name so they overlay on the same plots.
+  export WANDB_RUN_GROUP="${WANDB_RUN_GROUP:-univtac-${TASK:-unknown}}"
+  export WANDB_NAME="${WANDB_NAME:-${TASK:-unknown}-${ARM}-${SLURM_JOB_ID:-local}}"
+  export WANDB_TAGS="${WANDB_TAGS:-univtac,${ARM},gr00t-n1d7}"
+
+  if [[ -z "${WANDB_MODE:-}" ]]; then
+    if [[ -n "${WANDB_API_KEY:-}" ]]; then
+      export WANDB_MODE=online
+    else
+      export WANDB_MODE=offline
+      echo "[job] no WANDB_API_KEY -- logging OFFLINE to ${WANDB_DIR}."
+      echo "[job] Upload later with: wandb sync ${WANDB_DIR}/offline-run-*"
+      echo "[job] For live logging: export WANDB_API_KEY=... (do NOT run 'wandb login')"
+    fi
+  fi
+  WANDB_ARGS=(--use-wandb --wandb-project "${WANDB_PROJECT:-univtac-groot-ablation}")
+  echo "[job] wandb: mode=${WANDB_MODE} project=${WANDB_PROJECT:-univtac-groot-ablation}"
+  echo "[job]        group=${WANDB_RUN_GROUP} name=${WANDB_NAME}"
+else
+  export WANDB_MODE=disabled
+  echo "[job] wandb disabled (USE_WANDB=0); the stdout log is the only record"
+fi
+
 echo "=========================================================="
 echo " arm=${ARM}  dataset=${DATASET}"
 echo " base=${BASE_MODEL}  modality=${MODALITY_CONFIG}"
@@ -98,6 +143,7 @@ cd "${GROOT_ROOT}"
   --modality-config-path "${MODALITY_CONFIG}" \
   --output-dir "${OUTPUT_DIR}" \
   --num-gpus "${NUM_GPUS}" \
+  ${WANDB_ARGS[@]+"${WANDB_ARGS[@]}"} \
   ${EXTRA_ARGS:-}
 
 echo "[job] finetune finished; checkpoints under ${OUTPUT_DIR}"
