@@ -205,6 +205,44 @@ done
 [[ -f "${REPO_ROOT}/configs/modality/univtac_baseline_config.py" ]] \
   || fatal "missing configs/modality/univtac_baseline_config.py"
 
+# Pin the training recipe across runs. Both arms must train under identical
+# conditions or the ablation measures the recipe, not the tactile modality --
+# and the two arms are NOT necessarily trained by the same job invocation: a
+# walltime kill mid-way means the second arm trains on a later resubmission,
+# which the scheduler may hand a different number of GPUs. That matters because
+# with data-parallel training --num-gpus multiplies the effective batch size, so
+# the same --max-steps on 4 GPUs sees roughly twice the data as on 2.
+#
+# So record the recipe when the first arm starts and refuse to continue if a
+# later run differs. Set ALLOW_RECIPE_CHANGE=1 to override deliberately (e.g.
+# you are restarting the whole experiment from scratch).
+RECIPE_FILE="${STAGE_DIR}/recipe-${TASK}.env"
+if [[ -f "${RECIPE_FILE}" ]]; then
+  RECORDED_NUM_GPUS=""; RECORDED_MAX_STEPS=""
+  # shellcheck source=/dev/null
+  source "${RECIPE_FILE}"
+  if [[ "${RECORDED_NUM_GPUS}" != "${NUM_GPUS}" || "${RECORDED_MAX_STEPS}" != "${MAX_STEPS}" ]]; then
+    if [[ "${ALLOW_RECIPE_CHANGE:-0}" == "1" ]]; then
+      echo " WARNING: recipe changed (was ${RECORDED_NUM_GPUS} gpu / ${RECORDED_MAX_STEPS} steps," >&2
+      echo " now ${NUM_GPUS} gpu / ${MAX_STEPS} steps). Proceeding because" >&2
+      echo " ALLOW_RECIPE_CHANGE=1 -- the arms are no longer directly comparable." >&2
+    else
+      fatal "recipe mismatch: this task was started with ${RECORDED_NUM_GPUS} GPU(s) and
+       --max-steps ${RECORDED_MAX_STEPS}, but this run has ${NUM_GPUS} GPU(s) and
+       --max-steps ${MAX_STEPS}. Training the two arms under different effective
+       batch sizes would confound the ablation. Either resubmit with
+       --gres=gpu:${RECORDED_NUM_GPUS} and MAX_STEPS=${RECORDED_MAX_STEPS}, or pass
+       ALLOW_RECIPE_CHANGE=1 and delete ${STAGE_DIR} to restart the experiment."
+    fi
+  else
+    echo " recipe: ${NUM_GPUS} gpu, ${MAX_STEPS} steps (matches ${RECIPE_FILE})"
+  fi
+elif [[ "${DRY_RUN:-0}" != "1" ]]; then
+  printf 'RECORDED_NUM_GPUS=%s\nRECORDED_MAX_STEPS=%s\n' "${NUM_GPUS}" "${MAX_STEPS}" \
+    >"${RECIPE_FILE}"
+  echo " recipe: ${NUM_GPUS} gpu, ${MAX_STEPS} steps (recorded in ${RECIPE_FILE})"
+fi
+
 df -h "${CKPT_ROOT}" 2>/dev/null || true
 # shellcheck disable=SC2086 - word splitting is the point here
 N_ARMS=$(set -- ${ARMS}; echo $#)
