@@ -89,7 +89,21 @@ echo "=========================================================="
 # Keep HF/torch caches on shared scratch: login-node home quotas are tight and
 # every rank would otherwise re-download the 3B checkpoint.
 export HF_HOME="${HF_HOME:-${SCRATCH:-/tmp}/hf_cache}"
-export HF_HUB_ENABLE_HF_TRANSFER="${HF_HUB_ENABLE_HF_TRANSFER:-1}"
+
+# hf_transfer roughly triples download throughput on the 15 GB of weights, but
+# HF_HUB_ENABLE_HF_TRANSFER=1 without the package installed is a hard
+# ValueError from huggingface_hub, not a fallback -- and it surfaces mid-download
+# inside the server log, looking like a checkpoint problem. So probe for it
+# rather than assuming. An explicit setting from the caller always wins.
+if [[ -z "${HF_HUB_ENABLE_HF_TRANSFER:-}" ]]; then
+  if "${GROOT_PYTHON}" -c "import hf_transfer" 2>/dev/null; then
+    export HF_HUB_ENABLE_HF_TRANSFER=1
+  else
+    export HF_HUB_ENABLE_HF_TRANSFER=0
+    echo "[job] hf_transfer not installed in ${GROOT_PYTHON}; using the standard"
+    echo "[job] downloader. For a faster first run: ${GROOT_PYTHON} -m pip install hf_transfer"
+  fi
+fi
 
 # Credentials for the gated Cosmos-Reason2-2B backbone. Note the interaction:
 # redirecting HF_HOME above also moves where the CLI's stored token is looked

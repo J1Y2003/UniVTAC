@@ -74,8 +74,53 @@ echo "=========================================================="
 
 if [[ ! -d "${RAW_DIR}" ]]; then
   echo "[job] no raw demonstrations at ${RAW_DIR}" >&2
-  echo "[job] collect them first with UniVTAC: bash collect_data.sh ${TASK} ${TASK_CONFIG} 0" >&2
+  echo "[job] fetch them with: bash slurm/download_data.sbatch  (TASKS=${TASK})" >&2
+  echo "[job] or collect them: bash collect_data.sh ${TASK} ${TASK_CONFIG} 0" >&2
   exit 1
+fi
+
+# The converter needs numpy + h5py + pyarrow + imageio[ffmpeg] + cv2. The
+# UniVTAC env has numpy/h5py/cv2 for its own collection dumps but typically not
+# pyarrow or imageio-ffmpeg, and installing them there would re-pin packages
+# under a working Isaac Lab + TacEx install. Nothing here imports torch, gr00t
+# or Isaac Sim, so a private venv is both safe and sufficient.
+MISSING=$("${CONVERT_PYTHON}" - <<'PYCHECK' 2>/dev/null || echo "IMPORT_CHECK_FAILED"
+mods = {"numpy": "numpy", "h5py": "h5py", "pyarrow": "pyarrow",
+        "imageio": "imageio", "cv2": "opencv-python-headless"}
+missing = []
+for mod, pkg in mods.items():
+    try:
+        __import__(mod)
+    except ImportError:
+        missing.append(pkg)
+print(" ".join(missing))
+PYCHECK
+)
+if [[ -n "${MISSING}" && "${MISSING}" != "IMPORT_CHECK_FAILED" ]]; then
+  CONVERT_VENV="${CONVERT_VENV:-${REPO_ROOT}/.venv-convert}"
+  echo "[job] ${CONVERT_PYTHON} is missing: ${MISSING}"
+  if [[ "${NO_AUTO_VENV:-0}" == "1" ]]; then
+    echo "error: install them yourself, or unset NO_AUTO_VENV to let this job" >&2
+    echo "       build a private venv at ${CONVERT_VENV}." >&2
+    echo "       Do NOT install into the shared base conda env." >&2
+    exit 1
+  fi
+  if [[ ! -x "${CONVERT_VENV}/bin/python" ]]; then
+    echo "[job] building a private venv at ${CONVERT_VENV}"
+    echo "[job] (isolated on purpose -- the UniVTAC conda env is left untouched)"
+    "${CONVERT_PYTHON}" -m venv "${CONVERT_VENV}" || {
+      echo "error: could not create a venv with ${CONVERT_PYTHON}." >&2
+      exit 1
+    }
+    "${CONVERT_VENV}/bin/python" -m pip install --quiet --upgrade pip
+    "${CONVERT_VENV}/bin/python" -m pip install --quiet --only-binary=:all: \
+      -r "${REPO_ROOT}/requirements-convert.txt" || {
+      echo "error: pip install -r requirements-convert.txt failed -- see above." >&2
+      exit 1
+    }
+  fi
+  CONVERT_PYTHON="${CONVERT_VENV}/bin/python"
+  echo "[job] using ${CONVERT_PYTHON}"
 fi
 
 CMD=(
