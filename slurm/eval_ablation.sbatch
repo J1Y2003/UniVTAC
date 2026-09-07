@@ -129,6 +129,10 @@ SERVER_CMD=(
 if [[ -n "${MODALITY_CONFIG}" ]]; then
   SERVER_CMD+=(--modality-config-path "${MODALITY_CONFIG}")
 fi
+# Escape hatch for a broken cuDNN in the GR00T env: DISABLE_CUDNN=1
+if [[ "${DISABLE_CUDNN:-0}" == "1" ]]; then
+  SERVER_CMD+=(--disable-cudnn)
+fi
 
 # The server must NOT inherit the UniVTAC environment's CUDA settings. UniVTAC's
 # conda env carries CUDA 12.4 (libuipc's env.yaml) and its installer exports

@@ -128,6 +128,19 @@ The guideline flagged its own references as preliminary. What research changed:
    the experiment's design, and it follows from `FINETUNE_ONLY_TAGS` shipping in
    no checkpoint.
 
+## Known environment constraints
+
+**Driver vs. CUDA runtime.** GR00T pins `torch==2.9.0` on cu128 (CUDA 12.8) in
+`pyproject.toml`, alongside a URL-pinned flash-attn wheel built for that pair, so
+the CUDA version is not practically adjustable. On a driver older than r570
+(e.g. 550.54.14 = CUDA 12.4) PyTorch itself still works through CUDA
+minor-version compatibility, but **cuDNN 9.13 fails to initialise**: its internal
+`cudaGetDeviceCount` returns an error and it reports
+`CUDNN_STATUS_NOT_INITIALIZED`. Only the convolution path is affected --
+FlashAttention-2 and the DiT's SDPA path do not use cuDNN -- so
+`--disable-cudnn` is a viable workaround, applied identically to both ablation
+arms. See [SETUP.md](SETUP.md#common-failures).
+
 ## Things deliberately left to the operator
 
 * **Gripper sign and scale** for a zero-shot checkpoint — configurable and
