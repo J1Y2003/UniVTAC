@@ -113,7 +113,7 @@ def check_repo(report: Report) -> None:
             FAIL,
             "package imports",
             f"{type(exc).__name__}: {exc}",
-            "  conda create -n univtac-groot python=3.11 -y\n"
+            "  conda create -n univtac-groot python=3.12 -y\n"
             "  conda activate univtac-groot\n"
             "  pip install -r requirements-dev.txt   # NOT into (base)",
         )
@@ -239,7 +239,9 @@ def check_client_deps(report: Report, deep: bool) -> None:
 def check_hf(report: Report) -> None:
     """Hugging Face credentials for the gated Cosmos-Reason2-2B backbone."""
     if os.environ.get("HF_TOKEN"):
-        report.add(PASS, "HF credentials", "HF_TOKEN set")
+        # Per huggingface_hub docs this overrides any stored login, which is how
+        # you get past a shared machine's ambient identity.
+        report.add(PASS, "HF credentials", "HF_TOKEN set (overrides stored login)")
         return
     token_paths = [
         Path.home() / ".cache/huggingface/token",
@@ -256,6 +258,85 @@ def check_hf(report: Report) -> None:
             "  (every GR00T checkpoint loads it), then:\n"
             "    huggingface-cli login     # or: export HF_TOKEN=<token>",
         )
+
+
+GATED_BACKBONE = "nvidia/Cosmos-Reason2-2B"
+"""GR00T N1.7's VLM backbone. Gated, and every checkpoint loads it."""
+
+_ACCESS_PROBE = """
+import os, sys
+from huggingface_hub import HfApi
+tok = os.environ.get("HF_TOKEN") or None
+api = HfApi(token=tok)
+try:
+    who = api.whoami().get("name", "?")
+except Exception as e:
+    print("WHOAMI_FAIL", type(e).__name__, str(e)[:120]); sys.exit(2)
+try:
+    api.model_info("%s")
+    print("OK", who)
+except Exception as e:
+    print("NO_ACCESS", who, type(e).__name__, str(e)[:160]); sys.exit(3)
+""" % GATED_BACKBONE
+
+
+def check_gated_access(report: Report, deep: bool) -> None:
+    """Confirm the *effective* token can actually reach the gated backbone.
+
+    A token merely existing proves nothing: on a shared machine the ambient
+    login may belong to someone else, and ``hf auth whoami`` reflects whichever
+    token the CLI resolved rather than whether the gate is open for you. This
+    asks the Hub directly, using GR00T's interpreter because that is the one
+    with ``huggingface_hub`` installed -- and the one that will actually load
+    the model.
+    """
+    if not deep:
+        report.add(SKIP, "gated access", "use --deep to query the Hub")
+        return
+    python = env_path("GROOT_PYTHON")
+    if python is None or not python.is_file():
+        report.add(SKIP, "gated access", "GROOT_PYTHON not usable")
+        return
+
+    try:
+        result = subprocess.run(
+            [str(python), "-c", _ACCESS_PROBE],
+            capture_output=True, text=True, timeout=120,
+        )
+    except subprocess.TimeoutExpired:
+        report.add(WARN, "gated access", "Hub query timed out (offline node?)")
+        return
+
+    out = (result.stdout or "").strip().splitlines()
+    if out:
+        line = out[-1]
+    else:
+        # Last stderr line is the exception; the first is just "Traceback...".
+        err = (result.stderr or "").strip().splitlines()
+        line = err[-1][:160] if err else ""
+
+    if line.startswith("OK"):
+        report.add(PASS, "gated access", f"{GATED_BACKBONE} reachable as {line.split(maxsplit=1)[-1]}")
+    elif line.startswith("NO_ACCESS"):
+        parts = line.split(maxsplit=2)
+        identity = parts[1] if len(parts) > 1 else "?"
+        fix = [
+            f"  The effective HF identity is {identity!r} and it cannot read",
+            f"  {GATED_BACKBONE}. Either that is not your account, or the gate",
+            "  is not approved for it yet.",
+            f"    1. Request access: https://huggingface.co/{GATED_BACKBONE}",
+            "    2. Use YOUR token:  export HF_TOKEN=hf_...",
+            "  HF_TOKEN overrides any stored login (huggingface_hub docs: 'If set,",
+            "  this value will overwrite the token stored on the machine').",
+        ]
+        report.add(FAIL, "gated access", f"denied for identity {identity!r}", "\n".join(fix))
+    elif line.startswith("WHOAMI_FAIL"):
+        report.add(
+            FAIL, "gated access", "token rejected by the Hub",
+            "  export HF_TOKEN=hf_...   # from https://huggingface.co/settings/tokens",
+        )
+    else:
+        report.add(WARN, "gated access", line[:120] or "probe produced no output")
 
 
 def check_slurm(report: Report) -> None:
@@ -349,6 +430,7 @@ def main(argv: list[str] | None = None) -> int:
     check_interpreters(report, args.deep)
     check_client_deps(report, args.deep)
     check_hf(report)
+    check_gated_access(report, args.deep)
     have_results = check_results(report)
 
     # On success there is no fix to show, so substitute the forward step.

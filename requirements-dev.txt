@@ -3,9 +3,13 @@
 #
 # Install into a DEDICATED env, never into a shared `base`:
 #
-#   conda create -n univtac-groot python=3.11 -y
+#   conda create -n univtac-groot python=3.12 -y
 #   conda activate univtac-groot
-#   pip install -r requirements-dev.txt && pytest tests -q
+#   pip install --only-binary=:all: -r requirements-dev.txt && pytest tests -q
+#
+# ~19 MB of prebuilt wheels (numpy 17 MB dominates); under a minute, no compiler
+# involved, so this is safe to run on a login node. `--only-binary=:all:` makes
+# pip fail fast instead of falling back to a source build.
 
 -r requirements-client.txt
 pytest>=7.4

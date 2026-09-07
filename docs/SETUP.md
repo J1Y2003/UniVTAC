@@ -77,11 +77,12 @@ Things worth knowing before you start:
   ```
   If that does not produce data, no amount of GR00T setup will help.
 
-Then add this repo's client dependencies (four small packages, no torch):
+Then add this repo's client dependencies (five small packages, no torch --
+about 19 MB of wheels, so this one is fine on a login node):
 
 ```bash
 conda activate UniVTAC
-pip install -r requirements-client.txt
+pip install --only-binary=:all: -r requirements-client.txt
 ```
 
 ### 2. GR00T environment (Python 3.12)
@@ -111,12 +112,44 @@ including the base `nvidia/GR00T-N1.7-3B`. Request access on that model page
 (approval is not instant), then authenticate:
 
 ```bash
-cd Isaac-GR00T && uv run huggingface-cli login    # or: export HF_TOKEN=<token>
+export HF_TOKEN=hf_...        # preferred; see the shared-machine note below
+# or, to store it:  hf auth login    (older CLIs: huggingface-cli login)
 ```
 
 Without it, the server dies at load with `GatedRepoError` / `401 Client Error`.
 This is the single most common reason `wait_until_ready` times out, which is why
 that error message names the model.
+
+### On a shared server
+
+`hf auth whoami` may report **somebody else's** identity: a machine-wide
+`HF_TOKEN`, a shared `HF_HOME`, or a token left in a shared cache. Do not run
+`hf auth logout` -- that would clobber a credential you do not own.
+
+Export your own token instead. `HF_TOKEN` takes precedence over any stored
+login, so it overrides the ambient identity for your processes only:
+
+```bash
+export HF_TOKEN=hf_...              # from https://huggingface.co/settings/tokens
+hf auth whoami                      # should now report you
+```
+
+For full isolation of both token and model cache, redirect `HF_HOME` as well:
+
+```bash
+export HF_HOME=$SCRATCH/hf_home     # or $HOME/.cache/hf_mine
+hf auth login                       # writes $HF_HOME/token
+```
+
+Two cautions:
+
+* **`HF_HOME` moves the token file too.** `slurm/eval_ablation.sbatch` defaults
+  `HF_HOME` to scratch, so a token stored under the default
+  `~/.cache/huggingface` is not visible inside the job. Exporting `HF_TOKEN`
+  sidesteps this, and the job warns when neither is present.
+* **Never put the token in a tracked file or in an `#SBATCH` line** -- job
+  scripts are often world-readable. Keep it in your environment
+  (`chmod 600` any file that holds it) and let `--export=ALL` carry it in.
 
 ### 4. UniVTAC assets and (optionally) demonstration data
 

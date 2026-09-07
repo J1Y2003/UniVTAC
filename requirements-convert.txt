@@ -1,6 +1,17 @@
 # Extra dependencies for scripts/convert_univtac_to_lerobot.py only.
 #
-# Offline preprocessing: run it as its own batch job, not on a login node.
+#   pip install --only-binary=:all: -r requirements-convert.txt
+#
+# ~85 MB on top of requirements-dev.txt: pyarrow 50 MB, imageio-ffmpeg 30 MB
+# (it bundles an ffmpeg binary), h5py 5 MB. All prebuilt wheels on CPython 3.12,
+# so 1-2 minutes and no compiler -- but if your cluster is strict about
+# login-node work, install it inside a compute allocation.
+#
+# Keep `--only-binary=:all:`: a pyarrow sdist fallback would build Arrow C++
+# from source, which is a tens-of-minutes multi-core compile.
+#
+# The conversion itself is CPU-heavy: run it via slurm/convert.sbatch, never
+# on a login node.
 
 -r requirements-client.txt
 h5py>=3.9              # reading UniVTAC's collection dumps

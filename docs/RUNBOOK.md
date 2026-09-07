@@ -40,30 +40,55 @@ Skip whatever you already have. **Do not run these on the login node**: both
 compile CUDA code from source.
 
 ```bash
-srun --cpus-per-task=16 --mem=64G --time=8:00:00 --pty bash     # allocation to build in
-
-# 0a. The simulator (hours). Creates conda env `UniVTAC`, Python 3.10.
+# 0a. Clone the simulator.                                       [login]
 git clone https://github.com/univtac/UniVTAC.git ~/UniVTAC-sim
-cd ~/UniVTAC-sim && bash scripts/install.sh
 
-# 0b. Scene assets.
-bash data/download.sh
+# 0b. Install it as a BATCH job (hours). Creates conda env `UniVTAC`, Python 3.10.
+cd $REPO_ROOT
+sbatch --export=ALL,UNIVTAC_ROOT=$HOME/UniVTAC-sim slurm/install_univtac.sbatch
 
-# 0c. Prove the simulator works ON ITS OWN before involving GR00T.
-conda activate UniVTAC
-bash collect_data.sh grasp_classify demo 0
-#    -> should write episodes under data/grasp_classify/demo/
+# 0c. Scene assets.
+cd ~/UniVTAC-sim && bash data/download.sh
 
 # 0d. GR00T, Python 3.12, separate env.
-sudo apt install git-lfs && git lfs install        # BEFORE cloning
+git lfs install                                    # no sudo needed if git-lfs exists
 git clone https://github.com/NVIDIA/Isaac-GR00T.git ~/Isaac-GR00T
 cd ~/Isaac-GR00T && uv sync --python 3.12
 uv run python -c "import gr00t; print('ok')"
 ```
 
-Step 0c is the one people skip and regret. If UniVTAC cannot collect data by
-itself, nothing downstream will work, and the failure will look like a GR00T
-problem.
+### Why 0b is an sbatch job, not `srun --pty`
+
+Many clusters restrict interactive `srun` to a short `debug` partition, so a
+multi-hour install cannot run interactively. `slurm/install_univtac.sbatch`
+wraps UniVTAC's `scripts/install.sh` and works around four things that do not
+survive a batch context:
+
+| Problem in upstream `scripts/install.sh` | Workaround |
+| --- | --- |
+| `sudo apt install cmake build-essential` / `git-lfs` — no sudo on a shared cluster, and no TTY to prompt on | checks the tools exist, then patches the `sudo` lines out |
+| `--livestream 2` on the TacEx smoke test — waits forever for a GUI client | rewritten to `--headless` |
+| `python3 -m pytest .` for cuRobo under `set -e` — one environment-specific test failure aborts the whole install | made non-fatal |
+| step 6's `if [ -d "Toolchain" ]` never fires on a fresh machine, so **vcpkg is never cloned** yet `CMAKE_TOOLCHAIN_FILE` points into it → libuipc build fails | clones and bootstraps vcpkg itself |
+
+The repo is not modified; the wrapper writes a patched copy to
+`.install_batch.sh` and prints the diff into the job log.
+
+**It is resumable.** Upstream guards every step with
+`if pip show <pkg>; then skip`, so if the job hits its walltime just resubmit
+and it continues from where it stopped.
+
+### Verify before moving on `[compute, debug partition is fine]`
+
+```bash
+srun --partition=debug --gres=gpu:1 --pty bash -l
+conda activate UniVTAC
+python -c "import isaaclab, tacex; print('ok')"
+cd ~/UniVTAC-sim && bash collect_data.sh grasp_classify demo 0
+```
+
+This is the check people skip and regret. If UniVTAC cannot collect data on its
+own, nothing downstream works, and the failure will look like a GR00T problem.
 
 ## Step 1 — Hugging Face access `[login]`
 
@@ -75,8 +100,12 @@ loads it, including the base model.
 2. Authenticate:
 
 ```bash
-huggingface-cli login        # or: export HF_TOKEN=<token>
+export HF_TOKEN=hf_...       # add to ~/.bashrc; see SETUP.md for shared servers
+hf auth whoami               # must report YOU, not a shared account
 ```
+
+On a shared machine `hf auth whoami` may already show someone else's identity.
+Do not log them out -- `HF_TOKEN` overrides it for your processes only.
 
 Without this the server dies at load with `GatedRepoError` / `401`, which you
 will only see as a timeout in the evaluator's log.
@@ -93,10 +122,18 @@ Three environments, none of them `base`:
 
 ```bash
 # 2a. A dedicated env for this repo's tooling. Small and torch-free.
-conda create -n univtac-groot python=3.11 -y
+conda create -n univtac-groot python=3.12 -y
 conda activate univtac-groot
-pip install -r $REPO_ROOT/requirements-dev.txt      # numpy, pytest, pyyaml, zmq, msgpack
-pip install -r $REPO_ROOT/requirements-convert.txt  # h5py, pyarrow, imageio -- only if converting
+
+# ~19 MB of prebuilt wheels, well under a minute. Safe on a login node.
+# --only-binary=:all: makes pip FAIL rather than silently start a source build.
+pip install --only-binary=:all: -r $REPO_ROOT/requirements-dev.txt
+
+# Only if you will convert datasets: ~85 MB more, mostly pyarrow (50 MB) and
+# the bundled ffmpeg (30 MB). Still wheels-only, but 1-2 minutes -- if your
+# cluster is strict about login-node work, run this line inside the step 0
+# allocation instead.
+pip install --only-binary=:all: -r $REPO_ROOT/requirements-convert.txt
 
 # 2b. The evaluator needs the client packages inside the UniVTAC env, because
 #     that is the interpreter that talks to the server. Four packages, no torch.
@@ -115,6 +152,16 @@ export DATA_ROOT=$SCRATCH/univtac-datasets                 # only for finetuning
 
 `CONVERT_PYTHON` points the conversion job at your tooling env, so dataset
 conversion never needs h5py/pyarrow installed into the simulator env either.
+
+**Why `--only-binary=:all:`.** Every package here publishes a manylinux wheel
+for CPython 3.12, so installing is a download and an unpack -- no compiler runs.
+The failure mode worth guarding against is pip falling back to an sdist (wrong
+Python version, unusual arch), because building `pyarrow` from source pulls in
+CMake and Arrow C++ and takes tens of minutes on many cores -- exactly the kind
+of login-node work your cluster forbids. With this flag pip stops with
+`No matching distribution` instead, and you can move the install to a compute
+node deliberately. Python 3.12 is chosen because numpy >= 2.5 requires it, so
+you get current wheels for everything.
 
 ## Step 3 — cheap verification `[login]`
 

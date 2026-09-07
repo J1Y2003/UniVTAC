@@ -69,6 +69,66 @@ def load_modality_config(path: str) -> None:
     print(f"[server] registered modality config from {config_path}")
 
 
+def describe_acceleration(policy: object) -> str:
+    """Report dtype and attention kernel actually in use, for the startup log.
+
+    Worth printing because the fallback is silent: ``GR00T_N1d7Config`` defaults
+    to ``use_flash_attention=True``, but ``qwen3_backbone.py`` catches the
+    ``ImportError`` and downgrades to ``attn_implementation="sdpa"`` with only a
+    warning. A run that quietly lost FlashAttention-2 is slower and uses more
+    memory, and nothing else in the pipeline would tell you.
+
+    Best-effort and defensive: every attribute is probed, since the layout of
+    the config differs between checkpoints.
+    """
+    bits: list[str] = []
+
+    try:
+        import torch
+
+        model = getattr(policy, "model", None)
+        dtypes = {str(p.dtype) for p in model.parameters()} if model is not None else set()
+        if dtypes:
+            bits.append("dtype=" + ",".join(sorted(d.replace("torch.", "") for d in dtypes)))
+        if torch.cuda.is_available():
+            free, total = torch.cuda.mem_get_info()
+            bits.append(f"vram_used={(total - free) / 2**30:.1f}/{total / 2**30:.1f}GiB")
+    except Exception:  # noqa: BLE001 - diagnostics must never break startup
+        pass
+
+    try:
+        import flash_attn  # noqa: F401
+
+        bits.append("flash_attn=installed")
+    except ImportError:
+        bits.append("flash_attn=MISSING (backbone falls back to sdpa)")
+    except Exception:  # noqa: BLE001
+        bits.append("flash_attn=?")
+
+    # Walk a few likely places for the resolved attention implementation.
+    try:
+        model = getattr(policy, "model", None)
+        seen: set[str] = set()
+        for obj in (model, getattr(model, "config", None)):
+            if obj is None:
+                continue
+            for attr in ("_attn_implementation", "attn_implementation", "use_flash_attention"):
+                value = getattr(obj, attr, None)
+                if value is not None:
+                    seen.add(f"{attr}={value}")
+        for module in (model.modules() if model is not None else []):
+            cfg = getattr(module, "config", None)
+            impl = getattr(cfg, "_attn_implementation", None) if cfg is not None else None
+            if impl:
+                seen.add(f"backbone_attn={impl}")
+                break
+        bits.extend(sorted(seen))
+    except Exception:  # noqa: BLE001
+        pass
+
+    return "  ".join(bits) if bits else "unavailable"
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="Serve GR00T N1.7 over ZeroMQ for UniVTAC evaluation.",
@@ -159,6 +219,7 @@ def main(argv: list[str] | None = None) -> int:
         f"action_horizon={action_horizon} "
         f"video_deltas={list(modality['video'].delta_indices)}"
     )
+    print(f"[server] acceleration: {describe_acceleration(policy)}")
 
     if not args.no_sim_wrapper:
         policy = Gr00tSimPolicyWrapper(policy, strict=not args.no_strict)

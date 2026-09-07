@@ -90,6 +90,18 @@ echo "=========================================================="
 # every rank would otherwise re-download the 3B checkpoint.
 export HF_HOME="${HF_HOME:-${SCRATCH:-/tmp}/hf_cache}"
 export HF_HUB_ENABLE_HF_TRANSFER="${HF_HUB_ENABLE_HF_TRANSFER:-1}"
+
+# Credentials for the gated Cosmos-Reason2-2B backbone. Note the interaction:
+# redirecting HF_HOME above also moves where the CLI's stored token is looked
+# for, so a token saved under the default ~/.cache/huggingface would NOT be
+# found here. Exporting HF_TOKEN avoids that entirely -- the env var takes
+# precedence over any stored login, which is also how you override a shared
+# machine's ambient `hf auth login` identity.
+if [[ -z "${HF_TOKEN:-}" && ! -s "${HF_HOME}/token" && ! -s "${HOME}/.cache/huggingface/token" ]]; then
+  echo "[job] WARNING: no HF_TOKEN and no token file under HF_HOME=${HF_HOME}." >&2
+  echo "[job] The server will fail to load nvidia/Cosmos-Reason2-2B (GatedRepoError)." >&2
+  echo "[job] Fix: export HF_TOKEN=hf_...  then resubmit (see docs/SETUP.md)." >&2
+fi
 export TOKENIZERS_PARALLELISM=false
 # Cap thread pools: 8 CPUs shared between Isaac Sim and the server, and BLAS
 # defaulting to all cores causes heavy contention.

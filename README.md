@@ -149,6 +149,7 @@ scripts/
   compare_ablation.py            Ablation table
   convert_univtac_to_lerobot.py  UniVTAC HDF5 -> GR00T LeRobot v2 (for finetuning)
 slurm/
+  install_univtac.sbatch  Batch-safe wrapper for UniVTAC's install.sh
   eval_ablation.sbatch    Server + evaluator in one GPU job
   convert.sbatch          Dataset conversion (CPU-only, array-capable)
   finetune.sbatch         GR00T finetune for an arm
