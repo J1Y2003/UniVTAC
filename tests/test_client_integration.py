@@ -39,6 +39,29 @@ from .test_obs_adapter import make_observation  # noqa: E402
 
 ACTION_HORIZON = 16
 
+MODALITY_CONFIGS = {
+    "video": {"delta_indices": [0], "modality_keys": ["head", "wrist"]},
+    "state": {
+        "delta_indices": [0],
+        "modality_keys": [
+            "eef_9d",
+            "joint_position",
+            "gripper_position",
+            "tactile_left_tactile",
+            "tactile_right_tactile",
+        ],
+    },
+    "action": {
+        "delta_indices": list(range(ACTION_HORIZON)),
+        "modality_keys": ["joint_position", "gripper_position"],
+    },
+    "language": {
+        "delta_indices": [0],
+        "modality_keys": ["annotation.human.task_description"],
+    },
+}
+"""``ModalityConfig`` dataclass fields, before the wire envelope is applied."""
+
 
 class FakePolicyServer:
     """Mirror of ``gr00t.policy.server_client.PolicyServer``'s dispatch loop."""
@@ -111,26 +134,15 @@ class FakePolicyServer:
             self.resets += 1
             return {}
         if endpoint == "get_modality_config":
+            # gr00t's ``MsgSerializer._encode_custom`` wraps every ModalityConfig
+            # as ``{"__ModalityConfig__": True, "as_json": <dataclass dict>}``.
+            # Emitting plain dicts here (as an earlier version of this fake did)
+            # concealed a real client bug: the envelope reached the caller
+            # un-unwrapped, so ``delta_indices`` came back empty and
+            # ``resolve_horizons`` rejected the policy.
             return {
-                "video": {"delta_indices": [0], "modality_keys": ["head", "wrist"]},
-                "state": {
-                    "delta_indices": [0],
-                    "modality_keys": [
-                        "eef_9d",
-                        "joint_position",
-                        "gripper_position",
-                        "tactile_left_tactile",
-                        "tactile_right_tactile",
-                    ],
-                },
-                "action": {
-                    "delta_indices": list(range(ACTION_HORIZON)),
-                    "modality_keys": ["joint_position", "gripper_position"],
-                },
-                "language": {
-                    "delta_indices": [0],
-                    "modality_keys": ["annotation.human.task_description"],
-                },
+                modality: {"__ModalityConfig__": True, "as_json": cfg}
+                for modality, cfg in MODALITY_CONFIGS.items()
             }
         if endpoint == "get_action":
             if self.fail_get_action:
@@ -338,3 +350,38 @@ def test_resolve_spec_rejects_a_state_key_mismatch():
                     baseline_spec(video_keys={"head": "head", "wrist": "wrist"}),
                     log=lambda _m: None,
                 )
+
+
+def test_modality_config_envelope_is_unwrapped():
+    """Regression: gr00t wraps ModalityConfig in a custom msgpack envelope.
+
+    Leaving ``{"__ModalityConfig__": True, "as_json": {...}}`` un-unwrapped made
+    ``resolve_horizons`` see no ``delta_indices`` and reject a perfectly good
+    policy with "policy declared an empty action.delta_indices".
+    """
+    with FakePolicyServer() as server:
+        with Gr00tClient(port=server.port, timeout_ms=5000) as client:
+            config = client.get_modality_config()
+
+    # The marker keys must be gone, and the dataclass fields present.
+    for modality, expected in MODALITY_CONFIGS.items():
+        entry = config[modality]
+        assert "__ModalityConfig__" not in entry, f"{modality} envelope leaked through"
+        assert entry["delta_indices"] == expected["delta_indices"]
+        assert entry["modality_keys"] == expected["modality_keys"]
+
+
+def test_horizons_resolve_through_the_real_envelope():
+    """The end-to-end path that failed on the cluster: server -> resolve_horizons."""
+    from univtac_groot.receding_horizon import resolve_horizons
+
+    with FakePolicyServer() as server:
+        with Gr00tClient(port=server.port, timeout_ms=5000) as client:
+            horizons = resolve_horizons(
+                client.get_modality_config(), execution_horizon=8
+            )
+
+    assert horizons["action_horizon"] == ACTION_HORIZON
+    assert horizons["execution_horizon"] == 8
+    assert horizons["video_delta_indices"] == (0,)
+    assert horizons["state_delta_indices"] == (0,)

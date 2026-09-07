@@ -141,14 +141,29 @@ conda activate UniVTAC
 pip install -r $REPO_ROOT/requirements-client.txt
 conda deactivate
 
-# 2c. Put these in ~/.bashrc so every shell and every sbatch job agrees.
-export REPO_ROOT=~/jaewon/UniVTAC                          # THIS repo
-export UNIVTAC_ROOT=~/UniVTAC-sim                          # the simulator
-export UNIVTAC_PYTHON=$(conda run -n UniVTAC which python)
-export GROOT_PYTHON=~/Isaac-GR00T/.venv/bin/python         # uv's venv
-export CONVERT_PYTHON=$(conda run -n univtac-groot which python)
-export DATA_ROOT=$SCRATCH/univtac-datasets                 # only for finetuning
+# 2c. Exports. Use a session file rather than ~/.bashrc -- see the note below.
+cd $REPO_ROOT
+cp env.example.sh env.sh && chmod 600 env.sh
+$EDITOR env.sh                 # fill in paths + your HF_TOKEN
+source env.sh
 ```
+
+**On a shared or borrowed account, do not edit `~/.bashrc`.** It belongs to
+whoever owns the account. `env.sh` is gitignored, leaves no permanent trace, and
+`sbatch --export=ALL` propagates whatever the submitting shell exported -- so
+nothing here needs to be in a dotfile. Source it once per session.
+
+Two things to avoid on someone else's account:
+
+* **`hf auth login`** overwrites the stored token at `$HF_HOME/token`, which is
+  their credential. Export `HF_TOKEN` instead; it takes precedence for your
+  processes and writes nothing.
+* **A default `HF_HOME`** puts the ~7 GB checkpoint into their home quota. Point
+  `HF_HOME` at scratch if that matters.
+
+Note that UniVTAC's own `scripts/install.sh` already appended
+`export CMAKE_TOOLCHAIN_FILE=...` to `~/.bashrc` (step 6 of that script) and
+cloned vcpkg into `~/Toolchain`. Worth mentioning to the account owner.
 
 `CONVERT_PYTHON` points the conversion job at your tooling env, so dataset
 conversion never needs h5py/pyarrow installed into the simulator env either.
@@ -192,7 +207,8 @@ srun --gres=gpu:1 --cpus-per-task=8 --mem=64G --time=2:00:00 --pty bash
 cd $REPO_ROOT
 
 # 4a. Start the server in the background; wait for "listening on".
-PYTHONPATH=$REPO_ROOT $GROOT_PYTHON -m univtac_groot.server.run_server \
+PYTHONUNBUFFERED=1 PYTHONPATH=$REPO_ROOT $GROOT_PYTHON -u \
+    -m univtac_groot.server.run_server \
     --model-path nvidia/GR00T-N1.7-3B \
     --embodiment-tag OXE_DROID_RELATIVE_EEF_RELATIVE_JOINT \
     --port 5555 > /tmp/groot_server.log 2>&1 &

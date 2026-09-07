@@ -59,6 +59,7 @@ mkdir -p logs "$(dirname "${OUT_DIR}")"
 # Keep BLAS/ffmpeg thread pools inside the CPU allocation. numpy defaulting to
 # every core on the node is the classic way a "CPU-only" job disrupts a shared
 # compute node.
+export PYTHONUNBUFFERED=1
 export OMP_NUM_THREADS="${OMP_NUM_THREADS:-${SLURM_CPUS_PER_TASK:-4}}"
 export MKL_NUM_THREADS="${MKL_NUM_THREADS:-${SLURM_CPUS_PER_TASK:-4}}"
 export NUMEXPR_NUM_THREADS="${NUMEXPR_NUM_THREADS:-${SLURM_CPUS_PER_TASK:-4}}"

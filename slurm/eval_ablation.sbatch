@@ -107,14 +107,19 @@ export TOKENIZERS_PARALLELISM=false
 # defaulting to all cores causes heavy contention.
 export OMP_NUM_THREADS="${OMP_NUM_THREADS:-4}"
 export MKL_NUM_THREADS="${MKL_NUM_THREADS:-4}"
+# Unbuffered stdout/stderr so both logs stream live rather than in 8 KB blocks.
+export PYTHONUNBUFFERED=1
 # Offscreen rendering only. No GUI, no livestream: this must survive sbatch.
 export DISPLAY=""
 
 # --------------------------------------------------------------------------- #
 # 1. GR00T inference server
 # --------------------------------------------------------------------------- #
+# -u is not optional here: the server's stdout is redirected to SERVER_LOG, and
+# Python block-buffers a non-tty stdout, so without it the log stays empty for
+# minutes and a healthy server is indistinguishable from a hung one.
 SERVER_CMD=(
-  "${GROOT_PYTHON}" -m univtac_groot.server.run_server
+  "${GROOT_PYTHON}" -u -m univtac_groot.server.run_server
   --model-path "${GROOT_MODEL}"
   --embodiment-tag "${EMBODIMENT_TAG}"
   --host 127.0.0.1

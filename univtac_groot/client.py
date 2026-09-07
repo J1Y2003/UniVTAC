@@ -23,6 +23,7 @@ The protocol, read off ``gr00t/policy/server_client.py::PolicyServer.run``:
 
 from __future__ import annotations
 
+import json
 from typing import Any, Mapping
 
 import numpy as np
@@ -62,6 +63,14 @@ def _encode(obj: Any) -> Any:
     return mnp.encode(obj)
 
 
+_MODALITY_MARKERS = (
+    "__ModalityConfig__",
+    b"__ModalityConfig__",
+    "__ModalityConfig_class__",
+    b"__ModalityConfig_class__",
+)
+
+
 def _decode(obj: Any) -> Any:
     """msgpack ``object_hook`` mirroring ``MsgSerializer._safe_decode``."""
     if isinstance(obj, dict):
@@ -74,6 +83,31 @@ def _decode(obj: Any) -> Any:
             import io
 
             return np.load(io.BytesIO(payload), allow_pickle=False)
+
+        # ModalityConfig envelope, from ``MsgSerializer._encode_custom``:
+        #   {"__ModalityConfig__": True, "as_json": to_json_serializable(cfg)}
+        # The server rebuilds a real ``ModalityConfig``; we have no such class
+        # here (importing gr00t is the whole thing this client avoids), so the
+        # dataclass dict is returned as-is. ``resolve_horizons`` reads
+        # ``delta_indices`` / ``modality_keys`` off either shape.
+        if any(marker in obj for marker in _MODALITY_MARKERS):
+            key = next((k for k in ("as_json", b"as_json") if k in obj), None)
+            if key is None:
+                raise ValueError(
+                    "malformed ModalityConfig payload: marker present but 'as_json' "
+                    f"missing. keys={sorted(repr(k) for k in obj)}"
+                )
+            payload = obj[key]
+            if isinstance(payload, bytes):
+                payload = payload.decode()
+            if isinstance(payload, str):
+                payload = json.loads(payload)
+            if isinstance(payload, dict):
+                return {
+                    (k.decode() if isinstance(k, bytes) else k): v for k, v in payload.items()
+                }
+            return payload
+
         nd = obj.get(b"nd", obj.get("nd"))
         kind = obj.get(b"kind", obj.get("kind"))
         if nd and kind in (b"O", "O"):

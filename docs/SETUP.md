@@ -202,7 +202,7 @@ pip install -r requirements-dev.txt && pytest tests -q          # expect 94 pass
 conda run -n UniVTAC python -c "import isaaclab, tacex; print('ok')"
 
 # 4. Server comes up live and reports the checkpoint's real contract
-PYTHONPATH=$REPO_ROOT $GROOT_PYTHON -m univtac_groot.server.run_server \
+PYTHONUNBUFFERED=1 PYTHONPATH=$REPO_ROOT $GROOT_PYTHON -u \n    -m univtac_groot.server.run_server \
     --model-path nvidia/GR00T-N1.7-3B \
     --embodiment-tag OXE_DROID_RELATIVE_EEF_RELATIVE_JOINT --port 5555
 

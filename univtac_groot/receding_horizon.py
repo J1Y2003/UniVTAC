@@ -214,7 +214,17 @@ def resolve_horizons(
     action_deltas = deltas(modality_config["action"])
     action_horizon = len(action_deltas)
     if action_horizon < 1:
-        raise ValueError("policy declared an empty action.delta_indices.")
+        entry = modality_config["action"]
+        shape = (
+            sorted(entry) if isinstance(entry, Mapping) else sorted(vars(entry))
+            if hasattr(entry, "__dict__") else type(entry).__name__
+        )
+        raise ValueError(
+            "policy declared an empty action.delta_indices. The 'action' entry "
+            f"carried {shape!r}, which has no usable delta_indices. If those look "
+            "like a serialization envelope (e.g. '__ModalityConfig__'/'as_json'), "
+            "the transport failed to unwrap it -- see univtac_groot.client._decode."
+        )
     if list(action_deltas) != list(range(action_horizon)):
         raise ValueError(
             f"action.delta_indices={list(action_deltas)} is not the contiguous "

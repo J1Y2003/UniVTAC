@@ -116,6 +116,7 @@ echo "----------------------------------------------------------"
 
 # Headless rendering for the smoke tests install.sh runs at the end.
 export DISPLAY=""
+export PYTHONUNBUFFERED=1
 export OMP_NUM_THREADS="${OMP_NUM_THREADS:-${SLURM_CPUS_PER_TASK:-8}}"
 export MAX_JOBS="${MAX_JOBS:-${SLURM_CPUS_PER_TASK:-8}}"   # limits C++/CUDA build parallelism
 

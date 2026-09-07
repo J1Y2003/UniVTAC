@@ -14,6 +14,12 @@ needs a login-node GPU.
 
 ### Start here
 
+```bash
+cp env.example.sh env.sh && chmod 600 env.sh   # paths + HF token; gitignored
+source env.sh                                  # per session, not ~/.bashrc
+```
+
+
 **[docs/RUNBOOK.md](docs/RUNBOOK.md) — the ordered sequence** from nothing to an
 evaluation number, each step labelled with where it runs and which conda env.
 Or just ask the repo where you are:
