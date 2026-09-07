@@ -64,6 +64,13 @@ export HF_TOKEN="hf_REPLACE_ME"
 # SLURM reads SBATCH_WCKEY as the default for --wckey.
 export SBATCH_WCKEY="project-short-name:sub_4dpdata"
 
+# Jobs here land on `debug` by default, whose time limit is short enough that a
+# training job sits pending forever with REASON=PartitionTimeLimit. Name a
+# long-running partition instead; SLURM reads SBATCH_PARTITION as the default
+# for --partition. Confirm the name and its limit first:
+#   sinfo -o "%20P %10l %10L %6D %25G"
+# export SBATCH_PARTITION="gpu"
+
 # This cluster's submit filter REJECTS any job without MODEL_OUTPUT_DIR set to a
 # path under /rlwrld-unified-checkpoints. The rejection happens at `sbatch` time,
 # so the job never starts and no log is written -- the only clue is

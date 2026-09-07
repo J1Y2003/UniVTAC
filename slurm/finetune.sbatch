@@ -11,10 +11,16 @@
 #
 #   sbatch --export=ALL,ARM=tactile,DATASET=/data/univtac-insert_hole-tactile slurm/finetune.sbatch
 #
+# No --time here on purpose. Requesting more than a partition's limit leaves the
+# job pending forever with REASON=PartitionTimeLimit rather than failing fast, so
+# the partition's own default is safer. Check the limits with:
+#   sinfo -o "%20P %10l %10L %6D %25G"     (%l = TIMELIMIT, %L = DEFAULTTIME)
+# and pass --partition explicitly, or export SBATCH_PARTITION. Note `debug` is
+# short-lived and is where jobs land by default here -- it is not where long
+# training belongs.
 #SBATCH --job-name=univtac-groot-finetune-one-ablation-arm-under-new-embodiment-tag
 #SBATCH --output=logs/%x-%j.out
 #SBATCH --error=logs/%x-%j.err
-#SBATCH --time=24:00:00
 #SBATCH --gres=gpu:1
 
 set -euo pipefail
