@@ -119,7 +119,7 @@ def run_episode(
         instruction = str(info.get("instruction", getattr(env, "instruction", "")))
 
         # The task plans its own scripted pre-move through cuRobo during reset.
-        # If that failed, the arm is not at its start pose and the policy never
+        # If that failed, the variant is not at its start pose and the policy never
         # gets a fair attempt, so this seed is unusable rather than failed --
         # scoring it would blame the policy for a planner miss. UniVTAC's own
         # evaluator rejects such seeds up front via --expert_check.
@@ -308,7 +308,7 @@ def resolve_spec_from_policy(
     Returns:
         ``(aligned_spec, horizons)``.
     """
-    from .arms import with_horizons
+    from .variants import with_horizons
     from .receding_horizon import resolve_horizons
 
     modality = policy.get_modality_config()
@@ -332,22 +332,22 @@ def resolve_spec_from_policy(
     if expected_video and sorted(expected_video) != ours_video:
         raise ValueError(
             f"video key mismatch: the checkpoint's embodiment declares "
-            f"{sorted(expected_video)} but this arm supplies {ours_video}. Fix the "
-            f"arm's video_keys (univtac_groot/arms.py) or point --embodiment-tag at "
+            f"{sorted(expected_video)} but this variant supplies {ours_video}. Fix the "
+            f"variant's video_keys (univtac_groot/variants.py) or point --embodiment-tag at "
             f"the matching checkpoint."
         )
     ours_state = sorted(spec.state_keys)
     if expected_state and sorted(expected_state) != ours_state:
         raise ValueError(
             f"state key mismatch: the checkpoint's embodiment declares "
-            f"{sorted(expected_state)} but this arm supplies {ours_state}. A tactile "
-            f"arm needs a checkpoint finetuned with the matching modality config "
+            f"{sorted(expected_state)} but this variant supplies {ours_state}. A tactile "
+            f"variant needs a checkpoint finetuned with the matching modality config "
             f"(configs/modality/univtac_tactile_config.py)."
         )
     if expected_language and spec.language_key not in expected_language:
         raise ValueError(
             f"language key mismatch: the checkpoint expects one of "
-            f"{expected_language}, this arm sends {spec.language_key!r}."
+            f"{expected_language}, this variant sends {spec.language_key!r}."
         )
 
     aligned = with_horizons(

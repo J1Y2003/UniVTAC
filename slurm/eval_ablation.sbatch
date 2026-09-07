@@ -1,5 +1,5 @@
 #!/bin/bash
-# Evaluate one ablation arm on one UniVTAC task, fully headless.
+# Evaluate one ablation variant on one UniVTAC task, fully headless.
 #
 # Two processes, one job: the GR00T inference server (Python 3.12, holds the 3B
 # checkpoint) and the UniVTAC evaluator (Python 3.10, Isaac Sim). Different minor
@@ -7,11 +7,11 @@
 # a loopback ZeroMQ socket. This mirrors how UniVTAC runs SmolVLA
 # (policy/smolvla/smolvla_server.py). See docs/SETUP.md.
 #
-# Submit one job per (arm, task). To sweep, use the array form below or the
+# Submit one job per (variant, task). To sweep, use the array form below or the
 # helper: slurm/submit_ablation.sh
 #
-#   sbatch --export=ALL,ARM=baseline,TASK=insert_hole slurm/eval_ablation.sbatch
-#   sbatch --export=ALL,ARM=tactile,TASK=insert_hole,GROOT_MODEL=/ckpt/tactile slurm/eval_ablation.sbatch
+#   sbatch --export=ALL,VARIANT=baseline,TASK=insert_hole slurm/eval_ablation.sbatch
+#   sbatch --export=ALL,VARIANT=tactile,TASK=insert_hole,GROOT_MODEL=/ckpt/tactile slurm/eval_ablation.sbatch
 #
 # No --time here on purpose. Requesting more than a partition's limit leaves the
 # job pending forever with REASON=PartitionTimeLimit rather than failing fast, so
@@ -20,7 +20,7 @@
 # and pass --partition explicitly, or export SBATCH_PARTITION. Note `debug` is
 # short-lived and is where jobs land by default here -- it is not where long
 # training belongs.
-#SBATCH --job-name=univtac-groot-evaluate-one-ablation-arm-on-one-univtac-benchmark-task
+#SBATCH --job-name=univtac-groot-evaluate-one-ablation-variant-on-one-univtac-benchmark-task
 #SBATCH --output=logs/%x-%A_%a.out
 #SBATCH --error=logs/%x-%A_%a.err
 #SBATCH --gres=gpu:1
@@ -30,7 +30,16 @@ set -euo pipefail
 # --------------------------------------------------------------------------- #
 # Configuration (override any of these with --export)
 # --------------------------------------------------------------------------- #
-ARM="${ARM:-baseline}"                       # baseline | baseline_finetuned | tactile
+# ARM= was the old name for this. Honour it rather than ignoring it: an
+# unrecognised environment variable fails *silently*, so a stale
+# `ARM=baseline_finetuned` command would quietly run the tactile variant
+# instead -- a wrong result that looks like a right one. (A stale --arm flag
+# fails loudly on the CLI, so no alias is needed there.)
+if [[ -n "${ARM:-}" && -z "${VARIANT:-}" ]]; then
+  echo "[job] note: ARM is deprecated, use VARIANT (taking ARM=${ARM})" >&2
+  VARIANT="${ARM}"
+fi
+VARIANT="${VARIANT:-baseline}"                       # baseline | baseline_finetuned | tactile
 TASK="${TASK:-insert_hole}"
 TASK_CONFIG="${TASK_CONFIG:-demo}"
 EPISODES="${EPISODES:-50}"
@@ -67,12 +76,12 @@ GROOT_PYTHON="${GROOT_PYTHON:?set GROOT_PYTHON to the GR00T interpreter, e.g. Is
 UNIVTAC_PYTHON="${UNIVTAC_PYTHON:?set UNIVTAC_PYTHON to the UniVTAC/Isaac Lab interpreter}"
 
 # Checkpoint + embodiment tag. The baseline runs zero-shot on the released
-# model; the tactile arm needs a NEW_EMBODIMENT finetune (docs/ABLATION.md).
-if [[ "${ARM}" == "baseline" ]]; then
+# model; the tactile variant needs a NEW_EMBODIMENT finetune (docs/ABLATION.md).
+if [[ "${VARIANT}" == "baseline" ]]; then
   GROOT_MODEL="${GROOT_MODEL:-nvidia/GR00T-N1.7-3B}"
   EMBODIMENT_TAG="${EMBODIMENT_TAG:-OXE_DROID_RELATIVE_EEF_RELATIVE_JOINT}"
   MODALITY_CONFIG="${MODALITY_CONFIG:-}"
-elif [[ "${ARM}" == "tactile" ]]; then
+elif [[ "${VARIANT}" == "tactile" ]]; then
   GROOT_MODEL="${GROOT_MODEL:?tactile needs a finetuned checkpoint; set GROOT_MODEL}"
   EMBODIMENT_TAG="${EMBODIMENT_TAG:-NEW_EMBODIMENT}"
   MODALITY_CONFIG="${MODALITY_CONFIG:-${REPO_ROOT}/configs/modality/univtac_tactile_config.py}"
@@ -99,13 +108,13 @@ fi
 PORT="${PORT:-$((20000 + (${SLURM_JOB_ID:-$$} % 20000)))}"
 RESULTS_DIR="${RESULTS_DIR:-${REPO_ROOT}/eval_result}"
 RUN_TAG="${SLURM_ARRAY_TASK_ID:-0}"
-OUTPUT="${RESULTS_DIR}/${ARM}/${TASK}/seed${SEED_OFFSET}-${RUN_TAG}.jsonl"
-SERVER_LOG="${RESULTS_DIR}/${ARM}/${TASK}/server-${RUN_TAG}.log"
+OUTPUT="${RESULTS_DIR}/${VARIANT}/${TASK}/seed${SEED_OFFSET}-${RUN_TAG}.jsonl"
+SERVER_LOG="${RESULTS_DIR}/${VARIANT}/${TASK}/server-${RUN_TAG}.log"
 
 mkdir -p logs "$(dirname "${OUTPUT}")"
 
 echo "=========================================================="
-echo " arm=${ARM} task=${TASK} config=${TASK_CONFIG}"
+echo " variant=${VARIANT} task=${TASK} config=${TASK_CONFIG}"
 echo " model=${GROOT_MODEL}  tag=${EMBODIMENT_TAG}"
 echo " episodes=${EPISODES} execution_horizon=${EXECUTION_HORIZON}"
 echo " gpus=${GPU_COUNT}  server=${SERVER_DEVICE}  sim=${SIM_DEVICE}"
@@ -205,7 +214,7 @@ EVAL_CMD=(
   "${UNIVTAC_PYTHON}" "${REPO_ROOT}/scripts/run_eval.py"
   --task "${TASK}"
   --task-config "${TASK_CONFIG}"
-  --arm "${ARM}"
+  --variant "${VARIANT}"
   --univtac-root "${UNIVTAC_ROOT}"
   --host 127.0.0.1
   --port "${PORT}"
@@ -216,7 +225,7 @@ EVAL_CMD=(
   --startup-timeout 1800
   --device "${SIM_DEVICE}"
 )
-if [[ "${ARM}" == "tactile" ]]; then
+if [[ "${VARIANT}" == "tactile" ]]; then
   EVAL_CMD+=(--tactile-mode "${TACTILE_MODE:-depth_pool}")
 fi
 

@@ -369,7 +369,7 @@ def split_embodiment(
             f"got {ee.shape[0]}"
         )
 
-    arm = joint[:7]
+    variant = joint[:7]
     # Both fingers mirror one commanded opening; take finger 1 as the scalar.
     gripper = float(joint[7])
     if normalize_gripper:
@@ -380,7 +380,7 @@ def split_embodiment(
 
     return {
         "eef_9d": eef_9d,
-        "joint_position": arm.astype(np.float32),
+        "joint_position": variant.astype(np.float32),
         "gripper_position": np.array([gripper], dtype=np.float32),
     }
 

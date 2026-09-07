@@ -181,6 +181,6 @@ for task in ${TASKS}; do
   echo "  # UniVTAC's own ACT baseline (its data step, then training):"
   echo "  bash ${UNIVTAC_ROOT}/policy/ACT/process_data.sh ${task} ${RAW_CONFIG} 100"
   echo "  # this repo's GR00T path:"
-  echo "  sbatch --export=ALL,TASK=${task},ARM=tactile,RAW_DIR=${OUTPUT}/isaac${VERSION}/${task}/hdf5 slurm/convert.sbatch"
+  echo "  sbatch --export=ALL,TASK=${task},VARIANT=tactile,RAW_DIR=${OUTPUT}/isaac${VERSION}/${task}/hdf5 slurm/convert.sbatch"
 done
 exit ${STATUS}

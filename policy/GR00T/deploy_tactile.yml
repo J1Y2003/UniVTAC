@@ -1,16 +1,16 @@
-# Ablation arm B -- tactile-enabled: the baseline state vector with the
+# Ablation variant B -- tactile-enabled: the baseline state vector with the
 # flattened UniVTAC tactile array concatenated onto it.
 #
 #   bash eval_policy.sh <task> demo GR00T/deploy_tactile 0
 #
 # REQUIRES A FINETUNED CHECKPOINT. Extra state dimensions change the state
-# layout, and GR00T's state projector is embodiment-conditioned, so this arm
+# layout, and GR00T's state projector is embodiment-conditioned, so this variant
 # only runs under NEW_EMBODIMENT -- a tag that ships in no released checkpoint
 # (gr00t/data/embodiment_tags.py::FINETUNE_ONLY_TAGS). Finetune first with
 # slurm/finetune.sbatch and configs/modality/univtac_tactile_config.py.
 
 policy_name: GR00T
-arm: tactile
+variant: tactile
 
 # --- tactile ----------------------------------------------------------------
 # depth_pool: average-pool the gel height map (UniVTAC's tactile sensors are

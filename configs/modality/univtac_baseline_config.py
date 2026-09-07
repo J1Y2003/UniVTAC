@@ -1,7 +1,7 @@
-"""GR00T modality config -- UniVTAC Franka Panda, **no tactile** (ablation arm A).
+"""GR00T modality config -- UniVTAC Franka Panda, **no tactile** (ablation variant A).
 
 Registered against ``EmbodimentTag.NEW_EMBODIMENT``, so this is the config for
-the *finetuned* baseline: the true control for the tactile arm, identical to it
+the *finetuned* baseline: the true control for the tactile variant, identical to it
 in every respect except the tactile state dimensions. (The zero-shot baseline
 uses the shipped ``oxe_droid_relative_eef_relative_joint`` config instead and
 needs no file here.)
@@ -46,7 +46,7 @@ GR00T N1.7's model default is 40 (``GR00T_N1d7Config.action_horizon``), and the
 shipped posttrain configs use 16 (``libero_sim``) or 8 (``simpler_env_*``). 16 is
 chosen here to match the UniVTAC control rate: the tasks cap out at
 ``step_lim = 300`` actions, so a 40-step chunk executed open-loop would commit
-over a tenth of an episode per decision. Keep this identical across both arms
+over a tenth of an episode per decision. Keep this identical across both variants
 -- it changes the action space, so a mismatch makes the two runs incomparable.
 """
 

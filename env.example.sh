@@ -79,10 +79,10 @@ export SBATCH_WCKEY="project-short-name:sub_4dpdata"
 export MODEL_OUTPUT_DIR="/rlwrld-unified-checkpoints/$USER/univtac-groot"
 
 # Where finetuned checkpoints go. Defaults to MODEL_OUTPUT_DIR inside the job
-# scripts, which keeps tens of GB per arm off the home filesystem.
+# scripts, which keeps tens of GB per variant off the home filesystem.
 export CKPT_ROOT="${MODEL_OUTPUT_DIR}"
 
-# Where converted datasets go (only needed for finetuning / the tactile arm).
+# Where converted datasets go (only needed for finetuning / the tactile variant).
 export DATA_ROOT="${SCRATCH:-/tmp}/$USER-univtac-datasets"
 
 # --------------------------------------------------------------------------- #

@@ -1,4 +1,4 @@
-"""GR00T modality config -- UniVTAC Franka Panda **with tactile** (ablation arm B).
+"""GR00T modality config -- UniVTAC Franka Panda **with tactile** (ablation variant B).
 
 Identical to ``univtac_baseline_config`` except that the flattened UniVTAC
 tactile array is concatenated onto the 1-D proprioception state as two extra
@@ -22,7 +22,7 @@ leaves headroom. ``TactileSpec`` in ``univtac_groot/spec.py`` owns the pooling
 and its dimensions must agree with the ``tactile_*`` widths declared here --
 ``ObsSpec.validate`` fails loudly if they drift.
 
-Action layout is byte-identical to the baseline arm, which is what makes the two
+Action layout is byte-identical to the baseline variant, which is what makes the two
 runs comparable: only the state input changes.
 """
 
@@ -42,7 +42,7 @@ ACTION_HORIZON = 16
 
 TACTILE_POOL_GRID = (8, 6)
 """Average-pool grid per sensor. Mirror any change in
-``univtac_groot.arms.tactile_spec(pool_grid=...)`` and in the dataset conversion."""
+``univtac_groot.variants.tactile_spec(pool_grid=...)`` and in the dataset conversion."""
 
 TACTILE_DIMS_PER_SENSOR = TACTILE_POOL_GRID[0] * TACTILE_POOL_GRID[1]  # 48
 

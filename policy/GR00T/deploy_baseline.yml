@@ -1,4 +1,4 @@
-# Ablation arm A -- baseline: vision + language + proprioception, NO tactile.
+# Ablation variant A -- baseline: vision + language + proprioception, NO tactile.
 #
 #   bash eval_policy.sh <task> demo GR00T/deploy_baseline 0
 #
@@ -6,10 +6,10 @@
 # the base model's Franka Panda tag (DROID is a Panda), so its state keys
 # eef_9d / joint_position / gripper_position map straight onto UniVTAC's
 # embodiment observation. See docs/ABLATION.md for why this is a *reference*
-# point rather than the tactile arm's like-for-like control.
+# point rather than the tactile variant's like-for-like control.
 
 policy_name: GR00T          # must match the directory under UniVTAC/policy/
-arm: baseline
+variant: baseline
 
 # --- inference server -------------------------------------------------------
 # Point at a server already running in the GR00T environment (recommended on

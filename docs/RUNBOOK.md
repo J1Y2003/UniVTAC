@@ -216,11 +216,11 @@ tail -f /tmp/groot_server.log        # Ctrl-C once you see "listening on tcp://.
 
 # 4b. Check the observation contract. Seconds; no Isaac Sim startup.
 $UNIVTAC_PYTHON scripts/run_eval.py \
-    --task insert_hole --arm baseline --port 5555 --dry-run
+    --task insert_hole --variant baseline --port 5555 --dry-run
 
 # 4c. One real episode. This starts Isaac Sim, so allow a few minutes.
 $UNIVTAC_PYTHON scripts/run_eval.py \
-    --task insert_hole --arm baseline --univtac-root $UNIVTAC_ROOT \
+    --task insert_hole --variant baseline --univtac-root $UNIVTAC_ROOT \
     --port 5555 --episodes 1 --execution-horizon 8
 ```
 
@@ -235,10 +235,10 @@ the pipeline works end to end and you can submit in bulk.
 cd $REPO_ROOT
 
 # One task, 50 episodes.
-sbatch --export=ALL,ARM=baseline,TASK=insert_hole slurm/eval_ablation.sbatch
+sbatch --export=ALL,VARIANT=baseline,TASK=insert_hole slurm/eval_ablation.sbatch
 
-# Or all eight benchmark tasks for the baseline arm.
-ARMS=baseline bash slurm/submit_ablation.sh
+# Or all eight benchmark tasks for the baseline variant.
+VARIANTS=baseline bash slurm/submit_ablation.sh
 
 squeue -u $USER
 ```
@@ -260,9 +260,9 @@ after a walltime kill.
 
 ---
 
-## Steps 7-9 — the tactile arm (only if you need the ablation)
+## Steps 7-9 — the tactile variant (only if you need the ablation)
 
-The tactile arm **cannot run zero-shot**: extra state dimensions require the
+The tactile variant **cannot run zero-shot**: extra state dimensions require the
 `NEW_EMBODIMENT` tag, which ships in no released checkpoint. See
 [ABLATION.md](ABLATION.md) for why. It needs demonstrations, a conversion, and a
 finetune first — days of work, not minutes.
@@ -275,29 +275,29 @@ bash collect_data.sh insert_hole demo 0
 # 8. Convert to GR00T LeRobot v2. CPU-only, minutes-hours.     [login] -> [compute]
 #    Runs under $CONVERT_PYTHON (your univtac-groot env), not the simulator's.
 cd $REPO_ROOT
-sbatch --export=ALL,TASK=insert_hole,ARM=tactile           slurm/convert.sbatch
-sbatch --export=ALL,TASK=insert_hole,ARM=baseline_finetuned slurm/convert.sbatch
+sbatch --export=ALL,TASK=insert_hole,VARIANT=tactile           slurm/convert.sbatch
+sbatch --export=ALL,TASK=insert_hole,VARIANT=baseline_finetuned slurm/convert.sbatch
 
-# 9. Finetune both arms with the SAME recipe.                  [login] -> [compute]
-sbatch --export=ALL,ARM=tactile,DATASET=$DATA_ROOT/univtac-insert_hole-tactile \
+# 9. Finetune both variants with the SAME recipe.                  [login] -> [compute]
+sbatch --export=ALL,VARIANT=tactile,DATASET=$DATA_ROOT/univtac-insert_hole-tactile \
     slurm/finetune.sbatch
-sbatch --export=ALL,ARM=baseline_finetuned,DATASET=$DATA_ROOT/univtac-insert_hole-baseline_finetuned \
+sbatch --export=ALL,VARIANT=baseline_finetuned,DATASET=$DATA_ROOT/univtac-insert_hole-baseline_finetuned \
     slurm/finetune.sbatch
 
 # 10. Evaluate both, then compare them against each other.
-sbatch --export=ALL,ARM=tactile,TASK=insert_hole,GROOT_MODEL=<ckpt> slurm/eval_ablation.sbatch
-sbatch --export=ALL,ARM=baseline_finetuned,TASK=insert_hole,GROOT_MODEL=<ckpt> slurm/eval_ablation.sbatch
+sbatch --export=ALL,VARIANT=tactile,TASK=insert_hole,GROOT_MODEL=<ckpt> slurm/eval_ablation.sbatch
+sbatch --export=ALL,VARIANT=baseline_finetuned,TASK=insert_hole,GROOT_MODEL=<ckpt> slurm/eval_ablation.sbatch
 
-python scripts/compare_ablation.py --baseline-arm baseline_finetuned --tactile-arm tactile
+python scripts/compare_ablation.py --baseline-variant baseline_finetuned --tactile-variant tactile
 ```
 
-Compare the tactile arm against `baseline_finetuned`, not against the zero-shot
+Compare the tactile variant against `baseline_finetuned`, not against the zero-shot
 baseline — otherwise the whole finetuning effect gets credited to touch.
 
 ## If something fails
 
 1. `python scripts/preflight.py --deep` — names the first broken thing.
 2. For a failed eval job, **read the server log first**
-   (`eval_result/<arm>/<task>/server-*.log`). A checkpoint that fails to load
+   (`eval_result/<variant>/<task>/server-*.log`). A checkpoint that fails to load
    appears in the evaluator's log only as a `wait_until_ready` timeout.
 3. [SETUP.md](SETUP.md#common-failures) has a symptom-to-cause table.

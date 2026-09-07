@@ -160,7 +160,7 @@ cd UniVTAC && bash data/download.sh    # installs modelscope, pulls byml2024/Uni
 ```
 
 Demonstration data is only needed if you are going to finetune (i.e. for the
-tactile arm) — see [ABLATION.md](ABLATION.md).
+tactile variant) — see [ABLATION.md](ABLATION.md).
 
 ---
 
@@ -207,16 +207,16 @@ PYTHONUNBUFFERED=1 PYTHONPATH=$REPO_ROOT $GROOT_PYTHON -u \n    -m univtac_groot
     --embodiment-tag OXE_DROID_RELATIVE_EEF_RELATIVE_JOINT --port 5555
 
 # 5. The observation contract matches, without paying for Isaac Sim startup
-$UNIVTAC_PYTHON scripts/run_eval.py --task insert_hole --arm baseline \
+$UNIVTAC_PYTHON scripts/run_eval.py --task insert_hole --variant baseline \
     --port 5555 --dry-run
 
 # 6. A single real episode before committing a sweep
-$UNIVTAC_PYTHON scripts/run_eval.py --task insert_hole --arm baseline \
+$UNIVTAC_PYTHON scripts/run_eval.py --task insert_hole --variant baseline \
     --univtac-root $UNIVTAC_ROOT --port 5555 --episodes 1
 ```
 
 Step 5 talks to the live server and prints the resolved horizons, state keys and
-video keys, then exits — it is the fastest way to catch an arm/checkpoint
+video keys, then exits — it is the fastest way to catch an variant/checkpoint
 mismatch. Note that it does need the server (it calls `get_modality_config`);
 there is no fully offline contract check, because the authoritative answer lives
 in the checkpoint. Keep the server from step 4 running while you iterate on
@@ -229,7 +229,7 @@ steps 5 and 6 — reloading the checkpoint per attempt is the main time sink.
 | `GatedRepoError` / `401` on server start | No access to `nvidia/Cosmos-Reason2-2B`, or not logged in |
 | `wait_until_ready` times out after 900 s | Server died on load — **read the server log**, not the evaluator's |
 | `Embodiment tag 'NEW_EMBODIMENT' is not supported by this checkpoint` | Expected: `NEW_EMBODIMENT` needs a finetune, see [ABLATION.md](ABLATION.md) |
-| `state key mismatch: the checkpoint's embodiment declares ...` | Arm and checkpoint disagree; wrong `--arm` or wrong `--model-path` |
+| `state key mismatch: the checkpoint's embodiment declares ...` | Variant and checkpoint disagree; wrong `--variant` or wrong `--model-path` |
 | `--tactile-mode depth_pool needs observations.tactile to include 'depth'` | Add it to `UniVTAC/task_config/<config>.yml` |
 | `Could not load libtorchcodec ... versions 4, 5, 6 and 7` | FFmpeg 8 installed; downgrade to <8 |
 | Parquet files in `demo_data/` unreadable | Cloned Isaac-GR00T without `git-lfs` |
@@ -286,7 +286,7 @@ srun --gres=gpu:1 --cpus-per-task=8 --mem=64G --time=2:00:00 --pty bash
 export REPO_ROOT=~/UniVTAC-GR00T UNIVTAC_ROOT=~/UniVTAC
 PYTHONPATH=$REPO_ROOT ~/Isaac-GR00T/.venv/bin/python     -m univtac_groot.server.run_server     --model-path nvidia/GR00T-N1.7-3B     --embodiment-tag OXE_DROID_RELATIVE_EEF_RELATIVE_JOINT --port 5555 &
 
-conda run -n UniVTAC python $REPO_ROOT/scripts/run_eval.py     --task insert_hole --arm baseline --univtac-root $UNIVTAC_ROOT     --port 5555 --dry-run          # then drop --dry-run for --episodes 1
+conda run -n UniVTAC python $REPO_ROOT/scripts/run_eval.py     --task insert_hole --variant baseline --univtac-root $UNIVTAC_ROOT     --port 5555 --dry-run          # then drop --dry-run for --episodes 1
 ```
 
 Leaving the server running while you re-run the evaluator is the whole point:
@@ -301,7 +301,7 @@ The eval job hosts Isaac Sim (scene plus offscreen rendering) *and* GR00T N1.7
 of VRAM for a single-GPU run. If your nodes are tighter than that, ask for two:
 
 ```bash
-sbatch --gres=gpu:2 --export=ALL,ARM=baseline,TASK=insert_hole slurm/eval_ablation.sbatch
+sbatch --gres=gpu:2 --export=ALL,VARIANT=baseline,TASK=insert_hole slurm/eval_ablation.sbatch
 ```
 
 `eval_ablation.sbatch` counts the GPUs SLURM allocated and puts the model on
@@ -325,12 +325,12 @@ bash scripts/install.sh && bash data/download.sh
 pytest tests -q
 
 # batch, in order
-sbatch --export=ALL,ARM=baseline,TASK=insert_hole slurm/eval_ablation.sbatch   # zero-shot arm
+sbatch --export=ALL,VARIANT=baseline,TASK=insert_hole slurm/eval_ablation.sbatch   # zero-shot variant
 
-# only if you need the tactile arm (it requires a finetune):
-sbatch --array=0-7 --export=ALL,ARM=tactile slurm/convert.sbatch
-sbatch --export=ALL,ARM=tactile,DATASET=$DATA_ROOT/univtac-insert_hole-tactile slurm/finetune.sbatch
-sbatch --export=ALL,ARM=tactile,TASK=insert_hole,GROOT_MODEL=<ckpt> slurm/eval_ablation.sbatch
+# only if you need the tactile variant (it requires a finetune):
+sbatch --array=0-7 --export=ALL,VARIANT=tactile slurm/convert.sbatch
+sbatch --export=ALL,VARIANT=tactile,DATASET=$DATA_ROOT/univtac-insert_hole-tactile slurm/finetune.sbatch
+sbatch --export=ALL,VARIANT=tactile,TASK=insert_hole,GROOT_MODEL=<ckpt> slurm/eval_ablation.sbatch
 
 # login node again
 python scripts/compare_ablation.py --results-dir eval_result --json ablation.json

@@ -22,7 +22,7 @@ zmq = pytest.importorskip("zmq")
 msgpack = pytest.importorskip("msgpack")
 mnp = pytest.importorskip("msgpack_numpy")
 
-from univtac_groot.arms import tactile_spec  # noqa: E402
+from univtac_groot.variants import tactile_spec  # noqa: E402
 from univtac_groot.client import Gr00tClient, PolicyServerError  # noqa: E402
 from univtac_groot.metrics import ResultWriter  # noqa: E402
 from univtac_groot.obs_adapter import ObsAdapter  # noqa: E402
@@ -319,7 +319,7 @@ def test_full_pipeline_over_the_socket(tmp_path):
             assert horizons["execution_horizon"] == 4
 
             env = ScriptedEnv(aligned, succeed_at=6)
-            writer = ResultWriter(tmp_path / "r.jsonl", {"arm": "tactile"})
+            writer = ResultWriter(tmp_path / "r.jsonl", {"variant": "tactile"})
             summary = evaluate(
                 env,
                 BatchingPolicy(client, aligned),
@@ -337,12 +337,12 @@ def test_full_pipeline_over_the_socket(tmp_path):
 
 
 def test_resolve_spec_rejects_a_state_key_mismatch():
-    """The classic tactile-arm error: a baseline checkpoint cannot take tactile dims."""
-    from univtac_groot.arms import baseline_spec
+    """The classic tactile-variant error: a baseline checkpoint cannot take tactile dims."""
+    from univtac_groot.variants import baseline_spec
 
     with FakePolicyServer() as server:
         with Gr00tClient(port=server.port, timeout_ms=5000) as client:
-            # The fake server advertises the tactile state keys; the baseline arm
+            # The fake server advertises the tactile state keys; the baseline variant
             # supplies only proprioception.
             with pytest.raises(ValueError, match="state key mismatch"):
                 resolve_spec_from_policy(

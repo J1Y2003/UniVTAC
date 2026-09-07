@@ -83,7 +83,7 @@ class UniVTACGr00tEnv:
     Args:
         task: a live UniVTAC ``BaseTask`` (already constructed with
             ``mode='eval'``; the caller owns Isaac Lab's ``AppLauncher``).
-        spec: observation contract for this ablation arm.
+        spec: observation contract for this ablation variant.
         action_adapter: converts GR00T action chunks to UniVTAC action vectors.
             Its ``action_type`` also selects the ``take_action`` signature used.
         instructions: candidate language instructions. When given, ``reset``
@@ -142,7 +142,7 @@ class UniVTACGr00tEnv:
 
     @property
     def use_tactile(self) -> bool:
-        """Whether tactile is contributing to this arm's observations."""
+        """Whether tactile is contributing to this variant's observations."""
         return self.spec.tactile.enabled
 
     # -- gym API -----------------------------------------------------------
@@ -166,7 +166,7 @@ class UniVTACGr00tEnv:
         raw = self.task._get_observations()
         obs = self.history.reset(self.obs_adapter(raw, self._instruction))
         # `BaseTask.reset` runs the task's scripted pre-move through cuRobo. When
-        # that plan fails the arm never reaches its start pose, so the episode is
+        # that plan fails the variant never reaches its start pose, so the episode is
         # unusable -- it must be skipped, not scored as a policy failure.
         return obs, {
             "instruction": self._instruction,

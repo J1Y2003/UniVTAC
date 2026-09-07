@@ -4,7 +4,7 @@ The package is split so that the pieces which must run inside Isaac Sim's
 interpreter never import torch or ``gr00t``:
 
 ``spec``, ``obs_adapter``, ``history``, ``action_adapter``, ``receding_horizon``,
-``metrics``, ``arms``
+``metrics``, ``variants``
     Pure numpy. Unit-testable on a login node.
 ``client``
     ZeroMQ/msgpack client for GR00T's ``PolicyServer`` (no ``gr00t`` import).
@@ -15,7 +15,7 @@ interpreter never import torch or ``gr00t``:
     Runs in the *GR00T* environment and loads the model.
 
 See ``README.md`` for the two-process layout and ``docs/ABLATION.md`` for why
-the tactile arm needs a finetuned checkpoint.
+the tactile variant needs a finetuned checkpoint.
 """
 
 from __future__ import annotations
@@ -23,7 +23,7 @@ from __future__ import annotations
 __version__ = "0.1.0"
 
 from .action_adapter import ActionAdapter, GripperConvention
-from .arms import ARMS, baseline_spec, build_spec, tactile_spec
+from .variants import VARIANTS, baseline_spec, build_spec, tactile_spec
 from .history import ObsHistory
 from .metrics import EpisodeResult, ResultWriter, compare, summarize
 from .obs_adapter import ObsAdapter
@@ -37,7 +37,7 @@ from .spec import (
 )
 
 __all__ = [
-    "ARMS",
+    "VARIANTS",
     "ActionAdapter",
     "DEFAULT_ACTION_HORIZON",
     "EpisodeResult",

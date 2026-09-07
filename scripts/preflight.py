@@ -104,7 +104,7 @@ def check_repo(report: Report) -> None:
     try:
         import numpy  # noqa: F401
 
-        from univtac_groot.arms import baseline_spec
+        from univtac_groot.variants import baseline_spec
 
         spec = baseline_spec()
         report.add(PASS, "package imports", f"baseline state_dim={spec.state_dim}")
@@ -381,12 +381,12 @@ def check_results(report: Report) -> bool:
     if not results.is_dir():
         report.add(SKIP, "results", "none yet (expected before the first run)")
         return False
-    arms = sorted(p.name for p in results.iterdir() if p.is_dir() and p.name != "raw")
+    variants = sorted(p.name for p in results.iterdir() if p.is_dir() and p.name != "raw")
     files = list(results.rglob("*.jsonl"))
     if not files:
         report.add(SKIP, "results", f"{results} exists but holds no .jsonl")
         return False
-    report.add(PASS, "results", f"{len(files)} file(s), arms={arms}")
+    report.add(PASS, "results", f"{len(files)} file(s), variants={variants}")
     return True
 
 

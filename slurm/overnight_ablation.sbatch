@@ -1,5 +1,5 @@
 #!/bin/bash
-# Full ablation for one task, unattended: finetune both arms, evaluate both,
+# Full ablation for one task, unattended: finetune both variants, evaluate both,
 # compare. Designed to be submitted and left alone overnight.
 #
 #   sbatch slurm/overnight_ablation.sbatch
@@ -15,7 +15,7 @@
 #
 # Stages, in order:
 #   1. preflight     -- every path and dataset checked BEFORE any GPU time is spent
-#   2. finetune      -- ARM=tactile, then ARM=baseline_finetuned (same recipe)
+#   2. finetune      -- VARIANT=tactile, then VARIANT=baseline_finetuned (same recipe)
 #   3. evaluate      -- each finetuned checkpoint on TASK
 #   4. compare       -- success rates, Wilson intervals, delta
 #
@@ -38,7 +38,7 @@
 # and pass --partition explicitly, or export SBATCH_PARTITION. Note `debug` is
 # short-lived and is where jobs land by default here -- it is not where long
 # training belongs.
-#SBATCH --job-name=univtac-groot-full-ablation-finetune-both-arms-then-evaluate-and-compare
+#SBATCH --job-name=univtac-groot-full-ablation-finetune-both-variants-then-evaluate-and-compare
 #SBATCH --output=logs/%x-%j.out
 #SBATCH --error=logs/%x-%j.err
 #SBATCH --gres=gpu:4
@@ -80,19 +80,28 @@ TASK="${TASK:-lift_bottle}"
 TASK_CONFIG="${TASK_CONFIG:-clean}"
 EPISODES="${EPISODES:-50}"
 EXECUTION_HORIZON="${EXECUTION_HORIZON:-8}"
-ARMS="${ARMS:-tactile baseline_finetuned}"
+# ARM= was the old name for this. Honour it rather than ignoring it: an
+# unrecognised environment variable fails *silently*, so a stale
+# `ARM=baseline_finetuned` command would quietly run the tactile variant
+# instead -- a wrong result that looks like a right one. (A stale --arm flag
+# fails loudly on the CLI, so no alias is needed there.)
+if [[ -n "${ARMS:-}" && -z "${VARIANTS:-}" ]]; then
+  echo "[job] note: ARMS is deprecated, use VARIANTS (taking ARMS=${ARMS})" >&2
+  VARIANTS="${ARMS}"
+fi
+VARIANTS="${VARIANTS:-tactile baseline_finetuned}"
 
 # launch_finetune.py defaults: --max-steps 10000, --save-steps 1000,
 # --save-total-limit 5. That last one is a disk hazard here: a 3B checkpoint
 # carries optimizer + scheduler + RNG state (needed for --resume-from-checkpoint),
-# which lands around 40 GB each. Five of those per arm is ~200 GB, ~400 GB for
-# both arms, on a shared 15T mount that already sits at 91%. Keep fewer and
+# which lands around 40 GB each. Five of those per variant is ~200 GB, ~400 GB for
+# both variants, on a shared 15T mount that already sits at 91%. Keep fewer and
 # save less often -- still enough to resume, far less I/O on a network
 # filesystem.
 #
 # With MAX_STEPS=10000 and SAVE_STEPS=2500 the run saves at 2500/5000/7500/
 # 10000 and SAVE_TOTAL_LIMIT=3 keeps a rolling window of the last three, so the
-# final checkpoint plus two fallbacks -- roughly 120 GB per arm.
+# final checkpoint plus two fallbacks -- roughly 120 GB per variant.
 #
 # Note there is no metric-based "best checkpoint" to select: launch_finetune.py
 # exposes no eval metric or load-best-at-end option, so the last checkpoint is
@@ -107,7 +116,7 @@ DATA_ROOT="${DATA_ROOT:-${HOME}/jaewon/workspace/groot-data}"
 # This cluster's submit filter requires MODEL_OUTPUT_DIR under
 # /rlwrld-unified-checkpoints and rejects the job at `sbatch` time without it.
 # Honour it as the checkpoint root by default: it is the cluster's designated
-# place for model outputs, and it keeps ~120 GB per arm off the shared home
+# place for model outputs, and it keeps ~120 GB per variant off the shared home
 # mount. CKPT_ROOT still wins if set explicitly.
 CKPT_ROOT="${CKPT_ROOT:-${MODEL_OUTPUT_DIR:-${HOME}/jaewon/workspace/groot-ckpt}}"
 RESULTS_DIR="${RESULTS_DIR:-${REPO_ROOT}/eval_result}"
@@ -127,7 +136,7 @@ export PYTHONUNBUFFERED=1
 
 # cuDNN cannot initialise on a driver older than GR00T's CUDA 12.8 build (see
 # docs/SETUP.md). Leave this at 1 until an admin upgrades the driver; it costs
-# wall-clock on the conv path but keeps results comparable across arms.
+# wall-clock on the conv path but keeps results comparable across variants.
 DISABLE_CUDNN="${DISABLE_CUDNN:-1}"
 
 # SLURM re-indexes allocated GPUs to 0..N-1 inside the job, so counting
@@ -140,10 +149,10 @@ STAGE_LOG_DIR="${REPO_ROOT}/logs/overnight-${SLURM_JOB_ID:-$$}"
 mkdir -p "${STAGE_LOG_DIR}"
 
 declare -a SUMMARY=()
-# Both arms are evaluated in the same job, so they would otherwise derive the
+# Both variants are evaluated in the same job, so they would otherwise derive the
 # same port from SLURM_JOB_ID. The first server is killed by its own EXIT trap,
 # but a socket in TIME_WAIT would still make the second bind fail, so hand each
-# arm its own port.
+# variant its own port.
 PORT_BASE="${PORT_BASE:-$((20000 + (${SLURM_JOB_ID:-$$} % 15000)))}"
 PORT_OFFSET=0
 
@@ -161,7 +170,7 @@ record() { SUMMARY+=("$1"); echo "[stage] $1"; }
 # 1. Preflight -- everything checkable, checked before any GPU time is spent
 # --------------------------------------------------------------------------- #
 banner "preflight"
-echo " task=${TASK} config=${TASK_CONFIG} arms='${ARMS}' episodes=${EPISODES}"
+echo " task=${TASK} config=${TASK_CONFIG} variants='${VARIANTS}' episodes=${EPISODES}"
 echo " gpus=${NUM_GPUS} (CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:-unset})"
 echo " data=${DATA_ROOT}"
 echo " ckpt=${CKPT_ROOT}"
@@ -200,10 +209,10 @@ fi
 
 # A missing or truncated dataset is the classic way an overnight run wastes a
 # night, so verify shape now rather than discovering it at step 0 of training.
-for arm in ${ARMS}; do
-  dataset="${DATA_ROOT}/univtac-${TASK}-${arm}"
+for variant in ${VARIANTS}; do
+  dataset="${DATA_ROOT}/univtac-${TASK}-${variant}"
   if [[ ! -d "${dataset}" ]]; then
-    fatal "no dataset for arm '${arm}' at ${dataset}"
+    fatal "no dataset for variant '${variant}' at ${dataset}"
     continue
   fi
   for required in meta/info.json meta/modality.json meta/stats.json; do
@@ -211,7 +220,7 @@ for arm in ${ARMS}; do
   done
   n_parquet=$(find "${dataset}/data" -name '*.parquet' 2>/dev/null | wc -l)
   n_videos=$(find "${dataset}/videos" -name '*.mp4' 2>/dev/null | wc -l)
-  echo " ${arm}: ${n_parquet} parquet, ${n_videos} mp4  (${dataset})"
+  echo " ${variant}: ${n_parquet} parquet, ${n_videos} mp4  (${dataset})"
   [[ "${n_parquet}" -gt 0 ]] || fatal "${dataset} has no parquet shards"
 done
 
@@ -220,15 +229,15 @@ done
 [[ -f "${REPO_ROOT}/configs/modality/univtac_baseline_config.py" ]] \
   || fatal "missing configs/modality/univtac_baseline_config.py"
 
-# Pin the training recipe across runs. Both arms must train under identical
+# Pin the training recipe across runs. Both variants must train under identical
 # conditions or the ablation measures the recipe, not the tactile modality --
-# and the two arms are NOT necessarily trained by the same job invocation: a
-# walltime kill mid-way means the second arm trains on a later resubmission,
+# and the two variants are NOT necessarily trained by the same job invocation: a
+# walltime kill mid-way means the second variant trains on a later resubmission,
 # which the scheduler may hand a different number of GPUs. That matters because
 # with data-parallel training --num-gpus multiplies the effective batch size, so
 # the same --max-steps on 4 GPUs sees roughly twice the data as on 2.
 #
-# So record the recipe when the first arm starts and refuse to continue if a
+# So record the recipe when the first variant starts and refuse to continue if a
 # later run differs. Set ALLOW_RECIPE_CHANGE=1 to override deliberately (e.g.
 # you are restarting the whole experiment from scratch).
 RECIPE_FILE="${STAGE_DIR}/recipe-${TASK}.env"
@@ -240,11 +249,11 @@ if [[ -f "${RECIPE_FILE}" ]]; then
     if [[ "${ALLOW_RECIPE_CHANGE:-0}" == "1" ]]; then
       echo " WARNING: recipe changed (was ${RECORDED_NUM_GPUS} gpu / ${RECORDED_MAX_STEPS} steps," >&2
       echo " now ${NUM_GPUS} gpu / ${MAX_STEPS} steps). Proceeding because" >&2
-      echo " ALLOW_RECIPE_CHANGE=1 -- the arms are no longer directly comparable." >&2
+      echo " ALLOW_RECIPE_CHANGE=1 -- the variants are no longer directly comparable." >&2
     else
       fatal "recipe mismatch: this task was started with ${RECORDED_NUM_GPUS} GPU(s) and
        --max-steps ${RECORDED_MAX_STEPS}, but this run has ${NUM_GPUS} GPU(s) and
-       --max-steps ${MAX_STEPS}. Training the two arms under different effective
+       --max-steps ${MAX_STEPS}. Training the two variants under different effective
        batch sizes would confound the ablation. Either resubmit with
        --gres=gpu:${RECORDED_NUM_GPUS} and MAX_STEPS=${RECORDED_MAX_STEPS}, or pass
        ALLOW_RECIPE_CHANGE=1 and delete ${STAGE_DIR} to restart the experiment."
@@ -260,9 +269,9 @@ fi
 
 df -h "${CKPT_ROOT}" 2>/dev/null || true
 # shellcheck disable=SC2086 - word splitting is the point here
-N_ARMS=$(set -- ${ARMS}; echo $#)
-echo " the space above must hold roughly $((N_ARMS * SAVE_TOTAL_LIMIT * 40)) GB"
-echo " (${N_ARMS} arms x ${SAVE_TOTAL_LIMIT} retained checkpoints x ~40 GB each)"
+N_VARIANTS=$(set -- ${VARIANTS}; echo $#)
+echo " the space above must hold roughly $((N_VARIANTS * SAVE_TOTAL_LIMIT * 40)) GB"
+echo " (${N_VARIANTS} variants x ${SAVE_TOTAL_LIMIT} retained checkpoints x ~40 GB each)"
 
 if [[ "${FATAL}" -ne 0 ]]; then
   echo
@@ -296,15 +305,15 @@ latest_checkpoint() {
 }
 
 # --------------------------------------------------------------------------- #
-# 2. Finetune each arm
+# 2. Finetune each variant
 # --------------------------------------------------------------------------- #
-for arm in ${ARMS}; do
-  out_dir="${CKPT_ROOT}/${TASK}-${arm}"
-  marker="${STAGE_DIR}/finetune-${TASK}-${arm}.done"
-  log="${STAGE_LOG_DIR}/finetune-${arm}.log"
+for variant in ${VARIANTS}; do
+  out_dir="${CKPT_ROOT}/${TASK}-${variant}"
+  marker="${STAGE_DIR}/finetune-${TASK}-${variant}.done"
+  log="${STAGE_LOG_DIR}/finetune-${variant}.log"
 
   if [[ -f "${marker}" ]]; then
-    record "finetune ${arm}: SKIPPED (already done: ${marker})"
+    record "finetune ${variant}: SKIPPED (already done: ${marker})"
     continue
   fi
 
@@ -318,28 +327,28 @@ for arm in ${ARMS}; do
   existing=$(latest_checkpoint "${out_dir}")
   if [[ -n "${existing}" ]]; then
     resume_args="--resume-from-checkpoint"
-    echo "[stage] resuming ${arm} from ${existing}"
+    echo "[stage] resuming ${variant} from ${existing}"
   fi
 
-  banner "finetune ${arm}  (${NUM_GPUS} gpu, max_steps=${MAX_STEPS})"
+  banner "finetune ${variant}  (${NUM_GPUS} gpu, max_steps=${MAX_STEPS})"
   echo "[stage] log -> ${log}"
 
   if [[ "${DRY_RUN:-0}" == "1" ]]; then
     echo "[dry-run] would run slurm/finetune.sbatch with:"
-    echo "[dry-run]   ARM=${arm}"
-    echo "[dry-run]   DATASET=${DATA_ROOT}/univtac-${TASK}-${arm}"
+    echo "[dry-run]   VARIANT=${variant}"
+    echo "[dry-run]   DATASET=${DATA_ROOT}/univtac-${TASK}-${variant}"
     echo "[dry-run]   OUTPUT_DIR=${out_dir}"
     echo "[dry-run]   NUM_GPUS=${NUM_GPUS}  DISABLE_CUDNN=${DISABLE_CUDNN}"
     echo "[dry-run]   EXTRA_ARGS=--max-steps ${MAX_STEPS} --save-steps ${SAVE_STEPS} --save-total-limit ${SAVE_TOTAL_LIMIT} ${resume_args}"
-    record "finetune ${arm}: DRY-RUN (not executed)"
+    record "finetune ${variant}: DRY-RUN (not executed)"
     continue
   fi
 
   GROOT_ROOT="${GROOT_ROOT}" \
   GROOT_PYTHON="${GROOT_PYTHON}" \
-  ARM="${arm}" \
+  VARIANT="${variant}" \
   TASK="${TASK}" \
-  DATASET="${DATA_ROOT}/univtac-${TASK}-${arm}" \
+  DATASET="${DATA_ROOT}/univtac-${TASK}-${variant}" \
   OUTPUT_DIR="${out_dir}" \
   NUM_GPUS="${NUM_GPUS}" \
   DISABLE_CUDNN="${DISABLE_CUDNN}" \
@@ -363,17 +372,17 @@ for arm in ${ARMS}; do
       echo "[stage] ${out_dir}/final -> $(basename "${ckpt}")"
     fi
     touch "${marker}"
-    record "finetune ${arm}: OK -> ${ckpt}"
+    record "finetune ${variant}: OK -> ${ckpt}"
   else
-    record "finetune ${arm}: FAILED (exit ${status}, checkpoint='${ckpt:-none}') see ${log}"
+    record "finetune ${variant}: FAILED (exit ${status}, checkpoint='${ckpt:-none}') see ${log}"
   fi
 done
 
 # --------------------------------------------------------------------------- #
-# 3. Evaluate each arm that produced a checkpoint
+# 3. Evaluate each variant that produced a checkpoint
 # --------------------------------------------------------------------------- #
-for arm in ${ARMS}; do
-  out_dir="${CKPT_ROOT}/${TASK}-${arm}"
+for variant in ${VARIANTS}; do
+  out_dir="${CKPT_ROOT}/${TASK}-${variant}"
   # Prefer the stable `final` symlink the finetune stage writes; fall back to
   # probing, so an externally trained output_dir still evaluates.
   if [[ -e "${out_dir}/final" ]]; then
@@ -381,37 +390,37 @@ for arm in ${ARMS}; do
   else
     ckpt=$(latest_checkpoint "${out_dir}")
   fi
-  log="${STAGE_LOG_DIR}/eval-${arm}.log"
-  summary="${RESULTS_DIR}/${arm}/${TASK}/seed0-0.summary.json"
+  log="${STAGE_LOG_DIR}/eval-${variant}.log"
+  summary="${RESULTS_DIR}/${variant}/${TASK}/seed0-0.summary.json"
 
   if [[ "${DRY_RUN:-0}" == "1" ]]; then
     echo "[dry-run] would run slurm/eval_ablation.sbatch with:"
-    echo "[dry-run]   ARM=${arm} TASK=${TASK} TASK_CONFIG=${TASK_CONFIG}"
+    echo "[dry-run]   VARIANT=${variant} TASK=${TASK} TASK_CONFIG=${TASK_CONFIG}"
     echo "[dry-run]   GROOT_MODEL=${ckpt:-<from the finetune stage>}"
     echo "[dry-run]   EPISODES=${EPISODES} EXECUTION_HORIZON=${EXECUTION_HORIZON}"
     echo "[dry-run]   PORT=$((PORT_BASE + PORT_OFFSET + 1))"
-    record "eval ${arm}: DRY-RUN (not executed)"
+    record "eval ${variant}: DRY-RUN (not executed)"
     PORT_OFFSET=$((PORT_OFFSET + 1))
     continue
   fi
 
   if [[ -z "${ckpt}" ]]; then
-    record "eval ${arm}: SKIPPED (no checkpoint to evaluate)"
+    record "eval ${variant}: SKIPPED (no checkpoint to evaluate)"
     continue
   fi
   if [[ -f "${summary}" ]]; then
-    record "eval ${arm}: SKIPPED (summary exists: ${summary})"
+    record "eval ${variant}: SKIPPED (summary exists: ${summary})"
     continue
   fi
 
   PORT_OFFSET=$((PORT_OFFSET + 1))
-  banner "evaluate ${arm}  ckpt=${ckpt}  port=$((PORT_BASE + PORT_OFFSET))"
+  banner "evaluate ${variant}  ckpt=${ckpt}  port=$((PORT_BASE + PORT_OFFSET))"
   echo "[stage] log -> ${log}"
   PORT=$((PORT_BASE + PORT_OFFSET)) \
   UNIVTAC_ROOT="${UNIVTAC_ROOT}" \
   UNIVTAC_PYTHON="${UNIVTAC_PYTHON}" \
   GROOT_PYTHON="${GROOT_PYTHON}" \
-  ARM="${arm}" \
+  VARIANT="${variant}" \
   TASK="${TASK}" \
   TASK_CONFIG="${TASK_CONFIG}" \
   EPISODES="${EPISODES}" \
@@ -430,9 +439,9 @@ d=json.load(open(sys.argv[1]))
 print(f\"{d.get('episodes_scored',0)} scored, {d.get('successes',0)} success, \"
       f\"SR={d.get('success_rate_pct',0)}%\")
 " "${summary}" 2>/dev/null || echo "unparseable")
-    record "eval ${arm}: exit ${status} -- ${scored}"
+    record "eval ${variant}: exit ${status} -- ${scored}"
   else
-    record "eval ${arm}: FAILED (exit ${status}, no summary) see ${log}"
+    record "eval ${variant}: FAILED (exit ${status}, no summary) see ${log}"
   fi
 done
 
@@ -451,8 +460,8 @@ if [[ "${DRY_RUN:-0}" == "1" ]]; then
 else
   "${UNIVTAC_PYTHON}" "${REPO_ROOT}/scripts/compare_ablation.py" \
     --results-dir "${RESULTS_DIR}" \
-    --baseline-arm baseline_finetuned \
-    --tactile-arm tactile \
+    --baseline-variant baseline_finetuned \
+    --tactile-variant tactile \
     --json "${STAGE_LOG_DIR}/comparison.json" \
     2>&1 | tee "${STAGE_LOG_DIR}/compare.log"
   record "compare: exit ${PIPESTATUS[0]}"

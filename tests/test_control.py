@@ -70,11 +70,11 @@ def test_gripper_roundtrip():
 
 def make_chunk(horizon: int = 16, *, prefix: str = "action.") -> dict[str, np.ndarray]:
     """A GR00T-shaped (B, T, D) action chunk for the qpos keys."""
-    arm = np.tile(np.arange(7, dtype=np.float32), (horizon, 1))
-    arm += np.arange(horizon, dtype=np.float32)[:, None]
+    variant = np.tile(np.arange(7, dtype=np.float32), (horizon, 1))
+    variant += np.arange(horizon, dtype=np.float32)[:, None]
     gripper = np.linspace(0, 1, horizon, dtype=np.float32)[:, None]
     return {
-        f"{prefix}joint_position": arm[None, ...],
+        f"{prefix}joint_position": variant[None, ...],
         f"{prefix}gripper_position": gripper[None, ...],
     }
 
@@ -92,7 +92,7 @@ def test_chunk_conversion_preserves_horizon_and_order():
     adapter = ActionAdapter(action_type="qpos")
     actions = adapter.to_univtac(make_chunk(horizon=16))
     assert actions.shape == (16, 8)
-    # Step t has arm values offset by t.
+    # Step t has variant values offset by t.
     assert np.allclose(actions[3][:7], np.arange(7) + 3)
 
 
@@ -359,7 +359,7 @@ def test_wilson_interval_stays_inside_the_unit_range():
 
 def test_result_writer_roundtrips_jsonl_and_writes_a_summary(tmp_path):
     path = tmp_path / "r.jsonl"
-    with ResultWriter(path, {"arm": "tactile"}) as writer:
+    with ResultWriter(path, {"variant": "tactile"}) as writer:
         writer.add(result(1, True))
         writer.add(result(2, False))
 
@@ -370,7 +370,7 @@ def test_result_writer_roundtrips_jsonl_and_writes_a_summary(tmp_path):
     assert recovered[0].success is True
 
     summary = (path.with_suffix(".summary.json")).read_text(encoding="utf-8")
-    assert '"arm": "tactile"' in summary
+    assert '"variant": "tactile"' in summary
 
 
 def test_summarize_jsonl_recovers_a_partial_run(tmp_path):
@@ -486,7 +486,7 @@ def test_run_episode_captures_exceptions_instead_of_propagating():
 
 def test_evaluate_scores_the_requested_number_of_episodes(tmp_path):
     env, policy = FakeEnv(succeed_at=3), FakePolicy()
-    writer = ResultWriter(tmp_path / "r.jsonl", {"arm": "baseline"})
+    writer = ResultWriter(tmp_path / "r.jsonl", {"variant": "baseline"})
     summary = evaluate(
         env, policy,
         config=RolloutConfig(num_episodes=5, start_seed=100, execution_horizon=8),

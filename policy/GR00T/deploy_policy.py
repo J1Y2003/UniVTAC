@@ -46,7 +46,7 @@ for _candidate in (_THIS_DIR.parents[1], _THIS_DIR.parents[2]):
         sys.path.insert(0, str(_candidate))
 
 from univtac_groot.action_adapter import ActionAdapter, GripperConvention  # noqa: E402
-from univtac_groot.arms import build_spec  # noqa: E402
+from univtac_groot.variants import build_spec  # noqa: E402
 from univtac_groot.client import Gr00tClient  # noqa: E402
 from univtac_groot.history import ObsHistory  # noqa: E402
 from univtac_groot.obs_adapter import ObsAdapter  # noqa: E402
@@ -86,12 +86,12 @@ class Policy(BasePolicy):
 
     ``policy_name``
         Must be ``GR00T`` -- UniVTAC uses it to import ``policy/GR00T``.
-    ``arm``
+    ``variant``
         ``baseline`` (zero-shot DROID tag), ``baseline_finetuned`` or
         ``tactile``. Selects the observation spec from
-        :data:`univtac_groot.arms.ARMS`.
+        :data:`univtac_groot.variants.VARIANTS`.
     ``tactile_mode``
-        ``depth_pool`` | ``marker`` | ``video``, for the ``tactile`` arm.
+        ``depth_pool`` | ``marker`` | ``video``, for the ``tactile`` variant.
     ``tactile_sensors``
         Sensor names in ``observation['tactile']``; defaults to
         ``[left_tactile, right_tactile]``.
@@ -122,9 +122,9 @@ class Policy(BasePolicy):
         self.task_name = str(self.args.get("task_name", "unknown"))
 
         # -- observation spec ---------------------------------------------
-        arm = str(self.args.get("arm", "baseline"))
+        variant = str(self.args.get("variant", "baseline"))
         spec_kwargs: dict[str, Any] = {}
-        if arm == "tactile":
+        if variant == "tactile":
             spec_kwargs["mode"] = str(self.args.get("tactile_mode", "depth_pool"))
             sensors = self.args.get("tactile_sensors")
             if sensors:
@@ -136,15 +136,15 @@ class Policy(BasePolicy):
                 spec_kwargs["marker_pool"] = grid
         if self.args.get("language_key"):
             spec_kwargs["language_key"] = str(self.args["language_key"])
-        self.spec = build_spec(arm, **spec_kwargs)
-        self.arm = arm
+        self.spec = build_spec(variant, **spec_kwargs)
+        self.variant = variant
 
         # -- action handling ----------------------------------------------
         self.action_adapter = ActionAdapter(
             action_type=str(self.args.get("action_type", "qpos")),  # type: ignore[arg-type]
             gripper=GripperConvention(
                 max_qpos=float(self.args.get("gripper_max_qpos", 0.039)),
-                invert=bool(self.args.get("gripper_invert", arm == "baseline")),
+                invert=bool(self.args.get("gripper_invert", variant == "baseline")),
             ),
         )
 
@@ -193,7 +193,7 @@ class Policy(BasePolicy):
         self._instruction = ""
 
         print(
-            f"[GR00T] arm={self.arm} task={self.task_name} "
+            f"[GR00T] variant={self.variant} task={self.task_name} "
             f"{self.obs_adapter.describe()} "
             f"action_type={self.action_adapter.action_type} "
             f"exec_horizon={self.execution_horizon}/{self.action_horizon}"

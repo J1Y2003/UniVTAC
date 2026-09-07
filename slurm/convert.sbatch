@@ -6,14 +6,14 @@
 # firmly over the "run it on a login node" line, hence this wrapper. No GPU is
 # requested -- nothing here touches CUDA.
 #
-# One job per (task, arm). The state layout differs between arms, so each arm
+# One job per (task, variant). The state layout differs between variants, so each variant
 # needs its own dataset; see docs/ABLATION.md.
 #
-#   sbatch --export=ALL,TASK=insert_hole,ARM=tactile slurm/convert.sbatch
+#   sbatch --export=ALL,TASK=insert_hole,VARIANT=tactile slurm/convert.sbatch
 #
 # Or sweep every task as an array (one task per array index):
 #
-#   sbatch --array=0-7 --export=ALL,ARM=tactile slurm/convert.sbatch
+#   sbatch --array=0-7 --export=ALL,VARIANT=tactile slurm/convert.sbatch
 #
 # No --time here on purpose. Requesting more than a partition's limit leaves the
 # job pending forever with REASON=PartitionTimeLimit rather than failing fast, so
@@ -61,7 +61,15 @@ DATA_ROOT="${DATA_ROOT:?set DATA_ROOT to where converted datasets should land}"
 # which already has h5py for its own collection dumps.
 CONVERT_PYTHON="${CONVERT_PYTHON:-${UNIVTAC_PYTHON:?set CONVERT_PYTHON or UNIVTAC_PYTHON}}"
 
-ARM="${ARM:-tactile}"                       # tactile | baseline_finetuned
+# ARM= was the old name for this. Honour it rather than ignoring it: an
+# unrecognised environment variable fails *silently*, so a stale
+# `ARM=baseline_finetuned` command would quietly convert the tactile variant
+# instead -- a wrong dataset that looks like a right one.
+if [[ -n "${ARM:-}" && -z "${VARIANT:-}" ]]; then
+  echo "[job] note: ARM is deprecated, use VARIANT (taking ARM=${ARM})" >&2
+  VARIANT="${ARM}"
+fi
+VARIANT="${VARIANT:-tactile}"                       # tactile | baseline_finetuned
 TASK_CONFIG="${TASK_CONFIG:-demo}"          # the collection config the demos used
 EPISODES="${EPISODES:-}"                    # empty = all available
 TACTILE_MODE="${TACTILE_MODE:-depth_pool}"
@@ -79,7 +87,7 @@ else
 fi
 
 RAW_DIR="${RAW_DIR:-${UNIVTAC_ROOT}/data/${TASK}/${TASK_CONFIG}}"
-OUT_DIR="${OUT_DIR:-${DATA_ROOT}/univtac-${TASK}-${ARM}}"
+OUT_DIR="${OUT_DIR:-${DATA_ROOT}/univtac-${TASK}-${VARIANT}}"
 
 mkdir -p logs "$(dirname "${OUT_DIR}")"
 
@@ -92,7 +100,7 @@ export MKL_NUM_THREADS="${MKL_NUM_THREADS:-${SLURM_CPUS_PER_TASK:-4}}"
 export NUMEXPR_NUM_THREADS="${NUMEXPR_NUM_THREADS:-${SLURM_CPUS_PER_TASK:-4}}"
 
 echo "=========================================================="
-echo " task=${TASK}  arm=${ARM}  config=${TASK_CONFIG}"
+echo " task=${TASK}  variant=${VARIANT}  config=${TASK_CONFIG}"
 echo " raw=${RAW_DIR}"
 echo " out=${OUT_DIR}"
 echo " tactile_mode=${TACTILE_MODE} pool=${POOL_ROWS}x${POOL_COLS} fps=${FPS}"
@@ -155,11 +163,11 @@ CMD=(
   --task "${TASK}"
   --raw-dir "${RAW_DIR}"
   --out "${OUT_DIR}"
-  --arm "${ARM}"
+  --variant "${VARIANT}"
   --univtac-root "${UNIVTAC_ROOT}"
   --fps "${FPS}"
 )
-if [[ "${ARM}" == "tactile" ]]; then
+if [[ "${VARIANT}" == "tactile" ]]; then
   CMD+=(--tactile-mode "${TACTILE_MODE}" --tactile-pool-grid "${POOL_ROWS}" "${POOL_COLS}")
 fi
 if [[ -n "${EPISODES}" ]]; then
@@ -172,4 +180,4 @@ PYTHONPATH="${REPO_ROOT}" "${CMD[@]}"
 
 echo "[job] converted dataset: ${OUT_DIR}"
 echo "[job] finetune with:"
-echo "  sbatch --export=ALL,ARM=${ARM},DATASET=${OUT_DIR} ${REPO_ROOT}/slurm/finetune.sbatch"
+echo "  sbatch --export=ALL,VARIANT=${VARIANT},DATASET=${OUT_DIR} ${REPO_ROOT}/slurm/finetune.sbatch"

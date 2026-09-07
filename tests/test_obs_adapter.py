@@ -10,7 +10,7 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from univtac_groot.arms import baseline_spec, tactile_spec
+from univtac_groot.variants import baseline_spec, tactile_spec
 from univtac_groot.history import ObsHistory
 from univtac_groot.obs_adapter import (
     ObsAdapter,
@@ -303,7 +303,7 @@ def test_tactile_video_mode_adds_streams_not_state_dims():
 
 
 def test_baseline_and_tactile_share_the_proprioception_slice():
-    """The arms must differ *only* by the tactile dims."""
+    """The variants must differ *only* by the tactile dims."""
     obs = make_observation()
     base = ObsAdapter(baseline_spec(video_keys={"head": "head", "wrist": "wrist"}))(obs, "x")
     tact = ObsAdapter(tactile_spec())(obs, "x")

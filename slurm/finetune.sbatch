@@ -1,15 +1,15 @@
 #!/bin/bash
-# Finetune GR00T N1.7 on UniVTAC demonstrations for one ablation arm.
+# Finetune GR00T N1.7 on UniVTAC demonstrations for one ablation variant.
 #
-# Required for the tactile arm (extra state dims => NEW_EMBODIMENT, which ships
-# in no released checkpoint) and recommended for the baseline arm too, so the
+# Required for the tactile variant (extra state dims => NEW_EMBODIMENT, which ships
+# in no released checkpoint) and recommended for the baseline variant too, so the
 # comparison is like-for-like. Convert the data first:
 #
 #   python scripts/convert_univtac_to_lerobot.py --task insert_hole \
 #       --raw-dir "${UNIVTAC_ROOT}/data/insert_hole/demo" \
-#       --out "${DATA_ROOT}/univtac-insert_hole-tactile" --arm tactile
+#       --out "${DATA_ROOT}/univtac-insert_hole-tactile" --variant tactile
 #
-#   sbatch --export=ALL,ARM=tactile,DATASET=/data/univtac-insert_hole-tactile slurm/finetune.sbatch
+#   sbatch --export=ALL,VARIANT=tactile,DATASET=/data/univtac-insert_hole-tactile slurm/finetune.sbatch
 #
 # No --time here on purpose. Requesting more than a partition's limit leaves the
 # job pending forever with REASON=PartitionTimeLimit rather than failing fast, so
@@ -18,17 +18,26 @@
 # and pass --partition explicitly, or export SBATCH_PARTITION. Note `debug` is
 # short-lived and is where jobs land by default here -- it is not where long
 # training belongs.
-#SBATCH --job-name=univtac-groot-finetune-one-ablation-arm-under-new-embodiment-tag
+#SBATCH --job-name=univtac-groot-finetune-one-ablation-variant-under-new-embodiment-tag
 #SBATCH --output=logs/%x-%j.out
 #SBATCH --error=logs/%x-%j.err
 #SBATCH --gres=gpu:1
 
 set -euo pipefail
 
-ARM="${ARM:-tactile}"                 # tactile | baseline_finetuned
+# ARM= was the old name for this. Honour it rather than ignoring it: an
+# unrecognised environment variable fails *silently*, so a stale
+# `ARM=baseline_finetuned` command would quietly run the tactile variant
+# instead -- a wrong result that looks like a right one. (A stale --arm flag
+# fails loudly on the CLI, so no alias is needed there.)
+if [[ -n "${ARM:-}" && -z "${VARIANT:-}" ]]; then
+  echo "[job] note: ARM is deprecated, use VARIANT (taking ARM=${ARM})" >&2
+  VARIANT="${ARM}"
+fi
+VARIANT="${VARIANT:-tactile}"                 # tactile | baseline_finetuned
 DATASET="${DATASET:?set DATASET to the converted LeRobot dataset root}"
 BASE_MODEL="${BASE_MODEL:-nvidia/GR00T-N1.7-3B}"
-OUTPUT_DIR="${OUTPUT_DIR:-${SCRATCH:-/tmp}/univtac-groot-${ARM}}"
+OUTPUT_DIR="${OUTPUT_DIR:-${SCRATCH:-/tmp}/univtac-groot-${VARIANT}}"
 NUM_GPUS="${NUM_GPUS:-1}"
 
 # Locate the repo. `dirname "${BASH_SOURCE[0]}"` is NOT reliable here: under
@@ -58,7 +67,7 @@ fi
 GROOT_ROOT="${GROOT_ROOT:?set GROOT_ROOT to the Isaac-GR00T checkout}"
 GROOT_PYTHON="${GROOT_PYTHON:?set GROOT_PYTHON to the GR00T interpreter, e.g. Isaac-GR00T/.venv/bin/python}"
 
-if [[ "${ARM}" == "tactile" ]]; then
+if [[ "${VARIANT}" == "tactile" ]]; then
   MODALITY_CONFIG="${REPO_ROOT}/configs/modality/univtac_tactile_config.py"
 else
   MODALITY_CONFIG="${REPO_ROOT}/configs/modality/univtac_baseline_config.py"
@@ -104,10 +113,10 @@ WANDB_ARGS=()
 if [[ "${USE_WANDB:-1}" == "1" ]]; then
   export WANDB_DIR="${WANDB_DIR:-${OUTPUT_DIR}/wandb}"
   mkdir -p "${WANDB_DIR}"
-  # Group both ablation arms under one name so they overlay on the same plots.
+  # Group both ablation variants under one name so they overlay on the same plots.
   export WANDB_RUN_GROUP="${WANDB_RUN_GROUP:-univtac-${TASK:-unknown}}"
-  export WANDB_NAME="${WANDB_NAME:-${TASK:-unknown}-${ARM}-${SLURM_JOB_ID:-local}}"
-  export WANDB_TAGS="${WANDB_TAGS:-univtac,${ARM},gr00t-n1d7}"
+  export WANDB_NAME="${WANDB_NAME:-${TASK:-unknown}-${VARIANT}-${SLURM_JOB_ID:-local}}"
+  export WANDB_TAGS="${WANDB_TAGS:-univtac,${VARIANT},gr00t-n1d7}"
 
   if [[ -z "${WANDB_MODE:-}" ]]; then
     if [[ -n "${WANDB_API_KEY:-}" ]]; then
@@ -128,7 +137,7 @@ else
 fi
 
 echo "=========================================================="
-echo " arm=${ARM}  dataset=${DATASET}"
+echo " variant=${VARIANT}  dataset=${DATASET}"
 echo " base=${BASE_MODEL}  modality=${MODALITY_CONFIG}"
 echo " out=${OUTPUT_DIR}  gpus=${NUM_GPUS}"
 echo "=========================================================="
@@ -148,4 +157,4 @@ cd "${GROOT_ROOT}"
 
 echo "[job] finetune finished; checkpoints under ${OUTPUT_DIR}"
 echo "[job] evaluate with:"
-echo "  sbatch --export=ALL,ARM=${ARM},TASK=<task>,GROOT_MODEL=${OUTPUT_DIR}/<checkpoint> ${REPO_ROOT}/slurm/eval_ablation.sbatch"
+echo "  sbatch --export=ALL,VARIANT=${VARIANT},TASK=<task>,GROOT_MODEL=${OUTPUT_DIR}/<checkpoint> ${REPO_ROOT}/slurm/eval_ablation.sbatch"

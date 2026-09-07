@@ -201,7 +201,7 @@ class StateField:
 
 @dataclass
 class ObsSpec:
-    """Full observation contract for one ablation arm.
+    """Full observation contract for one ablation variant.
 
     Attributes:
         video_keys: mapping ``gr00t video key -> UniVTAC camera name``, e.g.

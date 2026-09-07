@@ -1,11 +1,11 @@
-"""The two ablation arms, as observation specs the whole pipeline shares.
+"""The two ablation variants, as observation specs the whole pipeline shares.
 
-Both arms keep vision, language, proprioception and the embodiment id identical;
+Both variants keep vision, language, proprioception and the embodiment id identical;
 they differ only in whether the UniVTAC tactile stream is folded into the 1-D
 state vector. That is the comparison the study is after, so the specs are built
 from one common proprioception layout to make accidental divergence impossible.
 
-Two things constrain what an arm may declare, both verified in the upstream
+Two things constrain what an variant may declare, both verified in the upstream
 source rather than assumed:
 
 1.  **State width.** ``GR00T_N1d7Config.max_state_dim`` is 132. Proprioception
@@ -19,17 +19,17 @@ source rather than assumed:
     tags ship in no released checkpoint — see
     ``gr00t/data/embodiment_tags.py::FINETUNE_ONLY_TAGS``. So:
 
-    * the *baseline* arm runs zero-shot on ``nvidia/GR00T-N1.7-3B`` under
+    * the *baseline* variant runs zero-shot on ``nvidia/GR00T-N1.7-3B`` under
       ``OXE_DROID_RELATIVE_EEF_RELATIVE_JOINT``, whose state keys
       (``eef_9d``, ``gripper_position``, ``joint_position``) the UniVTAC Franka
       Panda maps onto directly — DROID is itself a Franka Panda;
-    * the *tactile* arm requires a checkpoint finetuned under
+    * the *tactile* variant requires a checkpoint finetuned under
       ``NEW_EMBODIMENT`` with a matching modality config
       (``configs/modality/univtac_tactile_config.py``).
 
-    A like-for-like study therefore finetunes both arms with the same recipe and
+    A like-for-like study therefore finetunes both variants with the same recipe and
     compares those two; the zero-shot baseline is a separate, useful reference
-    point, not the tactile arm's control. ``docs/ABLATION.md`` spells this out.
+    point, not the tactile variant's control. ``docs/ABLATION.md`` spells this out.
 """
 
 from __future__ import annotations
@@ -73,7 +73,7 @@ TACTILE_VIDEO_KEYS = {
 
 
 # --------------------------------------------------------------------------- #
-# Proprioception layout, shared by both arms
+# Proprioception layout, shared by both variants
 # --------------------------------------------------------------------------- #
 
 PROPRIO_FIELDS: tuple[StateField, ...] = (
@@ -104,7 +104,7 @@ def tactile_state_fields(tactile: TactileSpec) -> tuple[StateField, ...]:
 
 
 # --------------------------------------------------------------------------- #
-# Arm builders
+# Variant builders
 # --------------------------------------------------------------------------- #
 
 
@@ -114,12 +114,12 @@ def baseline_spec(
     video_keys: dict[str, str] | None = None,
     image_size: tuple[int, int] = (256, 256),
 ) -> ObsSpec:
-    """Arm A -- vision + language + proprioception + embodiment id. No tactile.
+    """Variant A -- vision + language + proprioception + embodiment id. No tactile.
 
     Defaults target the zero-shot ``OXE_DROID_RELATIVE_EEF_RELATIVE_JOINT`` tag.
     ``video_delta_indices`` is left at ``(0,)`` here and overwritten from the
     live policy at runtime (that tag actually asks for ``(-15, 0)``); see
-    :func:`univtac_groot.arms.with_horizons`.
+    :func:`univtac_groot.variants.with_horizons`.
     """
     return ObsSpec(
         video_keys=dict(video_keys or DROID_VIDEO_KEYS),
@@ -141,7 +141,7 @@ def tactile_spec(
     image_size: tuple[int, int] = (256, 256),
     tactile_image_size: tuple[int, int] = (256, 256),
 ) -> ObsSpec:
-    """Arm B -- the baseline plus the flattened UniVTAC tactile array in the state.
+    """Variant B -- the baseline plus the flattened UniVTAC tactile array in the state.
 
     Args:
         mode: ``'depth_pool'`` (pooled gel height map, the default),
@@ -172,7 +172,7 @@ def tactile_spec(
 
 
 def finetuned_baseline_spec(**kwargs) -> ObsSpec:
-    """Arm A under ``NEW_EMBODIMENT``, i.e. the tactile arm's true control.
+    """Variant A under ``NEW_EMBODIMENT``, i.e. the tactile variant's true control.
 
     Same proprioception and video keys as :func:`tactile_spec`, tactile removed,
     so the only difference between the two finetunes is the tactile dimensions.
@@ -182,23 +182,23 @@ def finetuned_baseline_spec(**kwargs) -> ObsSpec:
     return baseline_spec(**kwargs)
 
 
-ARMS = {
+VARIANTS = {
     "baseline": baseline_spec,
     "baseline_finetuned": finetuned_baseline_spec,
     "tactile": tactile_spec,
 }
-"""Registry used by ``scripts/run_eval.py --arm`` and the deploy YAMLs."""
+"""Registry used by ``scripts/run_eval.py --variant`` and the deploy YAMLs."""
 
 
-def build_spec(arm: str, **kwargs) -> ObsSpec:
-    """Build an :class:`ObsSpec` by arm name.
+def build_spec(variant: str, **kwargs) -> ObsSpec:
+    """Build an :class:`ObsSpec` by variant name.
 
     Raises:
-        KeyError: unknown arm name, listing the valid ones.
+        KeyError: unknown variant name, listing the valid ones.
     """
-    if arm not in ARMS:
-        raise KeyError(f"unknown arm {arm!r}; choose from {sorted(ARMS)}")
-    return ARMS[arm](**kwargs)
+    if variant not in VARIANTS:
+        raise KeyError(f"unknown variant {variant!r}; choose from {sorted(VARIANTS)}")
+    return VARIANTS[variant](**kwargs)
 
 
 def with_horizons(
@@ -209,7 +209,7 @@ def with_horizons(
 ) -> ObsSpec:
     """Return ``spec`` with the delta indices the live policy actually declares.
 
-    The arm builders cannot know these: they are a property of the checkpoint's
+    The variant builders cannot know these: they are a property of the checkpoint's
     embodiment config, fetched at runtime via ``get_modality_config``. A
     vision-only policy (``state_delta_indices is None``) keeps its state fields
     declared here but :class:`univtac_groot.history.ObsHistory` will drop the

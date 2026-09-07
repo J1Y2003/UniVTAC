@@ -130,7 +130,7 @@ The guideline flagged its own references as preliminary. What research changed:
    `scripts/convert_univtac_to_lerobot.py` writes directly. Pulling in
    `lerobot` as a library would add a torch dependency for no benefit.
 
-5. **The tactile arm cannot be evaluated zero-shot.** See
+5. **The tactile variant cannot be evaluated zero-shot.** See
    [ABLATION.md](ABLATION.md). This is the single most consequential finding for
    the experiment's design, and it follows from `FINETUNE_ONLY_TAGS` shipping in
    no checkpoint.
@@ -146,7 +146,7 @@ minor-version compatibility, but **cuDNN 9.13 fails to initialise**: its interna
 `CUDNN_STATUS_NOT_INITIALIZED`. Only the convolution path is affected --
 FlashAttention-2 and the DiT's SDPA path do not use cuDNN -- so
 `--disable-cudnn` is a viable workaround, applied identically to both ablation
-arms. See [SETUP.md](SETUP.md#common-failures).
+variants. See [SETUP.md](SETUP.md#common-failures).
 
 ## Things deliberately left to the operator
 
@@ -160,7 +160,7 @@ arms. See [SETUP.md](SETUP.md#common-failures).
 * **Video codec** — the demo dataset uses AV1; the converter writes H.264,
   which is far likelier to exist in a cluster ffmpeg build.
 * **Per-task camera sets** — `policy/task_settings.json` marks most tasks
-  `camera_type: head`, with `lift_can` and `insert_tube` as `all`. The arms
+  `camera_type: head`, with `lift_can` and `insert_tube` as `all`. The variants
   request both `head` and `wrist`; drop `wrist` from `video_keys` for
   head-only tasks if the stream turns out to be absent.
 

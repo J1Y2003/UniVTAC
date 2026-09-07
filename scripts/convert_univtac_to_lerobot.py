@@ -1,9 +1,9 @@
 """Convert UniVTAC demonstration HDF5 into the GR00T LeRobot v2 format.
 
-Needed because the tactile ablation arm cannot run zero-shot: extra state
+Needed because the tactile ablation variant cannot run zero-shot: extra state
 dimensions require the ``NEW_EMBODIMENT`` tag, which ships in no released
 checkpoint (``gr00t/data/embodiment_tags.py::FINETUNE_ONLY_TAGS``). Run this on
-UniVTAC's collected demonstrations, then finetune both arms with the same recipe
+UniVTAC's collected demonstrations, then finetune both variants with the same recipe
 (``slurm/finetune.sbatch``) so the only difference between them is the tactile
 state dimensions.
 
@@ -48,7 +48,7 @@ Output — the layout in ``getting_started/data_preparation.md``::
 
 State and action are written as single concatenated float32 arrays whose slices
 ``meta/modality.json`` names, exactly as the ``cube_to_bowl_5`` demo dataset
-does. The state layout matches :mod:`univtac_groot.arms` so that training and
+does. The state layout matches :mod:`univtac_groot.variants` so that training and
 evaluation agree dimension for dimension — the converter imports the same
 :class:`~univtac_groot.spec.ObsSpec` rather than restating the layout.
 
@@ -72,7 +72,7 @@ if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
 
 from univtac_groot.action_adapter import GripperConvention  # noqa: E402
-from univtac_groot.arms import build_spec  # noqa: E402
+from univtac_groot.variants import build_spec  # noqa: E402
 from univtac_groot.obs_adapter import (  # noqa: E402
     as_uint8_hwc,
     encode_tactile_state,
@@ -286,7 +286,7 @@ def read_episode(path: Path, spec: ObsSpec) -> dict[str, np.ndarray]:
 
     if out["state"].shape[1] != spec.state_dim:
         raise ValueError(
-            f"{path.name}: built a {out['state'].shape[1]}-D state but the arm's "
+            f"{path.name}: built a {out['state'].shape[1]}-D state but the variant's "
             f"ObsSpec declares {spec.state_dim}-D"
         )
     return out
@@ -394,7 +394,7 @@ def write_parquet(
 def build_modality_json(spec: ObsSpec, language_key: str) -> dict[str, Any]:
     """Emit ``meta/modality.json`` describing the concatenated array slices.
 
-    The slice boundaries come straight from the arm's :class:`ObsSpec`, so this
+    The slice boundaries come straight from the variant's :class:`ObsSpec`, so this
     file and the registered ``ModalityConfig`` cannot disagree.
     """
     state: dict[str, dict[str, int]] = {}
@@ -540,10 +540,10 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument("--out", required=True, help="output dataset root")
     parser.add_argument(
-        "--arm",
+        "--variant",
         default="tactile",
         choices=["baseline_finetuned", "tactile"],
-        help="state layout to emit; must match the arm you will finetune",
+        help="state layout to emit; must match the variant you will finetune",
     )
     parser.add_argument("--tactile-mode", default="depth_pool",
                         choices=["depth_pool", "marker", "video"])
@@ -573,21 +573,21 @@ def main(argv: list[str] | None = None) -> int:
 
     grid = (int(args.tactile_pool_grid[0]), int(args.tactile_pool_grid[1]))
     spec_kwargs: dict[str, Any] = {"image_size": (args.image_size[0], args.image_size[1])}
-    if args.arm == "tactile":
+    if args.variant == "tactile":
         spec_kwargs.update(
             mode=args.tactile_mode,
             sensor_names=tuple(args.tactile_sensors),
             pool_grid=grid,
             marker_pool=grid,
         )
-    spec = build_spec(args.arm, **spec_kwargs)
+    spec = build_spec(args.variant, **spec_kwargs)
 
     out_root = Path(args.out)
     (out_root / "meta").mkdir(parents=True, exist_ok=True)
     instruction = load_instruction(Path(args.univtac_root), args.task)
 
     print(f"[convert] {len(episodes)} episodes -> {out_root}")
-    print(f"[convert] arm={args.arm} state_dim={spec.state_dim} keys={list(spec.state_keys)}")
+    print(f"[convert] variant={args.variant} state_dim={spec.state_dim} keys={list(spec.state_keys)}")
 
     episode_lines: list[str] = []
     all_states: list[np.ndarray] = []

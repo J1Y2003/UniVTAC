@@ -10,7 +10,7 @@ one hit its walltime.
 Example::
 
     python scripts/compare_ablation.py --results-dir eval_result \
-        --baseline-arm baseline --tactile-arm tactile --json summary.json
+        --baseline-variant baseline --tactile-variant tactile --json summary.json
 """
 
 from __future__ import annotations
@@ -35,13 +35,13 @@ is where the sbatch script leaves the evaluator's cwd.
 """
 
 
-def collect(results_dir: Path, arm: str) -> dict[str, dict]:
-    """Summarise every task under ``<results_dir>/<arm>/<task>/*.jsonl``.
+def collect(results_dir: Path, variant: str) -> dict[str, dict]:
+    """Summarise every task under ``<results_dir>/<variant>/<task>/*.jsonl``.
 
     Multiple JSONL files for one task (e.g. seed-sharded array jobs) are pooled
     into a single summary.
     """
-    arm_dir = results_dir / arm
+    arm_dir = results_dir / variant
     if not arm_dir.is_dir():
         return {}
 
@@ -55,13 +55,13 @@ def collect(results_dir: Path, arm: str) -> dict[str, dict]:
             # double-count. Last write wins.
             deduped = {r.seed: r for r in records}
             per_task[task_dir.name] = summarize(
-                deduped.values(), metadata={"arm": arm, "task": task_dir.name}
+                deduped.values(), metadata={"variant": variant, "task": task_dir.name}
             )
     return per_task
 
 
 def pooled(per_task: dict[str, dict]) -> dict:
-    """Pool per-task summaries into one arm-level summary.
+    """Pool per-task summaries into one variant-level summary.
 
     Tasks are pooled by raw episode counts, so a task evaluated with more
     episodes carries more weight. The macro (per-task unweighted) mean is
@@ -135,11 +135,11 @@ def no_results_message(results_dir: Path, args, *, exists: bool) -> str:
     if exists:
         found = sorted(p.name for p in results_dir.iterdir() if p.is_dir())
         lines.append(
-            f"No episode results for arms {args.baseline_arm!r} / {args.tactile_arm!r} "
+            f"No episode results for variants {args.baseline_variant!r} / {args.tactile_variant!r} "
             f"under {results_dir}"
         )
         if found:
-            lines.append(f"  arms present: {found}  (use --baseline-arm / --tactile-arm)")
+            lines.append(f"  variants present: {found}  (use --baseline-variant / --tactile-variant)")
         else:
             lines.append("  the directory is empty")
     else:
@@ -150,7 +150,7 @@ def no_results_message(results_dir: Path, args, *, exists: bool) -> str:
         "",
         "Nothing to compare yet -- run at least one evaluation first:",
         "",
-        "  sbatch --export=ALL,ARM=baseline,TASK=insert_hole slurm/eval_ablation.sbatch",
+        "  sbatch --export=ALL,VARIANT=baseline,TASK=insert_hole slurm/eval_ablation.sbatch",
         "",
         "That needs UNIVTAC_ROOT, UNIVTAC_PYTHON and GROOT_PYTHON exported; see",
         "docs/SETUP.md. Evaluation is GPU work, so it must go to a compute node.",
@@ -163,16 +163,16 @@ def no_results_message(results_dir: Path, args, *, exists: bool) -> str:
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
-        description="Compare the baseline and tactile ablation arms.",
+        description="Compare the baseline and tactile ablation variants.",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
     parser.add_argument(
         "--results-dir",
         default=str(DEFAULT_RESULTS_DIR),
-        help="directory holding <arm>/<task>/*.jsonl result files",
+        help="directory holding <variant>/<task>/*.jsonl result files",
     )
-    parser.add_argument("--baseline-arm", default="baseline")
-    parser.add_argument("--tactile-arm", default="tactile")
+    parser.add_argument("--baseline-variant", default="baseline")
+    parser.add_argument("--tactile-variant", default="tactile")
     parser.add_argument("--json", default=None, help="also write the summary here")
     args = parser.parse_args(argv)
 
@@ -180,16 +180,16 @@ def main(argv: list[str] | None = None) -> int:
     if not results_dir.is_dir():
         raise SystemExit(no_results_message(results_dir, args, exists=False))
 
-    baseline = collect(results_dir, args.baseline_arm)
-    tactile = collect(results_dir, args.tactile_arm)
+    baseline = collect(results_dir, args.baseline_variant)
+    tactile = collect(results_dir, args.tactile_variant)
     if not baseline and not tactile:
         raise SystemExit(no_results_message(results_dir, args, exists=True))
 
     print(format_table(baseline, tactile))
 
     blob = {
-        "baseline_arm": args.baseline_arm,
-        "tactile_arm": args.tactile_arm,
+        "baseline_variant": args.baseline_variant,
+        "tactile_variant": args.tactile_variant,
         "per_task": {
             task: compare(baseline.get(task, {}), tactile.get(task, {}))
             for task in sorted(set(baseline) | set(tactile))

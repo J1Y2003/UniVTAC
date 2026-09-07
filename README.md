@@ -2,9 +2,9 @@
 
 An evaluation pipeline for benchmarking [`nvidia/GR00T-N1.7-3B`](https://huggingface.co/nvidia/GR00T-N1.7-3B)
 on the [UniVTAC](https://github.com/univtac/UniVTAC) visuo-tactile manipulation
-benchmark, set up as a two-arm ablation:
+benchmark, set up as a two-variant ablation:
 
-| Arm | Observation | Checkpoint |
+| Variant | Observation | Checkpoint |
 | --- | --- | --- |
 | **Baseline** | vision + language + 1-D proprioception + embodiment id | zero-shot on the released model |
 | **Tactile** | the same, with the flattened UniVTAC tactile array concatenated onto the state vector | **requires a finetune** — see [docs/ABLATION.md](docs/ABLATION.md) |
@@ -28,11 +28,11 @@ Or just ask the repo where you are:
 python scripts/preflight.py --deep     # checklist + the exact next command
 ```
 
-> **Read [docs/ABLATION.md](docs/ABLATION.md) before running the tactile arm.**
+> **Read [docs/ABLATION.md](docs/ABLATION.md) before running the tactile variant.**
 > Adding tactile dimensions changes the state layout, and GR00T's state
-> projector is embodiment-conditioned, so the tactile arm only runs under the
-> `NEW_EMBODIMENT` tag — which ships in no released checkpoint. The baseline arm
-> runs zero-shot today; the tactile arm needs a finetune first. This is a
+> projector is embodiment-conditioned, so the tactile variant only runs under the
+> `NEW_EMBODIMENT` tag — which ships in no released checkpoint. The baseline variant
+> runs zero-shot today; the tactile variant needs a finetune first. This is a
 > property of the model, not of this code.
 
 ---
@@ -94,9 +94,9 @@ export UNIVTAC_PYTHON=$(conda run -n UniVTAC which python)
 export GROOT_PYTHON=~/Isaac-GR00T/.venv/bin/python   # uv's venv, not a conda env
 
 # Baseline, one task, 50 episodes
-sbatch --export=ALL,ARM=baseline,TASK=insert_hole slurm/eval_ablation.sbatch
+sbatch --export=ALL,VARIANT=baseline,TASK=insert_hole slurm/eval_ablation.sbatch
 
-# The full sweep: both arms x eight tasks
+# The full sweep: both variants x eight tasks
 TACTILE_MODEL=/ckpt/univtac-tactile/checkpoint-20000 bash slurm/submit_ablation.sh
 
 # Aggregate (safe on a login node: reads scalars only)
@@ -112,14 +112,14 @@ python -m univtac_groot.server.run_server \
     --embodiment-tag OXE_DROID_RELATIVE_EEF_RELATIVE_JOINT --port 5555
 
 # terminal 2 — UniVTAC environment
-python scripts/run_eval.py --task insert_hole --arm baseline \
+python scripts/run_eval.py --task insert_hole --variant baseline \
     --univtac-root "$UNIVTAC_ROOT" --port 5555 \
     --episodes 50 --execution-horizon 8
 ```
 
 `--dry-run` queries the running server and prints the resolved observation
 contract, then exits without starting Isaac Sim — the cheapest way to check that
-an arm and a checkpoint agree. The full preflight ladder is in
+an variant and a checkpoint agree. The full preflight ladder is in
 [docs/SETUP.md](docs/SETUP.md#preflight-cheapest-first).
 
 ### Using UniVTAC's own harness instead
@@ -146,10 +146,10 @@ univtac_groot/
   env_wrapper.py        Gymnasium surface over UniVTAC's BaseTask
   rollout.py            Episode loop: seeding, logging, error handling
   metrics.py            JSONL results, success rates, Wilson intervals
-  arms.py               The two ablation arms as one shared spec
+  variants.py               The two ablation variants as one shared spec
   server/run_server.py  GR00T-side inference server
 policy/GR00T/           Drop-in plug-in for UniVTAC's own evaluator
-configs/modality/       GR00T ModalityConfigs for the finetuned arms
+configs/modality/       GR00T ModalityConfigs for the finetuned variants
 scripts/
   run_eval.py                    Headless eval driver
   compare_ablation.py            Ablation table
@@ -158,7 +158,7 @@ slurm/
   install_univtac.sbatch  Batch-safe wrapper for UniVTAC's install.sh
   eval_ablation.sbatch    Server + evaluator in one GPU job
   convert.sbatch          Dataset conversion (CPU-only, array-capable)
-  finetune.sbatch         GR00T finetune for an arm
+  finetune.sbatch         GR00T finetune for an variant
   submit_ablation.sh      Sweep submitter
   preflight.py                   Setup checklist; prints the next command
 docs/RUNBOOK.md         Ordered: nothing -> an evaluation number  <- start here
@@ -198,7 +198,7 @@ chunks by default (`GR00T_N1d7Config.action_horizon`), the shipped posttrain
 configs use 16 or 8, and the DROID tag wants a two-frame observation history
 (`video_delta_indices = [-15, 0]`). `resolve_spec_from_policy` reads the live
 `get_modality_config` and sizes the history buffer and controller from it, and
-fails with an actionable message when an arm and a checkpoint disagree.
+fails with an actionable message when an variant and a checkpoint disagree.
 
 **Results survive a walltime kill.** Episodes are appended to JSONL as they
 finish and never held in memory beyond scalars; `summarize_jsonl` re-aggregates

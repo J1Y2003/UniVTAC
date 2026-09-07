@@ -1,21 +1,21 @@
 # The ablation: does tactile in the state vector help GR00T N1.7?
 
-The study compares two arms that differ in exactly one respect:
+The study compares two variants that differ in exactly one respect:
 
-* **Arm A (baseline).** Vision, language instruction, 1-D proprioception,
+* **Variant A (baseline).** Vision, language instruction, 1-D proprioception,
   embodiment id.
-* **Arm B (tactile).** The same, plus the flattened UniVTAC tactile array
+* **Variant B (tactile).** The same, plus the flattened UniVTAC tactile array
   concatenated onto the proprioception vector.
 
-`univtac_groot/arms.py` builds both from one shared `PROPRIO_FIELDS` tuple, so
-the arms cannot drift apart by accident, and `tests/test_obs_adapter.py`
+`univtac_groot/variants.py` builds both from one shared `PROPRIO_FIELDS` tuple, so
+the variants cannot drift apart by accident, and `tests/test_obs_adapter.py`
 asserts that the proprioception slices are bit-identical between them.
 
 ---
 
 ## The constraint that shapes the whole experiment
 
-**Arm B cannot run zero-shot on `nvidia/GR00T-N1.7-3B`.** Three facts from the
+**Variant B cannot run zero-shot on `nvidia/GR00T-N1.7-3B`.** Three facts from the
 upstream source combine to force this:
 
 1. GR00T's state projector is *embodiment-conditioned*
@@ -43,13 +43,13 @@ no way to read a useful zero-shot tactile number off the released weights.
 
 The like-for-like comparison is between two finetunes that share a recipe,
 dataset, action space and execution horizon, and differ only in the tactile
-state dimensions. That is what `--arm baseline_finetuned` exists for; the
-zero-shot baseline is a useful reference point, not Arm B's control.
+state dimensions. That is what `--variant baseline_finetuned` exists for; the
+zero-shot baseline is a useful reference point, not Variant B's control.
 
-Reporting the zero-shot baseline against a finetuned tactile arm would
+Reporting the zero-shot baseline against a finetuned tactile variant would
 attribute the entire finetuning effect to tactile sensing. `scripts/compare_ablation.py`
-takes `--baseline-arm`, so point it at `baseline_finetuned` for the headline
-number and report the zero-shot arm separately.
+takes `--baseline-variant`, so point it at `baseline_finetuned` for the headline
+number and report the zero-shot variant separately.
 
 ## Running it end to end
 
@@ -57,23 +57,23 @@ number and report the zero-shot arm separately.
 # 0. Collect demonstrations with UniVTAC (its own tooling)
 cd "$UNIVTAC_ROOT" && bash collect_data.sh insert_hole demo
 
-# 1. Convert once per arm — the state layout differs
+# 1. Convert once per variant — the state layout differs
 python scripts/convert_univtac_to_lerobot.py --task insert_hole \
     --raw-dir "$UNIVTAC_ROOT/data/insert_hole/demo" \
-    --out "$DATA/univtac-insert_hole-baseline" --arm baseline_finetuned
+    --out "$DATA/univtac-insert_hole-baseline" --variant baseline_finetuned
 python scripts/convert_univtac_to_lerobot.py --task insert_hole \
     --raw-dir "$UNIVTAC_ROOT/data/insert_hole/demo" \
-    --out "$DATA/univtac-insert_hole-tactile" --arm tactile
+    --out "$DATA/univtac-insert_hole-tactile" --variant tactile
 
 # 2. Finetune both, same recipe
-sbatch --export=ALL,ARM=baseline_finetuned,DATASET=$DATA/univtac-insert_hole-baseline slurm/finetune.sbatch
-sbatch --export=ALL,ARM=tactile,DATASET=$DATA/univtac-insert_hole-tactile           slurm/finetune.sbatch
+sbatch --export=ALL,VARIANT=baseline_finetuned,DATASET=$DATA/univtac-insert_hole-baseline slurm/finetune.sbatch
+sbatch --export=ALL,VARIANT=tactile,DATASET=$DATA/univtac-insert_hole-tactile           slurm/finetune.sbatch
 
-# 3. Evaluate all three arms
-bash slurm/submit_ablation.sh   # ARMS="baseline baseline_finetuned tactile"
+# 3. Evaluate all three variants
+bash slurm/submit_ablation.sh   # VARIANTS="baseline baseline_finetuned tactile"
 
 # 4. Table
-python scripts/compare_ablation.py --baseline-arm baseline_finetuned --tactile-arm tactile
+python scripts/compare_ablation.py --baseline-variant baseline_finetuned --tactile-variant tactile
 ```
 
 ## How tactile enters the observation
@@ -106,7 +106,7 @@ a bad grid fails at construction rather than mid-episode.
 `video` mode deserves consideration on its merits: GR00T's vision encoder is
 built for images, and a marker overlay makes shear visible in a way a pooled
 scalar field does not. It is not the ablation as specified (the state vector is
-untouched), so it is offered as a third arm rather than the default.
+untouched), so it is offered as a third variant rather than the default.
 
 **The pooling grid is part of the model contract.** It must match the
 `tactile_*` widths in `configs/modality/univtac_tactile_config.py` and the
@@ -129,8 +129,8 @@ nothing here hard-codes one. `resolve_spec_from_policy` reads
 `action.delta_indices` is the contiguous `range(0, H)`, because the chunk is
 indexed linearly and a sparse window would silently execute the wrong rows.
 
-**Keep `execution_horizon` identical across arms.** It sets the closed-loop
-rate, which strongly affects contact-rich tasks; varying it between arms would
+**Keep `execution_horizon` identical across variants.** It sets the closed-loop
+rate, which strongly affects contact-rich tasks; varying it between variants would
 confound the tactile comparison. The default of 8 against UniVTAC's
 `step_lim = 300` keeps roughly 37 decisions per episode.
 
@@ -143,12 +143,12 @@ depress a success rate to zero while looking like a negative tactile result.
 `RobotManager.gripper_max_qpos` (0.039 m), with larger meaning *more open*.
 DROID-style checkpoints usually emit a normalised scalar where 1.0 means
 *closed*. `GripperConvention(invert=True)` is the default for the zero-shot
-baseline and `invert=False` for arms finetuned through this repo's converter
+baseline and `invert=False` for variants finetuned through this repo's converter
 (which writes the UniVTAC convention). Verify against your checkpoint before
 trusting a low number: log a few predicted `gripper_position` values and check
 whether the fingers close when they should.
 
-**2. Action space for the zero-shot arm.** The DROID tag returns `eef_9d`
+**2. Action space for the zero-shot variant.** The DROID tag returns `eef_9d`
 (relative EEF), `joint_position` (relative joint) and `gripper_position`.
 `--action-type qpos` uses `joint_position + gripper_position`, which maps
 directly onto UniVTAC's 8-D `qpos` path; `--action-type ee` uses `eef_9d`
@@ -157,7 +157,7 @@ practice — the joint path is more faithful to what the model predicts, the EEF
 path is more robust to joint-space offsets between DROID's Panda mounting and
 UniVTAC's. Try both on one task before committing the sweep.
 
-**3. Camera correspondence.** The baseline arm maps UniVTAC's `head` camera onto
+**3. Camera correspondence.** The baseline variant maps UniVTAC's `head` camera onto
 DROID's `exterior_image_1_left` and `wrist` onto `wrist_image_left`. The
 viewpoints are similar in kind, not calibrated to each other. Note also that
 `policy/task_settings.json` marks most tasks `camera_type: head` — `lift_can`
@@ -167,7 +167,7 @@ fed something it was not trained on.
 
 **4. Control rate.** UniVTAC steps at `decimation = 1` over a 1/120 s sim step;
 DROID data is 15 Hz. A per-step joint delta learned at 15 Hz means something
-different at the sim's rate. This mostly affects the zero-shot arm; a finetune
+different at the sim's rate. This mostly affects the zero-shot variant; a finetune
 learns the deployment rate from the data.
 
 ## Reading the results
@@ -175,7 +175,7 @@ learns the deployment rate from the data.
 `scripts/compare_ablation.py` reports per-task and pooled success rates with
 Wilson 95 % intervals, plus whether the intervals overlap. With 50 episodes per
 task an interval is roughly ±14 points near 50 %, so a single task rarely
-separates the arms; the pooled and macro rows across the eight tasks are the
+separates the variants; the pooled and macro rows across the eight tasks are the
 numbers to read. Overlap is a conservative signal, not a hypothesis test —
 report both intervals rather than claiming significance.
 

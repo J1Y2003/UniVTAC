@@ -55,13 +55,13 @@ class ResultWriter:
 
     Args:
         path: JSONL destination. Parent directories are created.
-        metadata: run-level context (arm, task, checkpoint, horizons) recorded
+        metadata: run-level context (variant, task, checkpoint, horizons) recorded
             in the summary so a results directory is self-describing.
 
     Example:
         >>> import tempfile, os
         >>> d = tempfile.mkdtemp()
-        >>> w = ResultWriter(os.path.join(d, "r.jsonl"), {"arm": "baseline"})
+        >>> w = ResultWriter(os.path.join(d, "r.jsonl"), {"variant": "baseline"})
         >>> w.add(EpisodeResult(seed=1, success=True, reward=1.0, steps=10,
         ...                     truncated=False, early_stop=False))
         >>> w.summary()["success_rate"]
@@ -152,7 +152,7 @@ def summarize(
     }
     if n:
         # Wilson score interval: with 20-50 episodes per task the normal
-        # approximation is too loose to compare arms honestly.
+        # approximation is too loose to compare variants honestly.
         lo, hi = wilson_interval(len(successes), n)
         summary["success_rate_ci95"] = [round(lo, 6), round(hi, 6)]
     if wall_seconds is not None:

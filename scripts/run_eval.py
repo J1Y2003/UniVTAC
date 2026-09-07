@@ -1,9 +1,9 @@
-"""Headless evaluation driver: one arm, one UniVTAC task, N episodes.
+"""Headless evaluation driver: one variant, one UniVTAC task, N episodes.
 
 This is the standalone path — it constructs the Isaac Lab app itself and drives
 :class:`~univtac_groot.env_wrapper.UniVTACGr00tEnv` through
 :func:`univtac_groot.rollout.evaluate`. Use it when you want this repo's result
-files (JSONL + summary JSON) and per-arm SLURM jobs. If you would rather stay
+files (JSONL + summary JSON) and per-variant SLURM jobs. If you would rather stay
 inside UniVTAC's own harness, use ``policy/GR00T`` with ``eval_policy.sh``
 instead; both share the same adapters.
 
@@ -17,7 +17,7 @@ already listening (``univtac_groot.server.run_server`` in the GR00T environment)
 Example::
 
     python scripts/run_eval.py \
-        --task insert_hole --task-config demo --arm baseline \
+        --task insert_hole --task-config demo --variant baseline \
         --host 127.0.0.1 --port 5555 \
         --episodes 50 --execution-horizon 8 \
         --output eval_result/baseline/insert_hole.jsonl
@@ -51,10 +51,10 @@ def build_parser() -> argparse.ArgumentParser:
         help="stem of a file in UniVTAC/task_config (demo, contact, clean)",
     )
     parser.add_argument(
-        "--arm",
+        "--variant",
         default="baseline",
         choices=["baseline", "baseline_finetuned", "tactile"],
-        help="ablation arm; 'tactile' concatenates the tactile array onto the state",
+        help="ablation variant; 'tactile' concatenates the tactile array onto the state",
     )
     parser.add_argument(
         "--univtac-root",
@@ -67,7 +67,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--tactile-mode",
         default="depth_pool",
         choices=["depth_pool", "marker", "video"],
-        help="how tactile enters the observation (--arm tactile only)",
+        help="how tactile enters the observation (--variant tactile only)",
     )
     parser.add_argument(
         "--tactile-sensors",
@@ -111,7 +111,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--gripper-invert",
         default=None,
         type=lambda v: str(v).lower() in ("1", "true", "yes"),
-        help="policy gripper scalar means closed at 1.0; default: true for --arm baseline",
+        help="policy gripper scalar means closed at 1.0; default: true for --variant baseline",
     )
 
     # -- episodes ---------------------------------------------------------
@@ -136,7 +136,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--output",
         default=None,
-        help="results JSONL path; default eval_result/<arm>/<task>/<timestamp>.jsonl",
+        help="results JSONL path; default eval_result/<variant>/<task>/<timestamp>.jsonl",
     )
     parser.add_argument(
         "--device", default=None, help="Isaac Lab sim device, e.g. cuda:0"
@@ -160,15 +160,15 @@ def resolve_output(args: argparse.Namespace) -> Path:
     if args.output:
         return Path(args.output).expanduser()
     stamp = time.strftime("%Y%m%d-%H%M%S")
-    return _REPO_ROOT / "eval_result" / args.arm / args.task / f"{stamp}.jsonl"
+    return _REPO_ROOT / "eval_result" / args.variant / args.task / f"{stamp}.jsonl"
 
 
 def build_arm_spec(args: argparse.Namespace):
-    """Build the observation spec for the requested arm."""
-    from univtac_groot.arms import build_spec
+    """Build the observation spec for the requested variant."""
+    from univtac_groot.variants import build_spec
 
     kwargs = {}
-    if args.arm == "tactile":
+    if args.variant == "tactile":
         grid = (int(args.tactile_pool_grid[0]), int(args.tactile_pool_grid[1]))
         kwargs = {
             "mode": args.tactile_mode,
@@ -176,7 +176,7 @@ def build_arm_spec(args: argparse.Namespace):
             "pool_grid": grid,
             "marker_pool": grid,
         }
-    return build_spec(args.arm, **kwargs)
+    return build_spec(args.variant, **kwargs)
 
 
 def load_instructions(univtac_root: Path, task: str, kind: str = "seen") -> list[str] | None:
@@ -215,7 +215,7 @@ def check_tactile_available(task_config: dict, args: argparse.Namespace) -> None
     (``BaseTask._get_observations`` -> ``TactileManager.get_observations``), so a
     missing entry would surface mid-episode as a ``KeyError`` on seed 1.
     """
-    if args.arm != "tactile":
+    if args.variant != "tactile":
         return
     available = set((task_config.get("observations") or {}).get("tactile") or [])
     needed = {"depth_pool": "depth", "marker": "marker", "video": "rgb"}[args.tactile_mode]
@@ -246,7 +246,7 @@ def main(argv: list[str] | None = None) -> int:
 
     spec = build_arm_spec(args)
     output = resolve_output(args)
-    print(f"[eval] arm={args.arm} task={args.task} -> {output}")
+    print(f"[eval] variant={args.variant} task={args.task} -> {output}")
 
     # -- connect to the model ------------------------------------------------
     client = Gr00tClient(
@@ -262,7 +262,7 @@ def main(argv: list[str] | None = None) -> int:
     )
 
     gripper_invert = (
-        args.gripper_invert if args.gripper_invert is not None else args.arm == "baseline"
+        args.gripper_invert if args.gripper_invert is not None else args.variant == "baseline"
     )
     action_adapter = ActionAdapter(
         action_type=args.action_type,  # type: ignore[arg-type]
@@ -272,7 +272,7 @@ def main(argv: list[str] | None = None) -> int:
     )
 
     metadata = {
-        "arm": args.arm,
+        "variant": args.variant,
         "task": args.task,
         "task_config": args.task_config,
         "tactile_mode": spec.tactile.mode,
@@ -354,7 +354,7 @@ def build_env(args, univtac_root: Path, spec, action_adapter, task_config: dict)
 
     env_cfg = task_module.TaskCfg()
     stamp = time.strftime("%Y-%m-%d_%H-%M-%S")
-    env_cfg.save_dir = _REPO_ROOT / "eval_result" / "raw" / args.arm / args.task / stamp
+    env_cfg.save_dir = _REPO_ROOT / "eval_result" / "raw" / args.variant / args.task / stamp
     env_cfg.decimation = task_config.get("decimation", env_cfg.decimation)
     env_cfg.obs_data_type = task_config.get("observations", {})
     env_cfg.save_frequency = task_config.get("save_frequency", env_cfg.save_frequency)
