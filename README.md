@@ -10,9 +10,17 @@ benchmark, set up as a two-arm ablation:
 | **Tactile** | the same, with the flattened UniVTAC tactile array concatenated onto the state vector | **requires a finetune** — see [docs/ABLATION.md](docs/ABLATION.md) |
 
 Everything runs headlessly under `sbatch`. No script prompts, opens a GUI, or
-needs a login-node GPU — see
-[docs/SETUP.md](docs/SETUP.md#working-from-an-ssh-login-node) for what may run on
-a login node and what must be submitted to a compute node.
+needs a login-node GPU.
+
+### Start here
+
+**[docs/RUNBOOK.md](docs/RUNBOOK.md) — the ordered sequence** from nothing to an
+evaluation number, each step labelled with where it runs and which conda env.
+Or just ask the repo where you are:
+
+```bash
+python scripts/preflight.py --deep     # checklist + the exact next command
+```
 
 > **Read [docs/ABLATION.md](docs/ABLATION.md) before running the tactile arm.**
 > Adding tactile dimensions changes the state layout, and GR00T's state
@@ -145,7 +153,9 @@ slurm/
   convert.sbatch          Dataset conversion (CPU-only, array-capable)
   finetune.sbatch         GR00T finetune for an arm
   submit_ablation.sh      Sweep submitter
-docs/SETUP.md           Prerequisites, preflight, common failures
+  preflight.py                   Setup checklist; prints the next command
+docs/RUNBOOK.md         Ordered: nothing -> an evaluation number  <- start here
+docs/SETUP.md           Prerequisites, environments, common failures
 docs/ABLATION.md        Experimental design, constraints, calibration checks
 docs/UPSTREAM.md        Every upstream fact this code relies on, with citations
 tests/                  94 tests; no GPU, Isaac Sim, or gr00t needed

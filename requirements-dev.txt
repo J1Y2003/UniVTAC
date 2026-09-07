@@ -1,5 +1,10 @@
-# Everything needed to run the test suite. No GPU, Isaac Sim or gr00t required.
+# Everything needed to run the test suite and this repo's tooling (preflight,
+# result aggregation). No GPU, Isaac Sim or gr00t required.
 #
+# Install into a DEDICATED env, never into a shared `base`:
+#
+#   conda create -n univtac-groot python=3.11 -y
+#   conda activate univtac-groot
 #   pip install -r requirements-dev.txt && pytest tests -q
 
 -r requirements-client.txt

@@ -26,6 +26,14 @@ if str(_REPO_ROOT) not in sys.path:
 
 from univtac_groot.metrics import compare, read_jsonl, summarize  # noqa: E402
 
+DEFAULT_RESULTS_DIR = _REPO_ROOT / "eval_result"
+"""Where ``slurm/eval_ablation.sbatch`` writes: ``$REPO_ROOT/eval_result``.
+
+Anchored to the repo rather than the working directory so this works from
+anywhere -- notably from inside ``scripts/``, and from ``$UNIVTAC_ROOT``, which
+is where the sbatch script leaves the evaluator's cwd.
+"""
+
 
 def collect(results_dir: Path, arm: str) -> dict[str, dict]:
     """Summarise every task under ``<results_dir>/<arm>/<task>/*.jsonl``.
@@ -117,27 +125,65 @@ def format_table(baseline: dict[str, dict], tactile: dict[str, dict]) -> str:
     return "\n".join(lines)
 
 
+def no_results_message(results_dir: Path, args, *, exists: bool) -> str:
+    """Explain an empty result set and name the next action.
+
+    Reaching here almost always means no evaluation has been run yet, so say
+    that rather than reporting a missing path as if it were a misconfiguration.
+    """
+    lines = []
+    if exists:
+        found = sorted(p.name for p in results_dir.iterdir() if p.is_dir())
+        lines.append(
+            f"No episode results for arms {args.baseline_arm!r} / {args.tactile_arm!r} "
+            f"under {results_dir}"
+        )
+        if found:
+            lines.append(f"  arms present: {found}  (use --baseline-arm / --tactile-arm)")
+        else:
+            lines.append("  the directory is empty")
+    else:
+        lines.append(f"No results directory: {results_dir}")
+        lines.append("  (this is where slurm/eval_ablation.sbatch writes its JSONL files)")
+
+    lines += [
+        "",
+        "Nothing to compare yet -- run at least one evaluation first:",
+        "",
+        "  sbatch --export=ALL,ARM=baseline,TASK=insert_hole slurm/eval_ablation.sbatch",
+        "",
+        "That needs UNIVTAC_ROOT, UNIVTAC_PYTHON and GROOT_PYTHON exported; see",
+        "docs/SETUP.md. Evaluation is GPU work, so it must go to a compute node.",
+        "",
+        "If results live elsewhere, point at them:",
+        "  python scripts/compare_ablation.py --results-dir /path/to/eval_result",
+    ]
+    return "\n".join(lines)
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         description="Compare the baseline and tactile ablation arms.",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
-    parser.add_argument("--results-dir", default="eval_result")
+    parser.add_argument(
+        "--results-dir",
+        default=str(DEFAULT_RESULTS_DIR),
+        help="directory holding <arm>/<task>/*.jsonl result files",
+    )
     parser.add_argument("--baseline-arm", default="baseline")
     parser.add_argument("--tactile-arm", default="tactile")
     parser.add_argument("--json", default=None, help="also write the summary here")
     args = parser.parse_args(argv)
 
-    results_dir = Path(args.results_dir)
+    results_dir = Path(args.results_dir).expanduser()
     if not results_dir.is_dir():
-        raise SystemExit(f"no results directory: {results_dir}")
+        raise SystemExit(no_results_message(results_dir, args, exists=False))
 
     baseline = collect(results_dir, args.baseline_arm)
     tactile = collect(results_dir, args.tactile_arm)
     if not baseline and not tactile:
-        raise SystemExit(
-            f"no JSONL results under {results_dir}/{{{args.baseline_arm},{args.tactile_arm}}}/<task>/"
-        )
+        raise SystemExit(no_results_message(results_dir, args, exists=True))
 
     print(format_table(baseline, tactile))
 

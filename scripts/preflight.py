@@ -1,0 +1,361 @@
+"""Check the setup and print the next command to run.
+
+Safe on a login node: path and environment checks only, plus optional
+subprocess import probes. No GPU, no Isaac Sim, no model loading.
+
+    python scripts/preflight.py           # fast checks
+    python scripts/preflight.py --deep    # also probe the two interpreters
+
+Each check prints PASS / FAIL / SKIP and, on the first failure, the exact
+command to fix it. Run this whenever you are unsure where you are in the
+sequence; the full runbook is docs/RUNBOOK.md.
+"""
+
+from __future__ import annotations
+
+import argparse
+import os
+from pathlib import Path
+import shutil
+import subprocess
+import sys
+
+_REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(_REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(_REPO_ROOT))
+
+PASS, FAIL, SKIP, WARN = "PASS", "FAIL", "SKIP", "WARN"
+
+_SYMBOL = {PASS: "[ok]  ", FAIL: "[FAIL]", SKIP: "[--]  ", WARN: "[warn]"}
+
+
+class Report:
+    """Accumulates check results and prints the first actionable failure."""
+
+    def __init__(self) -> None:
+        self.rows: list[tuple[str, str, str]] = []
+        self.first_fix: str | None = None
+
+    def add(self, status: str, label: str, detail: str = "", fix: str = "") -> None:
+        self.rows.append((status, label, detail))
+        if status == FAIL and self.first_fix is None:
+            self.first_fix = fix or ""
+
+    def render(self) -> int:
+        width = max(len(label) for _s, label, _d in self.rows)
+        print()
+        for status, label, detail in self.rows:
+            line = f"  {_SYMBOL[status]} {label:<{width}}"
+            if detail:
+                line += f"  {detail}"
+            print(line)
+        print()
+
+        failures = sum(1 for s, _, _ in self.rows if s == FAIL)
+        if failures:
+            print(f"{failures} check(s) failed. Next step:\n")
+            print(self.first_fix or "  see docs/RUNBOOK.md")
+            print()
+            return 1
+        print("All checks passed. Next step:\n")
+        print(self.first_fix or "  see docs/RUNBOOK.md")
+        print()
+        return 0
+
+
+def env_path(name: str) -> Path | None:
+    """Read an environment variable as an expanded path, if set and non-empty."""
+    raw = os.environ.get(name, "").strip()
+    return Path(raw).expanduser() if raw else None
+
+
+def probe_import(python: Path, module: str, timeout: int = 300) -> tuple[bool, str]:
+    """Run ``python -c "import <module>"`` in another interpreter."""
+    try:
+        result = subprocess.run(
+            [str(python), "-c", f"import {module}"],
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+        )
+    except FileNotFoundError:
+        return False, "interpreter not found"
+    except subprocess.TimeoutExpired:
+        return False, f"import timed out after {timeout}s"
+    if result.returncode == 0:
+        return True, "ok"
+    tail = (result.stderr or "").strip().splitlines()
+    return False, tail[-1][:160] if tail else f"exit {result.returncode}"
+
+
+def check_repo(report: Report) -> None:
+    """This repo is intact and importable."""
+    if (_REPO_ROOT / "univtac_groot" / "spec.py").is_file():
+        report.add(PASS, "this repo", str(_REPO_ROOT))
+    else:
+        report.add(
+            FAIL,
+            "this repo",
+            f"univtac_groot/ missing under {_REPO_ROOT}",
+            "  This script must live in <repo>/scripts/. Re-clone or fix the layout.",
+        )
+        return
+
+    try:
+        import numpy  # noqa: F401
+
+        from univtac_groot.arms import baseline_spec
+
+        spec = baseline_spec()
+        report.add(PASS, "package imports", f"baseline state_dim={spec.state_dim}")
+    except Exception as exc:  # noqa: BLE001
+        report.add(
+            FAIL,
+            "package imports",
+            f"{type(exc).__name__}: {exc}",
+            "  conda create -n univtac-groot python=3.11 -y\n"
+            "  conda activate univtac-groot\n"
+            "  pip install -r requirements-dev.txt   # NOT into (base)",
+        )
+
+
+def check_univtac(report: Report) -> Path | None:
+    """UNIVTAC_ROOT points at a real UniVTAC checkout, distinct from this repo."""
+    root = env_path("UNIVTAC_ROOT")
+    if root is None:
+        report.add(
+            FAIL,
+            "UNIVTAC_ROOT",
+            "not set",
+            "  export UNIVTAC_ROOT=/path/to/UniVTAC   # the checkout containing envs/",
+        )
+        return None
+    if not root.is_dir():
+        report.add(
+            FAIL, "UNIVTAC_ROOT", f"no such directory: {root}",
+            "  export UNIVTAC_ROOT=/path/to/UniVTAC",
+        )
+        return None
+
+    # The giveaway that this is the simulator checkout and not this repo.
+    markers = ["envs/_base_task.py", "task_config", "instructions"]
+    missing = [m for m in markers if not (root / m).exists()]
+    if missing:
+        hint = (
+            "  UNIVTAC_ROOT must be the simulator checkout (github.com/univtac/UniVTAC),\n"
+            "  not this repo. Clone it if you have not:\n"
+            "    git clone https://github.com/univtac/UniVTAC.git\n"
+            "    cd UniVTAC && bash scripts/install.sh   # on a COMPUTE node"
+        )
+        report.add(FAIL, "UniVTAC checkout", f"missing {missing}", hint)
+        return None
+
+    if root.resolve() == _REPO_ROOT.resolve():
+        report.add(
+            FAIL,
+            "UniVTAC checkout",
+            "UNIVTAC_ROOT is this repo",
+            "  They are two different repositories; point UNIVTAC_ROOT elsewhere.",
+        )
+        return None
+
+    report.add(PASS, "UniVTAC checkout", str(root))
+
+    tasks = sorted(p.stem for p in (root / "envs").glob("*.py") if not p.stem.startswith("_"))
+    report.add(PASS, "UniVTAC tasks", f"{len(tasks)} found")
+
+    if (root / "assets" / "embodiments").is_dir():
+        report.add(PASS, "UniVTAC assets", "assets/embodiments present")
+    else:
+        report.add(
+            WARN, "UniVTAC assets", "assets/ looks incomplete",
+            "",
+        )
+    return root
+
+
+def check_interpreters(report: Report, deep: bool) -> None:
+    """UNIVTAC_PYTHON and GROOT_PYTHON exist and can import their stacks."""
+    for var, module, hint in (
+        (
+            "UNIVTAC_PYTHON",
+            "isaaclab",
+            "  export UNIVTAC_PYTHON=$(conda run -n UniVTAC which python)",
+        ),
+        (
+            "GROOT_PYTHON",
+            "gr00t",
+            "  export GROOT_PYTHON=/path/to/Isaac-GR00T/.venv/bin/python",
+        ),
+    ):
+        python = env_path(var)
+        if python is None:
+            report.add(FAIL, var, "not set", hint)
+            continue
+        if not python.is_file():
+            report.add(FAIL, var, f"no such interpreter: {python}", hint)
+            continue
+
+        version = subprocess.run(
+            [str(python), "-c", "import sys; print('%d.%d' % sys.version_info[:2])"],
+            capture_output=True, text=True,
+        ).stdout.strip()
+        report.add(PASS, var, f"{python}  (Python {version or '?'})")
+
+        if not deep:
+            report.add(SKIP, f"  import {module}", "use --deep to probe")
+            continue
+        ok, detail = probe_import(python, module)
+        if ok:
+            report.add(PASS, f"  import {module}", "ok")
+        else:
+            report.add(
+                FAIL,
+                f"  import {module}",
+                detail,
+                f"  {module} is not installed in {python}. See docs/SETUP.md.",
+            )
+
+
+def check_client_deps(report: Report, deep: bool) -> None:
+    """The UniVTAC-side interpreter has this repo's four client dependencies."""
+    python = env_path("UNIVTAC_PYTHON")
+    if python is None or not python.is_file():
+        report.add(SKIP, "client deps", "UNIVTAC_PYTHON not usable")
+        return
+    if not deep:
+        report.add(SKIP, "client deps", "use --deep to probe")
+        return
+    ok, detail = probe_import(python, "zmq, msgpack, msgpack_numpy, yaml", timeout=120)
+    if ok:
+        report.add(PASS, "client deps", "zmq/msgpack/msgpack_numpy/yaml")
+    else:
+        report.add(
+            FAIL, "client deps", detail,
+            f"  {python} -m pip install -r {_REPO_ROOT}/requirements-client.txt",
+        )
+
+
+def check_hf(report: Report) -> None:
+    """Hugging Face credentials for the gated Cosmos-Reason2-2B backbone."""
+    if os.environ.get("HF_TOKEN"):
+        report.add(PASS, "HF credentials", "HF_TOKEN set")
+        return
+    token_paths = [
+        Path.home() / ".cache/huggingface/token",
+        Path(os.environ.get("HF_HOME", "~/.cache/huggingface")).expanduser() / "token",
+    ]
+    if any(p.is_file() and p.stat().st_size > 0 for p in token_paths):
+        report.add(PASS, "HF credentials", "cached token found")
+    else:
+        report.add(
+            FAIL,
+            "HF credentials",
+            "no HF_TOKEN and no cached token",
+            "  Request access to https://huggingface.co/nvidia/Cosmos-Reason2-2B\n"
+            "  (every GR00T checkpoint loads it), then:\n"
+            "    huggingface-cli login     # or: export HF_TOKEN=<token>",
+        )
+
+
+def check_slurm(report: Report) -> None:
+    """Whether we are on a login node, and whether sbatch is available."""
+    on_compute = bool(os.environ.get("SLURM_JOB_ID"))
+    where = "inside a SLURM job" if on_compute else "login node (no SLURM_JOB_ID)"
+    report.add(PASS, "location", where)
+    if shutil.which("sbatch"):
+        report.add(PASS, "sbatch", shutil.which("sbatch") or "")
+    else:
+        report.add(WARN, "sbatch", "not on PATH - is this a submit host?")
+
+
+def check_conda(report: Report) -> None:
+    """Report the active conda environment.
+
+    Which env is active decides what ``python`` means. This script and
+    ``compare_ablation.py`` only need numpy and belong in a dedicated env
+    (``univtac-groot``); the *evaluator* must run under the ``UniVTAC`` env, and
+    the server under GR00T's uv venv. ``base`` is typically the cluster's shared
+    environment -- installing into it affects other users, and it is the usual
+    reason ``import isaaclab`` fails.
+    """
+    env = os.environ.get("CONDA_DEFAULT_ENV") or ""
+    interpreter = f"python {sys.version_info.major}.{sys.version_info.minor}"
+    if not env:
+        report.add(WARN, "conda env", f"none active ({interpreter})")
+    elif env == "base":
+        report.add(
+            WARN,
+            "conda env",
+            f"base ({interpreter}) - do not pip install here on a shared cluster; "
+            f"see docs/RUNBOOK.md step 2 (conda create -n univtac-groot)",
+        )
+    else:
+        report.add(PASS, "conda env", f"{env} ({interpreter})")
+
+
+def check_results(report: Report) -> bool:
+    """Whether any evaluation results already exist."""
+    results = _REPO_ROOT / "eval_result"
+    if not results.is_dir():
+        report.add(SKIP, "results", "none yet (expected before the first run)")
+        return False
+    arms = sorted(p.name for p in results.iterdir() if p.is_dir() and p.name != "raw")
+    files = list(results.rglob("*.jsonl"))
+    if not files:
+        report.add(SKIP, "results", f"{results} exists but holds no .jsonl")
+        return False
+    report.add(PASS, "results", f"{len(files)} file(s), arms={arms}")
+    return True
+
+
+def next_step(*, have_results: bool, deep: bool) -> str:
+    """The command to run next, assuming every check passed."""
+    if not deep:
+        return "  python scripts/preflight.py --deep    # probe both interpreters"
+    if not have_results:
+        return (
+            "  # Interactive first run (COMPUTE node - evaluation is GPU work):\n"
+            "  srun --gres=gpu:1 --cpus-per-task=8 --mem=64G --time=2:00:00 --pty bash\n"
+            "  # then follow docs/RUNBOOK.md step 4"
+        )
+    return (
+        "  python scripts/compare_ablation.py     # you have results; aggregate them\n"
+        "  # or submit the rest of the sweep: bash slurm/submit_ablation.sh"
+    )
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(
+        description="Check the setup and print the next command to run.",
+        formatter_class=argparse.ArgumentDefaultsHelpFormatter,
+    )
+    parser.add_argument(
+        "--deep",
+        action="store_true",
+        help="also probe the two interpreters (imports torch; still no GPU)",
+    )
+    args = parser.parse_args(argv)
+
+    print("=" * 68)
+    print(" GR00T N1.7 x UniVTAC - preflight")
+    print("=" * 68)
+
+    report = Report()
+    check_slurm(report)
+    check_conda(report)
+    check_repo(report)
+    check_univtac(report)
+    check_interpreters(report, args.deep)
+    check_client_deps(report, args.deep)
+    check_hf(report)
+    have_results = check_results(report)
+
+    # On success there is no fix to show, so substitute the forward step.
+    if report.first_fix is None:
+        report.first_fix = next_step(have_results=have_results, deep=args.deep)
+    return report.render()
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

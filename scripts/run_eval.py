@@ -150,10 +150,17 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def resolve_output(args: argparse.Namespace) -> Path:
+    """Where to write results.
+
+    Defaults under ``$REPO_ROOT/eval_result`` rather than the working directory:
+    the sbatch script runs this with cwd set to ``$UNIVTAC_ROOT``, so a
+    cwd-relative default would scatter results into the UniVTAC checkout and
+    hide them from ``scripts/compare_ablation.py``.
+    """
     if args.output:
-        return Path(args.output)
+        return Path(args.output).expanduser()
     stamp = time.strftime("%Y%m%d-%H%M%S")
-    return Path("eval_result") / args.arm / args.task / f"{stamp}.jsonl"
+    return _REPO_ROOT / "eval_result" / args.arm / args.task / f"{stamp}.jsonl"
 
 
 def build_arm_spec(args: argparse.Namespace):
@@ -347,7 +354,7 @@ def build_env(args, univtac_root: Path, spec, action_adapter, task_config: dict)
 
     env_cfg = task_module.TaskCfg()
     stamp = time.strftime("%Y-%m-%d_%H-%M-%S")
-    env_cfg.save_dir = Path("eval_result") / "raw" / args.arm / args.task / stamp
+    env_cfg.save_dir = _REPO_ROOT / "eval_result" / "raw" / args.arm / args.task / stamp
     env_cfg.decimation = task_config.get("decimation", env_cfg.decimation)
     env_cfg.obs_data_type = task_config.get("observations", {})
     env_cfg.save_frequency = task_config.get("save_frequency", env_cfg.save_frequency)

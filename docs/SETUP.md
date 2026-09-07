@@ -1,5 +1,9 @@
 # Setup: what must exist before you run anything
 
+> For the **ordered sequence** of commands, see [RUNBOOK.md](RUNBOOK.md), or run
+> `python scripts/preflight.py`. This document explains the *why* behind each
+> prerequisite and lists failure modes.
+
 ## What "a live GR00T server" means
 
 It is a **separate long-running OS process** that has already loaded the
