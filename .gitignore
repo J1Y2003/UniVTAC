@@ -7,3 +7,6 @@ logs/
 .venv/
 .ruff_cache/
 env.sh
+
+# throwaway venv built by slurm/download_data.sbatch
+.venv-modelscope/

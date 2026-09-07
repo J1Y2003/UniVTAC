@@ -74,13 +74,39 @@ echo " node=$(hostname)  job=${SLURM_JOB_ID:-none}"
 echo "=========================================================="
 df -h "${OUTPUT}" || true
 
+# download.sh does `require_command modelscope`, i.e. it needs the CLI on PATH.
+# Downloading needs nothing from Isaac Lab, so rather than installing modelscope
+# into the UniVTAC conda env (where it would re-pin requests/urllib3/tqdm under
+# a working Isaac Lab + TacEx install) or into ~/.local (which every python3.10
+# process on this account would then see), keep it in a throwaway venv. Delete
+# DOWNLOAD_VENV any time; it is rebuilt on demand.
 if ! command -v modelscope >/dev/null 2>&1; then
-  echo "error: 'modelscope' is not on PATH in this environment." >&2
-  echo "       download.sh requires it. Activate the env that has it, or:" >&2
-  echo "         ${PYTHON} -m pip install --user modelscope" >&2
-  echo "       Do NOT install into the shared (base) conda env." >&2
-  exit 1
+  DOWNLOAD_VENV="${DOWNLOAD_VENV:-${REPO_ROOT}/.venv-modelscope}"
+  if [[ "${NO_AUTO_VENV:-0}" == "1" ]]; then
+    echo "error: 'modelscope' is not on PATH and NO_AUTO_VENV=1." >&2
+    echo "       Provide it yourself, or unset NO_AUTO_VENV to let this job" >&2
+    echo "       build a private venv at ${DOWNLOAD_VENV}." >&2
+    exit 1
+  fi
+  if [[ ! -x "${DOWNLOAD_VENV}/bin/modelscope" ]]; then
+    echo "[job] 'modelscope' not found; building a private venv at ${DOWNLOAD_VENV}"
+    echo "[job] (isolated on purpose -- nothing is installed into the UniVTAC"
+    echo "[job]  conda env, ~/.local, or the shared base env)"
+    "${PYTHON}" -m venv "${DOWNLOAD_VENV}" || {
+      echo "error: could not create a venv with ${PYTHON}." >&2
+      echo "       Set PYTHON to an interpreter that has the venv module." >&2
+      exit 1
+    }
+    "${DOWNLOAD_VENV}/bin/python" -m pip install --quiet --upgrade pip
+    "${DOWNLOAD_VENV}/bin/python" -m pip install --quiet modelscope || {
+      echo "error: pip install modelscope failed -- see above." >&2
+      exit 1
+    }
+  fi
+  export PATH="${DOWNLOAD_VENV}/bin:${PATH}"
+  echo "[job] using modelscope from ${DOWNLOAD_VENV}"
 fi
+echo "[job] modelscope: $(command -v modelscope)"
 
 # Build the selector list. download.sh accepts repeated selectors, and refuses
 # --version unless --task is among them, so only pass it when tasks are wanted.
