@@ -165,7 +165,14 @@ class UniVTACGr00tEnv:
         self._elapsed = 0
         raw = self.task._get_observations()
         obs = self.history.reset(self.obs_adapter(raw, self._instruction))
-        return obs, {"instruction": self._instruction, "seed": seed}
+        # `BaseTask.reset` runs the task's scripted pre-move through cuRobo. When
+        # that plan fails the arm never reaches its start pose, so the episode is
+        # unusable -- it must be skipped, not scored as a policy failure.
+        return obs, {
+            "instruction": self._instruction,
+            "seed": seed,
+            "plan_success": bool(getattr(self.task, "plan_success", True)),
+        }
 
     def step(
         self, action: np.ndarray

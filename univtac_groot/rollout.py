@@ -54,6 +54,12 @@ class RolloutConfig:
             back to back, so a broken checkpoint fails fast instead of burning
             the whole SLURM allocation.
         stop_on_success: end the episode as soon as the task reports success.
+        skip_on_plan_failure: treat a seed whose scripted pre-move could not be
+            planned as unusable (skipped, excluded from the rate) rather than as
+            a policy failure. Set ``False`` to score every seed regardless.
+        max_consecutive_skips: abort if this many seeds in a row are unusable,
+            so a task whose start poses never plan fails fast instead of walking
+            the seed space forever.
     """
 
     num_episodes: int = 50
@@ -64,6 +70,8 @@ class RolloutConfig:
     max_steps: int | None = None
     max_consecutive_errors: int = 5
     stop_on_success: bool = True
+    skip_on_plan_failure: bool = True
+    max_consecutive_skips: int = 50
 
     def first_seed(self) -> int:
         """Resolve the starting seed."""
@@ -109,6 +117,21 @@ def run_episode(
     try:
         obs, info = env.reset(seed=seed)
         instruction = str(info.get("instruction", getattr(env, "instruction", "")))
+
+        # The task plans its own scripted pre-move through cuRobo during reset.
+        # If that failed, the arm is not at its start pose and the policy never
+        # gets a fair attempt, so this seed is unusable rather than failed --
+        # scoring it would blame the policy for a planner miss. UniVTAC's own
+        # evaluator rejects such seeds up front via --expert_check.
+        if config.skip_on_plan_failure and not info.get("plan_success", True):
+            _log(f"seed {seed} skipped: task pre-move planning failed", log)
+            return EpisodeResult(
+                seed=seed, success=False, reward=0.0, steps=0,
+                truncated=False, early_stop=False, instruction=instruction,
+                wall_seconds=round(time.time() - started, 2),
+                skipped="plan_failure",
+            )
+
         policy.reset()
         controller.reset()
 
@@ -199,6 +222,7 @@ def evaluate(
     config = config or RolloutConfig()
     scored = 0
     consecutive_errors = 0
+    consecutive_skips = 0
     results: list[EpisodeResult] = []
 
     for seed in seed_sequence(config):
@@ -216,6 +240,19 @@ def evaluate(
         results.append(result)
         if writer is not None:
             writer.add(result)
+
+        if result.skipped is not None:
+            consecutive_skips += 1
+            if consecutive_skips >= config.max_consecutive_skips:
+                raise RuntimeError(
+                    f"{consecutive_skips} consecutive seeds were unusable "
+                    f"({result.skipped}). The task's scripted pre-move is not "
+                    f"planning on this setup -- verify UniVTAC alone first: "
+                    f"`bash collect_data.sh <task> demo 0` should report "
+                    f"`Plan True` and reach its episode_num."
+                )
+            continue
+        consecutive_skips = 0
 
         if result.error is not None:
             consecutive_errors += 1
@@ -243,7 +280,8 @@ def evaluate(
     _log(
         f"final: {summary['successes']}/{summary['episodes_scored']} "
         f"= {summary['success_rate_pct']:.2f}% success "
-        f"({summary['episodes_errored']} errored)",
+        f"({summary['episodes_errored']} errored, "
+        f"{summary.get('episodes_skipped', 0)} skipped)",
         log,
     )
     return summary

@@ -41,7 +41,19 @@ mkdir -p logs "${OUTPUT_DIR}"
 
 export HF_HOME="${HF_HOME:-${SCRATCH:-/tmp}/hf_cache}"
 export TOKENIZERS_PARALLELISM=false
+export PYTHONUNBUFFERED=1
 export OMP_NUM_THREADS="${OMP_NUM_THREADS:-8}"
+
+# Training hits the same cuDNN wall as inference on a driver older than GR00T's
+# CUDA build. launch_finetune.py spawns its own worker processes, so a flag on
+# the parent is not enough -- a sitecustomize hook on PYTHONPATH reaches them
+# all. Set DISABLE_CUDNN=1 to enable. See docs/SETUP.md.
+if [[ "${DISABLE_CUDNN:-0}" == "1" ]]; then
+  export UNIVTAC_DISABLE_CUDNN=1
+  export UNIVTAC_DISABLE_CUDNN_VERBOSE=1
+  export PYTHONPATH="${REPO_ROOT}/tools/nocudnn${PYTHONPATH:+:${PYTHONPATH}}"
+  echo "[job] cuDNN disabled for every child process via sitecustomize"
+fi
 
 echo "=========================================================="
 echo " arm=${ARM}  dataset=${DATASET}"

@@ -39,6 +39,11 @@ class EpisodeResult:
     inference_seconds: float = 0.0
     error: str | None = None
     """Set when the episode raised; such episodes are excluded from the rate."""
+    skipped: str | None = None
+    """Set when the seed was unusable rather than failed -- e.g. the task's own
+    scripted pre-move could not be planned, so the policy never had a fair
+    attempt. Excluded from the success rate, like UniVTAC's expert-check
+    rejects, and reported separately."""
     extra: dict[str, Any] = field(default_factory=dict)
 
     def as_json(self) -> str:
@@ -115,8 +120,9 @@ def summarize(
 ) -> dict[str, Any]:
     """Build the summary dict for a sequence of episode results."""
     results = list(results)
-    scored = [r for r in results if r.error is None]
-    errored = [r for r in results if r.error is not None]
+    skipped = [r for r in results if r.skipped is not None]
+    errored = [r for r in results if r.error is not None and r.skipped is None]
+    scored = [r for r in results if r.error is None and r.skipped is None]
     successes = [r for r in scored if r.success]
 
     n = len(scored)
@@ -125,6 +131,7 @@ def summarize(
         **dict(metadata or {}),
         "episodes_scored": n,
         "episodes_errored": len(errored),
+        "episodes_skipped": len(skipped),
         "successes": len(successes),
         "success_rate": round(rate, 6),
         "success_rate_pct": round(rate * 100.0, 2),
@@ -150,6 +157,11 @@ def summarize(
         summary["success_rate_ci95"] = [round(lo, 6), round(hi, 6)]
     if wall_seconds is not None:
         summary["wall_seconds"] = round(wall_seconds, 2)
+    if skipped:
+        reasons: dict[str, int] = {}
+        for r in skipped:
+            reasons[str(r.skipped)] = reasons.get(str(r.skipped), 0) + 1
+        summary["skip_reasons"] = reasons
     if errored:
         summary["errors"] = [
             {"seed": r.seed, "error": r.error[:400] if r.error else None} for r in errored

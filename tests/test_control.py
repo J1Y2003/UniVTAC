@@ -536,3 +536,73 @@ def test_seed_sequence_defaults_match_univtac():
 def test_seed_sequence_respects_max_seed():
     seeds = list(seed_sequence(RolloutConfig(start_seed=5, max_seed=8)))
     assert seeds == [5, 6, 7, 8]
+
+
+class PlanFailEnv(FakeEnv):
+    """Env whose scripted pre-move fails to plan on the given seeds."""
+
+    def __init__(self, *, plan_fail_seeds: set[int], succeed_at: int = 2):
+        super().__init__(succeed_at=succeed_at)
+        self.plan_fail_seeds = plan_fail_seeds
+
+    def reset(self, *, seed=None, options=None):
+        obs, info = super().reset(seed=seed, options=options)
+        info["plan_success"] = seed not in self.plan_fail_seeds
+        return obs, info
+
+
+def test_unplannable_seed_is_skipped_not_scored():
+    """A cuRobo pre-move failure must not be blamed on the policy."""
+    outcome = run_episode(
+        PlanFailEnv(plan_fail_seeds={7}), FakePolicy(), seed=7,
+        config=RolloutConfig(), log=lambda _m: None,
+    )
+    assert outcome.skipped == "plan_failure"
+    assert outcome.error is None
+    assert outcome.steps == 0
+
+
+def test_skipped_episodes_are_excluded_from_the_success_rate():
+    scored = [result(1, True), result(2, False)]
+    skipped = EpisodeResult(seed=3, success=False, reward=0.0, steps=0,
+                            truncated=False, early_stop=False, skipped="plan_failure")
+    summary = summarize([*scored, skipped])
+    assert summary["episodes_scored"] == 2
+    assert summary["episodes_skipped"] == 1
+    assert summary["episodes_errored"] == 0
+    assert summary["success_rate"] == pytest.approx(0.5)   # not 1/3
+    assert summary["skip_reasons"] == {"plan_failure": 1}
+
+
+def test_evaluate_walks_past_unplannable_seeds_to_fill_the_budget(tmp_path):
+    env = PlanFailEnv(plan_fail_seeds={100, 101, 103}, succeed_at=2)
+    summary = evaluate(
+        env, FakePolicy(),
+        config=RolloutConfig(num_episodes=2, start_seed=100),
+        writer=ResultWriter(tmp_path / "r.jsonl"),
+        log=lambda _m: None,
+    )
+    # 100, 101 and 103 unusable -> 102 and 104 are the two scored episodes.
+    assert summary["episodes_scored"] == 2
+    assert summary["episodes_skipped"] == 3
+    assert summary["success_rate"] == 1.0
+
+
+def test_evaluate_aborts_when_no_seed_can_be_planned(tmp_path):
+    """A task whose start poses never plan should fail fast, not spin."""
+    env = PlanFailEnv(plan_fail_seeds=set(range(100, 400)))
+    with pytest.raises(RuntimeError, match="consecutive seeds were unusable"):
+        evaluate(
+            env, FakePolicy(),
+            config=RolloutConfig(num_episodes=5, start_seed=100, max_consecutive_skips=10),
+            writer=ResultWriter(tmp_path / "r.jsonl"),
+            log=lambda _m: None,
+        )
+
+
+def test_plan_failures_can_be_scored_when_explicitly_requested():
+    outcome = run_episode(
+        PlanFailEnv(plan_fail_seeds={7}), FakePolicy(), seed=7,
+        config=RolloutConfig(skip_on_plan_failure=False), log=lambda _m: None,
+    )
+    assert outcome.skipped is None
