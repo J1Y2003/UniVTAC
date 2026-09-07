@@ -15,7 +15,7 @@
 # Three things in the upstream script do not survive a batch context; this
 # wrapper works around all three without editing the repo (see PATCHES below).
 #
-#SBATCH --job-name=univtac-install
+#SBATCH --job-name=univtac-groot-install-univtac-isaac-lab-tacex-and-curobo-stack
 #SBATCH --output=logs/%x-%j.out
 #SBATCH --error=logs/%x-%j.err
 #SBATCH --time=12:00:00

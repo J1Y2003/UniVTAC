@@ -15,14 +15,37 @@
 #
 #   sbatch --array=0-7 --export=ALL,ARM=tactile slurm/convert.sbatch
 #
-#SBATCH --job-name=univtac-convert
+#SBATCH --job-name=univtac-groot-convert-univtac-hdf5-demonstrations-to-lerobot-v2
 #SBATCH --output=logs/%x-%A_%a.out
 #SBATCH --error=logs/%x-%A_%a.err
 #SBATCH --time=08:00:00
 
 set -euo pipefail
 
-REPO_ROOT="${REPO_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
+# Locate the repo. `dirname "${BASH_SOURCE[0]}"` is NOT reliable here: under
+# sbatch, SLURM copies the batch script into a spool directory
+# (/var/spool/slurm/d/...), so it resolves to the spool, not the checkout --
+# every derived path then points somewhere unwritable. SLURM_SUBMIT_DIR is the
+# directory the job was submitted from, which is the right answer under sbatch;
+# BASH_SOURCE is the right answer under plain `bash`. Try both and accept only a
+# candidate that actually contains this repo.
+if [[ -z "${REPO_ROOT:-}" ]]; then
+  for _candidate in \
+      "${SLURM_SUBMIT_DIR:-}" \
+      "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." 2>/dev/null && pwd)"; do
+    if [[ -n "${_candidate}" && -f "${_candidate}/univtac_groot/spec.py" ]]; then
+      REPO_ROOT="${_candidate}"
+      break
+    fi
+  done
+fi
+if [[ -z "${REPO_ROOT:-}" ]]; then
+  echo "error: cannot locate the univtac-groot checkout." >&2
+  echo "       Tried SLURM_SUBMIT_DIR='${SLURM_SUBMIT_DIR:-unset}' and the" >&2
+  echo "       script's own directory. Submit from the repo root, or pass" >&2
+  echo "       REPO_ROOT=/path/to/UniVTAC explicitly." >&2
+  exit 2
+fi
 UNIVTAC_ROOT="${UNIVTAC_ROOT:?set UNIVTAC_ROOT to the UniVTAC checkout}"
 DATA_ROOT="${DATA_ROOT:?set DATA_ROOT to where converted datasets should land}"
 

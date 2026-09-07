@@ -11,7 +11,7 @@
 #
 #   sbatch --export=ALL,ARM=tactile,DATASET=/data/univtac-insert_hole-tactile slurm/finetune.sbatch
 #
-#SBATCH --job-name=univtac-groot-finetune
+#SBATCH --job-name=univtac-groot-finetune-one-ablation-arm-under-new-embodiment-tag
 #SBATCH --output=logs/%x-%j.out
 #SBATCH --error=logs/%x-%j.err
 #SBATCH --time=24:00:00
@@ -25,7 +25,30 @@ BASE_MODEL="${BASE_MODEL:-nvidia/GR00T-N1.7-3B}"
 OUTPUT_DIR="${OUTPUT_DIR:-${SCRATCH:-/tmp}/univtac-groot-${ARM}}"
 NUM_GPUS="${NUM_GPUS:-1}"
 
-REPO_ROOT="${REPO_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
+# Locate the repo. `dirname "${BASH_SOURCE[0]}"` is NOT reliable here: under
+# sbatch, SLURM copies the batch script into a spool directory
+# (/var/spool/slurm/d/...), so it resolves to the spool, not the checkout --
+# every derived path then points somewhere unwritable. SLURM_SUBMIT_DIR is the
+# directory the job was submitted from, which is the right answer under sbatch;
+# BASH_SOURCE is the right answer under plain `bash`. Try both and accept only a
+# candidate that actually contains this repo.
+if [[ -z "${REPO_ROOT:-}" ]]; then
+  for _candidate in \
+      "${SLURM_SUBMIT_DIR:-}" \
+      "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." 2>/dev/null && pwd)"; do
+    if [[ -n "${_candidate}" && -f "${_candidate}/univtac_groot/spec.py" ]]; then
+      REPO_ROOT="${_candidate}"
+      break
+    fi
+  done
+fi
+if [[ -z "${REPO_ROOT:-}" ]]; then
+  echo "error: cannot locate the univtac-groot checkout." >&2
+  echo "       Tried SLURM_SUBMIT_DIR='${SLURM_SUBMIT_DIR:-unset}' and the" >&2
+  echo "       script's own directory. Submit from the repo root, or pass" >&2
+  echo "       REPO_ROOT=/path/to/UniVTAC explicitly." >&2
+  exit 2
+fi
 GROOT_ROOT="${GROOT_ROOT:?set GROOT_ROOT to the Isaac-GR00T checkout}"
 GROOT_PYTHON="${GROOT_PYTHON:?set GROOT_PYTHON to the GR00T interpreter, e.g. Isaac-GR00T/.venv/bin/python}"
 

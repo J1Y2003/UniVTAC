@@ -5,6 +5,14 @@
 #   sbatch slurm/overnight_ablation.sbatch
 #   sbatch --gres=gpu:4 --export=ALL,TASK=lift_bottle,EPISODES=50 slurm/overnight_ablation.sbatch
 #
+# BEFORE submitting, verify it without spending GPU time. DRY_RUN=1 runs the
+# full preflight, prints the exact arguments every stage would use, checks the
+# aggregator imports, and exits -- cheap enough for a login node:
+#
+#   bash -n slurm/overnight_ablation.sbatch          # syntax only, instant
+#   DRY_RUN=1 bash slurm/overnight_ablation.sbatch   # paths, datasets, plan
+#   sbatch --test-only slurm/overnight_ablation.sbatch  # submit filter + resources
+#
 # Stages, in order:
 #   1. preflight     -- every path and dataset checked BEFORE any GPU time is spent
 #   2. finetune      -- ARM=tactile, then ARM=baseline_finetuned (same recipe)
@@ -21,7 +29,9 @@
 #   dies, the baseline still trains and evaluates, so the morning brings a
 #   diagnosis instead of an empty results directory.
 #
-#SBATCH --job-name=univtac-groot-overnight
+# This cluster's submit filter requires a job name LONGER THAN 50 characters
+# and rejects the submission outright otherwise. Do not shorten these.
+#SBATCH --job-name=univtac-groot-full-ablation-finetune-both-arms-then-evaluate-and-compare
 #SBATCH --output=logs/%x-%j.out
 #SBATCH --error=logs/%x-%j.err
 #SBATCH --time=48:00:00
@@ -32,7 +42,30 @@
 # not abort the job. Stage failures are tracked explicitly instead.
 set -uo pipefail
 
-REPO_ROOT="${REPO_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
+# Locate the repo. `dirname "${BASH_SOURCE[0]}"` is NOT reliable here: under
+# sbatch, SLURM copies the batch script into a spool directory
+# (/var/spool/slurm/d/...), so it resolves to the spool, not the checkout --
+# every derived path then points somewhere unwritable. SLURM_SUBMIT_DIR is the
+# directory the job was submitted from, which is the right answer under sbatch;
+# BASH_SOURCE is the right answer under plain `bash`. Try both and accept only a
+# candidate that actually contains this repo.
+if [[ -z "${REPO_ROOT:-}" ]]; then
+  for _candidate in \
+      "${SLURM_SUBMIT_DIR:-}" \
+      "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." 2>/dev/null && pwd)"; do
+    if [[ -n "${_candidate}" && -f "${_candidate}/univtac_groot/spec.py" ]]; then
+      REPO_ROOT="${_candidate}"
+      break
+    fi
+  done
+fi
+if [[ -z "${REPO_ROOT:-}" ]]; then
+  echo "error: cannot locate the univtac-groot checkout." >&2
+  echo "       Tried SLURM_SUBMIT_DIR='${SLURM_SUBMIT_DIR:-unset}' and the" >&2
+  echo "       script's own directory. Submit from the repo root, or pass" >&2
+  echo "       REPO_ROOT=/path/to/UniVTAC explicitly." >&2
+  exit 2
+fi
 
 # --------------------------------------------------------------------------- #
 # Configuration
@@ -167,7 +200,10 @@ done
   || fatal "missing configs/modality/univtac_baseline_config.py"
 
 df -h "${CKPT_ROOT}" 2>/dev/null || true
-echo " free space above must hold ~${#ARMS} x tens of GB of checkpoints"
+# shellcheck disable=SC2086 - word splitting is the point here
+N_ARMS=$(set -- ${ARMS}; echo $#)
+echo " the space above must hold roughly $((N_ARMS * SAVE_TOTAL_LIMIT * 40)) GB"
+echo " (${N_ARMS} arms x ${SAVE_TOTAL_LIMIT} retained checkpoints x ~40 GB each)"
 
 if [[ "${FATAL}" -ne 0 ]]; then
   echo
@@ -228,6 +264,18 @@ for arm in ${ARMS}; do
 
   banner "finetune ${arm}  (${NUM_GPUS} gpu, max_steps=${MAX_STEPS})"
   echo "[stage] log -> ${log}"
+
+  if [[ "${DRY_RUN:-0}" == "1" ]]; then
+    echo "[dry-run] would run slurm/finetune.sbatch with:"
+    echo "[dry-run]   ARM=${arm}"
+    echo "[dry-run]   DATASET=${DATA_ROOT}/univtac-${TASK}-${arm}"
+    echo "[dry-run]   OUTPUT_DIR=${out_dir}"
+    echo "[dry-run]   NUM_GPUS=${NUM_GPUS}  DISABLE_CUDNN=${DISABLE_CUDNN}"
+    echo "[dry-run]   EXTRA_ARGS=--max-steps ${MAX_STEPS} --save-steps ${SAVE_STEPS} --save-total-limit ${SAVE_TOTAL_LIMIT} ${resume_args}"
+    record "finetune ${arm}: DRY-RUN (not executed)"
+    continue
+  fi
+
   GROOT_ROOT="${GROOT_ROOT}" \
   GROOT_PYTHON="${GROOT_PYTHON}" \
   ARM="${arm}" \
@@ -270,6 +318,17 @@ for arm in ${ARMS}; do
   fi
   log="${STAGE_LOG_DIR}/eval-${arm}.log"
   summary="${RESULTS_DIR}/${arm}/${TASK}/seed0-0.summary.json"
+
+  if [[ "${DRY_RUN:-0}" == "1" ]]; then
+    echo "[dry-run] would run slurm/eval_ablation.sbatch with:"
+    echo "[dry-run]   ARM=${arm} TASK=${TASK} TASK_CONFIG=${TASK_CONFIG}"
+    echo "[dry-run]   GROOT_MODEL=${ckpt:-<from the finetune stage>}"
+    echo "[dry-run]   EPISODES=${EPISODES} EXECUTION_HORIZON=${EXECUTION_HORIZON}"
+    echo "[dry-run]   PORT=$((PORT_BASE + PORT_OFFSET + 1))"
+    record "eval ${arm}: DRY-RUN (not executed)"
+    PORT_OFFSET=$((PORT_OFFSET + 1))
+    continue
+  fi
 
   if [[ -z "${ckpt}" ]]; then
     record "eval ${arm}: SKIPPED (no checkpoint to evaluate)"
@@ -316,13 +375,23 @@ done
 # 4. Compare
 # --------------------------------------------------------------------------- #
 banner "compare"
-"${UNIVTAC_PYTHON}" "${REPO_ROOT}/scripts/compare_ablation.py" \
-  --results-dir "${RESULTS_DIR}" \
-  --baseline-arm baseline_finetuned \
-  --tactile-arm tactile \
-  --json "${STAGE_LOG_DIR}/comparison.json" \
-  2>&1 | tee "${STAGE_LOG_DIR}/compare.log"
-record "compare: exit ${PIPESTATUS[0]}"
+# Even in a dry run, check the aggregator parses and its flags exist -- a typo
+# here would otherwise only surface after both finetunes and both evals.
+if [[ "${DRY_RUN:-0}" == "1" ]]; then
+  if "${UNIVTAC_PYTHON}" "${REPO_ROOT}/scripts/compare_ablation.py" --help >/dev/null 2>&1; then
+    record "compare: DRY-RUN (script imports and --help works)"
+  else
+    record "compare: DRY-RUN FAILED -- compare_ablation.py --help errored"
+  fi
+else
+  "${UNIVTAC_PYTHON}" "${REPO_ROOT}/scripts/compare_ablation.py" \
+    --results-dir "${RESULTS_DIR}" \
+    --baseline-arm baseline_finetuned \
+    --tactile-arm tactile \
+    --json "${STAGE_LOG_DIR}/comparison.json" \
+    2>&1 | tee "${STAGE_LOG_DIR}/compare.log"
+  record "compare: exit ${PIPESTATUS[0]}"
+fi
 
 # --------------------------------------------------------------------------- #
 # Summary
