@@ -1,0 +1,17 @@
+# Dependencies for the UniVTAC / Isaac Lab side of the pipeline.
+#
+# Deliberately tiny: this is installed into Isaac Sim's interpreter, which pins
+# its own torch build. Nothing here pulls torch, transformers or gr00t --
+# the model runs in a separate process behind a ZeroMQ socket.
+#
+#   conda activate UniVTAC && pip install -r requirements-client.txt
+
+numpy>=1.24
+pyzmq>=25.0            # transport to the GR00T PolicyServer
+msgpack>=1.0           # its wire format
+msgpack-numpy>=0.4.8   # ndarray codec used by gr00t's MsgSerializer
+PyYAML>=6.0            # reading UniVTAC task_config/*.yml
+
+# gymnasium is optional: it is only used to publish an observation_space, and
+# UniVTAC's environment already provides it via Isaac Lab.
+# gymnasium>=0.29

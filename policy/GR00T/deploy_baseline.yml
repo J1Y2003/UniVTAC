@@ -1,0 +1,45 @@
+# Ablation arm A -- baseline: vision + language + proprioception, NO tactile.
+#
+#   bash eval_policy.sh <task> demo GR00T/deploy_baseline 0
+#
+# Zero-shot on the released checkpoint: OXE_DROID_RELATIVE_EEF_RELATIVE_JOINT is
+# the base model's Franka Panda tag (DROID is a Panda), so its state keys
+# eef_9d / joint_position / gripper_position map straight onto UniVTAC's
+# embodiment observation. See docs/ABLATION.md for why this is a *reference*
+# point rather than the tactile arm's like-for-like control.
+
+policy_name: GR00T          # must match the directory under UniVTAC/policy/
+arm: baseline
+
+# --- inference server -------------------------------------------------------
+# Point at a server already running in the GR00T environment (recommended on
+# SLURM: see slurm/eval_ablation.sbatch). Set groot_port: 0 together with
+# groot_python to have the policy spawn one instead.
+groot_host: 127.0.0.1
+groot_port: 5555
+groot_startup_timeout: 900
+groot_request_timeout_ms: 120000
+
+# Only used when groot_port is 0 (subprocess mode):
+# groot_python: /opt/conda/envs/gr00t/bin/python
+# groot_model_path: nvidia/GR00T-N1.7-3B
+# groot_embodiment_tag: OXE_DROID_RELATIVE_EEF_RELATIVE_JOINT
+# groot_server_log: eval_result/groot_server_baseline.log
+
+# --- control ----------------------------------------------------------------
+# Actions executed per predicted chunk before re-planning. Null = the whole
+# chunk (40 for the DROID tag). 8 keeps the loop responsive on contact-rich
+# tasks at 5x fewer forward passes than closed-loop.
+execution_horizon: 8
+action_type: qpos           # 7 arm joint targets + 1 gripper
+
+# --- gripper convention -----------------------------------------------------
+# DROID-style checkpoints emit 1.0 == closed; UniVTAC wants metres of finger
+# opening where larger == open. Verify against your checkpoint before trusting
+# a low success rate (docs/ABLATION.md, "Calibration you must check").
+gripper_invert: true
+gripper_max_qpos: 0.039
+
+# --- language ---------------------------------------------------------------
+# UniVTAC samples from instructions/<task>.json; leave unset to use the task's own.
+instruction_type: seen

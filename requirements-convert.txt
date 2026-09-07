@@ -1,0 +1,8 @@
+# Extra dependencies for scripts/convert_univtac_to_lerobot.py only.
+#
+# Offline preprocessing: run it as its own batch job, not on a login node.
+
+-r requirements-client.txt
+h5py>=3.9              # reading UniVTAC's collection dumps
+pyarrow>=14.0          # writing LeRobot parquet shards
+imageio[ffmpeg]>=2.31  # writing the per-episode mp4s (opencv-python also works)

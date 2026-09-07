@@ -1,0 +1,6 @@
+# Everything needed to run the test suite. No GPU, Isaac Sim or gr00t required.
+#
+#   pip install -r requirements-dev.txt && pytest tests -q
+
+-r requirements-client.txt
+pytest>=7.4

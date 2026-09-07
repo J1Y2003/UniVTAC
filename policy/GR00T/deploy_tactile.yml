@@ -1,0 +1,51 @@
+# Ablation arm B -- tactile-enabled: the baseline state vector with the
+# flattened UniVTAC tactile array concatenated onto it.
+#
+#   bash eval_policy.sh <task> demo GR00T/deploy_tactile 0
+#
+# REQUIRES A FINETUNED CHECKPOINT. Extra state dimensions change the state
+# layout, and GR00T's state projector is embodiment-conditioned, so this arm
+# only runs under NEW_EMBODIMENT -- a tag that ships in no released checkpoint
+# (gr00t/data/embodiment_tags.py::FINETUNE_ONLY_TAGS). Finetune first with
+# slurm/finetune.sbatch and configs/modality/univtac_tactile_config.py.
+
+policy_name: GR00T
+arm: tactile
+
+# --- tactile ----------------------------------------------------------------
+# depth_pool: average-pool the gel height map (UniVTAC's tactile sensors are
+#   camera-based, so this is the "flattened tactile array"; see docs/ABLATION.md)
+# marker:     pool the marker-motion displacement field instead
+# video:      pass tactile RGB as extra video streams, leaving the state alone
+tactile_mode: depth_pool
+tactile_sensors: [left_tactile, right_tactile]
+tactile_pool_grid: [8, 6]   # 48 dims/sensor -> 113-D state (cap is 132)
+
+# The UniVTAC task config must expose the data type this mode reads. In
+# task_config/demo.yml, observations.tactile already lists
+# ['rgb', 'rgb_marker', 'marker', 'depth', 'pose'] -- keep 'depth' for
+# depth_pool and 'marker' for marker mode.
+
+# --- inference server -------------------------------------------------------
+groot_host: 127.0.0.1
+groot_port: 5556
+groot_startup_timeout: 900
+groot_request_timeout_ms: 120000
+
+# groot_python: /opt/conda/envs/gr00t/bin/python
+# groot_model_path: /ckpt/univtac-tactile/checkpoint-20000
+# groot_embodiment_tag: NEW_EMBODIMENT
+# groot_modality_config: configs/modality/univtac_tactile_config.py
+
+# --- control ----------------------------------------------------------------
+# Keep identical to deploy_baseline.yml: the execution horizon changes the
+# closed-loop rate and would otherwise confound the tactile comparison.
+execution_horizon: 8
+action_type: qpos
+
+# A checkpoint finetuned on UniVTAC data via scripts/convert_univtac_to_lerobot.py
+# emits the UniVTAC gripper convention directly, so no inversion.
+gripper_invert: false
+gripper_max_qpos: 0.039
+
+instruction_type: seen
