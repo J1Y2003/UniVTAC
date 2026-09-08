@@ -312,7 +312,7 @@ to the cluster's unified folder, `{NFS}/{user}/...`:
 `MODEL_OUTPUT_DIR` is **required**, not defaulted: the policy's own
 `train.sbatch` asserts it, jobs submitted without it are to be rejected
 outright in future, and a silent fallback to home NFS is the sprawl the
-policy exists to stop. `overnight_ablation.sbatch` and `finetune.sbatch` both
+policy exists to stop. `benchmark_task.sbatch` and `finetune.sbatch` both
 refuse an output path outside the unified folder unless
 `ALLOW_NONSTANDARD_OUTPUT=1`.
 

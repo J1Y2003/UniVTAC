@@ -220,10 +220,10 @@ The knobs are exposed for a deliberate sweep, left unset so GR00T's defaults
 apply:
 
 ```bash
-LEARNING_RATE=1e-5 WEIGHT_DECAY=1e-4 bash slurm/submit_overnight.sh
+LEARNING_RATE=1e-5 WEIGHT_DECAY=1e-4 bash slurm/submit_benchmark.sh
 ```
 
-`overnight_ablation.sbatch` records the learning rate and weight decay in its
+`benchmark_task.sbatch` records the learning rate and weight decay in its
 pinned recipe alongside the GPU count and step budget, and refuses a
 resubmission that changes them — otherwise a walltime kill could train the
 second variant at a different learning rate and confound the ablation

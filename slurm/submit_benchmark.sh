@@ -1,15 +1,24 @@
 #!/bin/bash
-# One-liner submitter for the full ablation. Run from the repo root:
+# Submitter for the GR00T N1.7 x UniVTAC benchmark: one finetune-then-evaluate
+# job per task. Run from the repo root:
 #
-#   bash slurm/submit_overnight.sh                 # submit
-#   bash slurm/submit_overnight.sh --print         # show the sbatch command only
-#   bash slurm/submit_overnight.sh --test-only     # run the submit filter, queue nothing
-#   bash slurm/submit_overnight.sh --dry           # DRY_RUN=1 locally, no sbatch at all
+#   bash slurm/submit_benchmark.sh                 # submit
+#   bash slurm/submit_benchmark.sh --print         # show the sbatch command only
+#   bash slurm/submit_benchmark.sh --test-only     # run the submit filter, queue nothing
+#   bash slurm/submit_benchmark.sh --dry           # DRY_RUN=1 locally, no sbatch at all
 #
 # Everything below is an overridable default, so a changed path is one variable
 # and not a rewritten command line:
 #
-#   TASK=insert_hole MAX_STEPS=2000 bash slurm/submit_overnight.sh
+#   TASK=insert_hole MAX_STEPS=2000 bash slurm/submit_benchmark.sh
+#
+# Two tiers of task, submitted in that order:
+#
+#   TASKS        the three reported tasks -- insert_hole, insert_tube,
+#                pull_out_key -- submitted first and unconstrained.
+#   EXTRA_TASKS  lift_bottle, submitted last and gated behind all of TASKS
+#                with --dependency=afterany, so it cannot take a GPU from a
+#                reported task. EXTRA_TASKS="" skips it.
 #
 # Why a wrapper: the `sbatch --export=ALL,...` form needs seven absolute paths
 # plus four site-specific flags, which is unreadable to type and easy to get
@@ -47,7 +56,7 @@ PARTITION="${PARTITION:-sjw_alinlab}"
 # "module must have its parameters and buffers ... on device: cuda:0 ... but
 # found one on device: cpu". More GPUs would also change the effective batch
 # size rather than just the speed, and whatever you pick is locked in for both
-# variants by the recipe pinning in overnight_ablation.sbatch.
+# variants by the recipe pinning in benchmark_task.sbatch.
 GPUS="${GPUS:-1}"
 # NO TIMELIMIT, deliberately. Site rule: never pass --time. The job gets the
 # maximum the partition allows, or runs until the script exits, whichever comes
@@ -63,6 +72,18 @@ WCKEY="${WCKEY:-project-short-name:sub_4dpdata}"
 #
 # Default is the three tasks the project cares about. `TASK=x` still works.
 TASKS="${TASKS:-${TASK:-insert_hole insert_tube pull_out_key}}"
+# A second, LOWER-PRIORITY tier, submitted only after every job in TASKS has
+# been queued and gated behind them with --dependency, so it can never take a
+# GPU that a reported task still wants. `lift_bottle` is here because it is
+# deliberately NOT one of the three reported tasks: it is the task any
+# hyperparameter sweep is allowed to touch without fitting the numbers we
+# report (see docs/ABLATION.md#comparability-with-univtacs-act). Having a
+# trained lift_bottle model is still useful -- it is the fourth data point and
+# the sweep substrate -- it just must not compete for the queue.
+#
+# Set EXTRA_TASKS="" to submit the three priority tasks alone.
+EXTRA_TASKS="${EXTRA_TASKS:-lift_bottle}"
+ALL_TASKS="${TASKS} ${EXTRA_TASKS}"
 TASK_CONFIG="${TASK_CONFIG:-clean}"
 # 100, from the paper: "All policies are trained on 50 automatically collected
 # full trajectories per task and evaluated over 100 test rollouts." Comparing a
@@ -98,6 +119,7 @@ printf '  %-16s %s\n' \
   gpus "${GPUS}" \
   wckey "${WCKEY}" \
   tasks "${TASKS}" \
+  extra_tasks "${EXTRA_TASKS:-<none>}" \
   task_config "${TASK_CONFIG}" \
   variants "${VARIANTS}" \
   episodes "${EPISODES}" \
@@ -113,19 +135,37 @@ check_exec UNIVTAC_PYTHON "${UNIVTAC_PYTHON}"
 check_dir  DATA_ROOT      "${DATA_ROOT}"
 # Only the variants actually being trained -- demanding a tactile dataset we
 # deliberately are not training would block the submit for no reason.
-for task in ${TASKS}; do
+# A missing dataset for a PRIORITY task blocks the submit; a missing dataset
+# for an EXTRA task only drops that task. Otherwise an unconverted lift_bottle
+# would hold up the three tasks we actually report, which is backwards.
+EXTRA_TASKS_OK=""
+for task in ${ALL_TASKS}; do
+  extra=0
+  for e in ${EXTRA_TASKS}; do [[ "${task}" == "${e}" ]] && extra=1; done
+  task_ok=1
   for variant in ${VARIANTS}; do
     dataset="${DATA_ROOT}/univtac-${task}-${variant}"
     n=$(find "${dataset}/data" -name '*.parquet' 2>/dev/null | wc -l)
     if [[ "${n}" -gt 0 ]]; then
       echo "  ok  ${task}/${variant}: ${n} parquet in ${dataset}"
     else
-      echo "  MISSING dataset ${dataset}" >&2
-      echo "        convert it: sbatch --wckey=project-short-name:sub_4dpdata --partition=cpu --export=ALL,TASK=${task},VARIANT=${variant},EPISODES=50 slurm/convert.sbatch" >&2
-      FAIL=1
+      task_ok=0
+      convert="sbatch --wckey=project-short-name:sub_4dpdata --partition=cpu --export=ALL,TASK=${task},VARIANT=${variant},TASK_CONFIG=${TASK_CONFIG} slurm/convert.sbatch"
+      if [[ "${extra}" -eq 1 ]]; then
+        echo "  skip ${task}/${variant}: no dataset, and it is an EXTRA task -- not submitting it" >&2
+        echo "        convert it later: ${convert}" >&2
+      else
+        echo "  MISSING dataset ${dataset}" >&2
+        echo "        convert it: ${convert}" >&2
+        FAIL=1
+      fi
     fi
   done
+  [[ "${extra}" -eq 1 && "${task_ok}" -eq 1 ]] && EXTRA_TASKS_OK+="${task} "
 done
+# Only the extra tasks that actually have data.
+EXTRA_TASKS="${EXTRA_TASKS_OK% }"
+ALL_TASKS="${TASKS} ${EXTRA_TASKS}"
 # SLURM opens the --output file before the script runs, so a missing logs/ kills
 # the job instantly with no log to explain it.
 # Every GR00T checkpoint loads the gated nvidia/Cosmos-Reason2-2B, so no token
@@ -179,9 +219,9 @@ exports_for() {
 }
 
 sbatch_args_for() {
-  local task="$1"
+  local task="$1" dep="${2:-}"
   # No --time, no --cpus-per-task, no --mem: all three are site rules. See the
-  # note at the top of slurm/overnight_ablation.sbatch.
+  # note at the top of slurm/benchmark_task.sbatch.
   SBATCH_ARGS=(
     --partition="${PARTITION}"
     --gres="gpu:${GPUS}"
@@ -189,42 +229,67 @@ sbatch_args_for() {
     --job-name="$(job_name_for "${task}")"
     --export="$(exports_for "${task}")"
   )
+  # afterany, not afterok: an extra task is an independent finetune on its own
+  # dataset, so a priority task crashing is no reason to abandon it. The
+  # dependency exists purely to order the QUEUE, not to express a data
+  # dependency. (afterok would leave lift_bottle stuck in DependencyNeverSatisfied
+  # forever if one of the three failed, needing a manual scancel.)
+  [[ -n "${dep}" ]] && SBATCH_ARGS+=(--dependency="afterany:${dep}")
 }
 
 case "${MODE}" in
   --dry)
-    for task in ${TASKS}; do
+    for task in ${ALL_TASKS}; do
       echo "=== preflight ${task} (DRY_RUN=1), submitting nothing ==="
       env MODEL_OUTPUT_DIR="${MODEL_OUTPUT_DIR}" UNIVTAC_ROOT="${UNIVTAC_ROOT}" \
           UNIVTAC_PYTHON="${UNIVTAC_PYTHON}" GROOT_ROOT="${GROOT_ROOT}" \
           GROOT_PYTHON="${GROOT_PYTHON}" HF_HOME="${HF_HOME}" DATA_ROOT="${DATA_ROOT}" \
           TASK="${task}" TASK_CONFIG="${TASK_CONFIG}" EPISODES="${EPISODES}" \
           VARIANTS="${VARIANTS}" \
-          DRY_RUN=1 bash "${REPO_ROOT}/slurm/overnight_ablation.sbatch"
+          DRY_RUN=1 bash "${REPO_ROOT}/slurm/benchmark_task.sbatch"
       echo
     done
     ;;
   --print)
-    for task in ${TASKS}; do
+    for task in ${ALL_TASKS}; do
       sbatch_args_for "${task}"
-      echo "sbatch ${SBATCH_ARGS[*]} slurm/overnight_ablation.sbatch"
+      echo "sbatch ${SBATCH_ARGS[*]} slurm/benchmark_task.sbatch"
     done
     ;;
   --test-only)
-    for task in ${TASKS}; do
+    for task in ${ALL_TASKS}; do
       sbatch_args_for "${task}"
-      sbatch --test-only "${SBATCH_ARGS[@]}" "${REPO_ROOT}/slurm/overnight_ablation.sbatch"
+      sbatch --test-only "${SBATCH_ARGS[@]}" "${REPO_ROOT}/slurm/benchmark_task.sbatch"
     done
     ;;
   submit)
     cd "${REPO_ROOT}"
     submitted=() ; failed=0
+    # Phase 1: the reported tasks, unconstrained, so they start as soon as a
+    # GPU frees up.
+    priority_ids=""
     for task in ${TASKS}; do
       sbatch_args_for "${task}"
-      if out=$(sbatch --parsable "${SBATCH_ARGS[@]}" slurm/overnight_ablation.sbatch); then
+      if out=$(sbatch --parsable "${SBATCH_ARGS[@]}" slurm/benchmark_task.sbatch); then
         jobid="${out%%;*}"
         submitted+=("${jobid} ${task}")
+        priority_ids+="${jobid}:"
         echo "submitted ${jobid}  ${task}"
+      else
+        echo "FAILED to submit ${task}" >&2
+        failed=1
+      fi
+    done
+    # Phase 2: the extra tasks, held until every phase-1 job has finished. With
+    # GPUS=1 and one job per task the three run concurrently if the queue
+    # allows; lift_bottle then takes whatever is left.
+    dep="${priority_ids%:}"
+    for task in ${EXTRA_TASKS}; do
+      sbatch_args_for "${task}" "${dep}"
+      if out=$(sbatch --parsable "${SBATCH_ARGS[@]}" slurm/benchmark_task.sbatch); then
+        jobid="${out%%;*}"
+        submitted+=("${jobid} ${task} (after ${dep:-nothing})")
+        echo "submitted ${jobid}  ${task}  [held until ${dep:-<no dependency>}]"
       else
         echo "FAILED to submit ${task}" >&2
         failed=1
@@ -232,13 +297,13 @@ case "${MODE}" in
     done
     if ((${#submitted[@]})); then
       echo
-      echo "Submitted ${#submitted[@]} job(s), one per task:"
+      echo "Submitted ${#submitted[@]} job(s), one per task (extras held last):"
       printf '  %s\n' "${submitted[@]}"
       echo
       echo "Watch them with:"
       echo "  squeue -u ${USER} -o '%.10i %.60j %.9T %.10M %.20R'"
       echo "  tail -f logs/univtac-groot-per-task-*.out          # preflight, then stages"
-      echo "  tail -f logs/overnight-<jobid>/finetune-${VARIANTS%% *}.log"
+      echo "  tail -f logs/benchmark-<task>-<jobid>/finetune-${VARIANTS%% *}.log"
       echo
       echo "Aggregate when they finish:"
       echo "  python scripts/compare_ablation.py --results-dir eval_result"
@@ -246,8 +311,9 @@ case "${MODE}" in
     exit ${failed}
     ;;
   *)
-    echo "usage: bash slurm/submit_overnight.sh [--print|--test-only|--dry]" >&2
-    echo "  TASKS=\"a b c\"  VARIANTS=...  EPISODES=N  GPUS=N  are all overridable" >&2
+    echo "usage: bash slurm/submit_benchmark.sh [--print|--test-only|--dry]" >&2
+    echo "  TASKS=\"a b c\"  EXTRA_TASKS=\"d\"  VARIANTS=...  EPISODES=N  GPUS=N" >&2
+    echo "  are all overridable. EXTRA_TASKS run last, gated behind TASKS." >&2
     exit 2
     ;;
 esac

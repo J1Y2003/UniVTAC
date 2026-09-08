@@ -39,7 +39,7 @@ RETENTION_DAYS="${RETENTION_DAYS:-4}"
 MODE="${1:-copy}"
 
 # Resolve the checkpoint evaluation actually used: the `final` symlink written by
-# overnight_ablation.sbatch, else the highest-numbered checkpoint-N.
+# benchmark_task.sbatch, else the highest-numbered checkpoint-N.
 resolve_final() {
   local out_dir="$1" latest="" d n
   if [[ -e "${out_dir}/final" ]]; then

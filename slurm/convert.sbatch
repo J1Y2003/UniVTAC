@@ -98,8 +98,8 @@ if [[ -z "${REPO_ROOT:-}" ]]; then
   exit 2
 fi
 UNIVTAC_ROOT="${UNIVTAC_ROOT:?set UNIVTAC_ROOT to the UniVTAC checkout}"
-# Same default as submit_overnight.sh, smoke_test.sh and
-# overnight_ablation.sbatch. This used to be a hard `:?` requirement while
+# Same default as submit_benchmark.sh, smoke_test.sh and
+# benchmark_task.sbatch. This used to be a hard `:?` requirement while
 # every other script defaulted it, so forgetting to export it failed the
 # convert job after a queue wait -- and, worse, exporting a DIFFERENT value
 # here than the trainer uses would convert to one place and train from
@@ -136,7 +136,7 @@ TASK_CONFIG="${TASK_CONFIG:-clean}"
 # full released 100 per task -- that is the intended setting.
 #
 # NOTE the name collision: the eval jobs (eval_ablation.sbatch,
-# overnight_ablation.sbatch) use EPISODES for the number of EVALUATION
+# benchmark_task.sbatch) use EPISODES for the number of EVALUATION
 # ROLLOUTS, and --export=ALL carries whatever the submitting shell holds. So
 # prefer CONVERT_EPISODES here; EPISODES is still honoured for compatibility.
 CONVERT_EPISODES="${CONVERT_EPISODES:-${EPISODES:-}}"

@@ -19,7 +19,7 @@
 #
 # ISOLATION. This writes checkpoints, stage markers and results under
 # SMOKE_ROOT, never the real CKPT_ROOT or eval_result/. That matters for more
-# than tidiness: overnight_ablation.sbatch keeps its stage markers and its
+# than tidiness: benchmark_task.sbatch keeps its stage markers and its
 # pinned training recipe in CKPT_ROOT/.stages, so a shared root would let a
 # 20-step smoke run mark the real finetune "complete" and pin the recipe to
 # 1 GPU / 20 steps. The dataset is the only thing shared, read-only.
@@ -59,7 +59,7 @@ GPUS="${GPUS:-1}"
 # No --time: site rule. `debug` caps at 3 h and the job takes that automatically.
 # Site rule: every sbatch and srun carries this.
 WCKEY="${WCKEY:-project-short-name:sub_4dpdata}"
-# Default OFF -- see the note in overnight_ablation.sbatch. cuDNN disabled
+# Default OFF -- see the note in benchmark_task.sbatch. cuDNN disabled
 # costs ~86x on the vision tower, so a smoke test with it on tells you nothing
 # useful about the step rate.
 DISABLE_CUDNN="${DISABLE_CUDNN:-0}"
@@ -167,7 +167,7 @@ echo "  job        ${GPUS} gpu on ${PARTITION}, wckey=${WCKEY}, no --time"
 echo
 
 if [[ "${MODE}" == "--print" ]]; then
-  echo "sbatch ${SBATCH_ARGS[*]} slurm/overnight_ablation.sbatch"
+  echo "sbatch ${SBATCH_ARGS[*]} slurm/benchmark_task.sbatch"
   exit 0
 fi
 
@@ -191,7 +191,7 @@ if [[ -n "${existing}" ]]; then
 fi
 
 cd "${REPO_ROOT}"
-out=$(sbatch --parsable "${SBATCH_ARGS[@]}" slurm/overnight_ablation.sbatch) || exit $?
+out=$(sbatch --parsable "${SBATCH_ARGS[@]}" slurm/benchmark_task.sbatch) || exit $?
 jobid="${out%%;*}"
 echo "Submitted smoke job ${jobid}"
 echo

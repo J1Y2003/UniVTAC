@@ -1,20 +1,20 @@
 #!/bin/bash
 # Full ablation for one task, unattended: finetune both variants, evaluate both,
-# compare. Designed to be submitted and left alone overnight.
+# compare. Submit one of these per task and leave it alone; it is resumable.
 #
-#   sbatch --wckey=project-short-name:sub_4dpdata slurm/overnight_ablation.sbatch
-#   sbatch --wckey=project-short-name:sub_4dpdata --export=ALL,TASK=lift_bottle,EPISODES=50 slurm/overnight_ablation.sbatch
+#   sbatch --wckey=project-short-name:sub_4dpdata slurm/benchmark_task.sbatch
+#   sbatch --wckey=project-short-name:sub_4dpdata --export=ALL,TASK=lift_bottle,EPISODES=50 slurm/benchmark_task.sbatch
 #
-# Prefer slurm/submit_overnight.sh, which resolves every path for you. Do not
+# Prefer slurm/submit_benchmark.sh, which resolves every path for you. Do not
 # raise --gres above gpu:1 -- see the note on the #SBATCH --gres line below.
 #
 # BEFORE submitting, verify it without spending GPU time. DRY_RUN=1 runs the
 # full preflight, prints the exact arguments every stage would use, checks the
 # aggregator imports, and exits -- cheap enough for a login node:
 #
-#   bash -n slurm/overnight_ablation.sbatch --wckey=project-short-name:sub_4dpdata          # syntax only, instant
-#   DRY_RUN=1 bash slurm/overnight_ablation.sbatch --wckey=project-short-name:sub_4dpdata   # paths, datasets, plan
-#   sbatch --wckey=project-short-name:sub_4dpdata --test-only slurm/overnight_ablation.sbatch  # submit filter + resources
+#   bash -n slurm/benchmark_task.sbatch --wckey=project-short-name:sub_4dpdata          # syntax only, instant
+#   DRY_RUN=1 bash slurm/benchmark_task.sbatch --wckey=project-short-name:sub_4dpdata   # paths, datasets, plan
+#   sbatch --wckey=project-short-name:sub_4dpdata --test-only slurm/benchmark_task.sbatch  # submit filter + resources
 #
 # Stages, in order:
 #   1. preflight     -- every path and dataset checked BEFORE any GPU time is spent
@@ -53,12 +53,12 @@
 #
 # Do pass --partition explicitly, or export SBATCH_PARTITION: `debug` is the
 # default here and is short-lived, so it is not where long training belongs.
-#SBATCH --job-name=univtac-groot-full-ablation-finetune-both-variants-then-evaluate-and-compare
+#SBATCH --job-name=univtac-groot-benchmark-one-task-finetune-then-evaluate
 #SBATCH --output=logs/%x-%j.out
 #SBATCH --error=logs/%x-%j.err
 # 1 GPU, deliberately: --num-gpus > 1 makes launch_finetune.py wrap the model
 # in nn.DataParallel, which dies with "module must have its parameters ... on
-# device: cpu". Overridden by slurm/submit_overnight.sh's --gres.
+# device: cpu". Overridden by slurm/submit_benchmark.sh's --gres.
 #SBATCH --gres=gpu:1
 #SBATCH --wckey=project-short-name:sub_4dpdata
 
@@ -231,7 +231,7 @@ NUM_GPUS="${NUM_GPUS:-$(awk -F, '{print NF}' <<<"${CUDA_VISIBLE_DEVICES:-0}")}"
 
 mkdir -p logs "${STAGE_DIR}" "${CKPT_ROOT}" "${RESULTS_DIR}"
 
-STAGE_LOG_DIR="${REPO_ROOT}/logs/overnight-${SLURM_JOB_ID:-$$}"
+STAGE_LOG_DIR="${REPO_ROOT}/logs/benchmark-${TASK}-${SLURM_JOB_ID:-$$}"
 mkdir -p "${STAGE_LOG_DIR}"
 
 declare -a SUMMARY=()
@@ -320,7 +320,7 @@ if [[ "${USE_WANDB:-1}" == "1" ]]; then
        that venv, or pass USE_WANDB=0 to rely on the stdout logs alone."
 fi
 
-# A missing or truncated dataset is the classic way an overnight run wastes a
+# A missing or truncated dataset is the classic way a long unattended run wastes a
 # night, so verify shape now rather than discovering it at step 0 of training.
 for variant in ${VARIANTS}; do
   dataset="${DATA_ROOT}/univtac-${TASK}-${variant}"

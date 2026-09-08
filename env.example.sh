@@ -84,7 +84,7 @@ export SBATCH_WCKEY="project-short-name:sub_4dpdata"
 # checkpoints: the shared home mount is far more contended.
 # The shape matters: {NFS}/{user}/checkpoints/{job}. This example previously
 # omitted the `checkpoints/` level, which disagreed with both the policy and
-# slurm/submit_overnight.sh's own default.
+# slurm/submit_benchmark.sh's own default.
 export MODEL_OUTPUT_DIR="/rlwrld-unified-checkpoints/$USER/checkpoints/univtac-groot"
 
 # Where finetuned checkpoints go. Defaults to MODEL_OUTPUT_DIR inside the job
@@ -93,7 +93,7 @@ export CKPT_ROOT="${MODEL_OUTPUT_DIR}"
 
 # Where converted datasets go. Must be on SHARED storage: the convert job and
 # the training job land on different nodes, and a /tmp default would put the
-# dataset somewhere the trainer cannot see. Matches slurm/submit_overnight.sh's
+# dataset somewhere the trainer cannot see. Matches slurm/submit_benchmark.sh's
 # own default, so conversion and training agree without extra flags.
 export DATA_ROOT="$HOME/jaewon/workspace/groot-data"
 

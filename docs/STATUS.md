@@ -96,8 +96,8 @@ version via `cudnnGetVersion()` and fails on a mismatch, because pip metadata
 reported the pinned version while the files on disk were a different release.
 
 **Defaults changed as a result:** `DISABLE_CUDNN` now defaults to `0` in
-`overnight_ablation.sbatch` and `smoke_test.sh`, and `GPUS` defaults to `1` in
-`submit_overnight.sh` (it was 2, which triggers the `nn.DataParallel` failure
+`benchmark_task.sbatch` and `smoke_test.sh`, and `GPUS` defaults to `1` in
+`submit_benchmark.sh` (it was 2, which triggers the `nn.DataParallel` failure
 already in the table below).
 
 ## Failures already diagnosed (do not re-litigate)
@@ -149,13 +149,31 @@ UniVTAC *without* tactile input, so only `baseline_finetuned` (17-D state) gets
 trained. The tactile pipeline stays in the repo and stays working — the
 converter, the 113-D modality config and the `tactile` variant are all
 exercised and verified — it just is not being trained. `VARIANTS` now defaults
-to `baseline_finetuned` in `submit_overnight.sh`; pass
+to `baseline_finetuned` in `submit_benchmark.sh`; pass
 `VARIANTS="tactile baseline_finetuned"` to run the ablation again.
+
+**`lift_bottle` trains fourth, gated** (2026-09-08). It is submitted by
+`submit_benchmark.sh` as `EXTRA_TASKS`, with `--dependency=afterany` on all
+three priority jobs, so it queues behind them and can never take a GPU a
+reported task is waiting for. `afterany` rather than `afterok` on purpose: it
+is an independent finetune on its own dataset, so a priority task crashing is
+no reason to abandon it, and `afterok` would strand it in
+`DependencyNeverSatisfied` needing a manual `scancel`. Having the model is
+useful — it is a fourth data point and the substrate for any sweep — it just
+is not a reported task.
+
+**Renamed, 2026-09-08:** `overnight_ablation.sbatch` →
+`benchmark_task.sbatch`, `submit_overnight.sh` → `submit_benchmark.sh`, and the
+per-run stage log directory `logs/overnight-<jobid>` →
+`logs/benchmark-<task>-<jobid>`. The old names described *when* the job was
+meant to run and *two variants* that are no longer both trained; the new ones
+describe what it does. The stage directory under `CKPT_ROOT/.stages` is
+unchanged, so in-flight resumability and the recipe pins survive the rename.
 
 **Three tasks first:** `insert_hole`, `insert_tube`, `pull_out_key`. These are
 the contact-rich insertion/extraction tasks where the benchmark is most
 interesting, and three per-task finetunes at ~2.1 h each is a day's work rather
-than a week's. `TASKS` in `submit_overnight.sh` defaults to exactly these.
+than a week's. `TASKS` in `submit_benchmark.sh` defaults to exactly these.
 
 **Settled: benchmark, not controlled ablation.** Hold the observation space
 (per-task cameras) and the evaluation protocol (100 rollouts, their seeds)

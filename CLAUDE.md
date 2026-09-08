@@ -90,7 +90,11 @@ its source; add to it rather than re-deriving.
 The submit filter rejects jobs violating any of these, usually with an
 unhelpful "Unspecified error":
 
-- job name **longer than 50 characters**
+- job name of **50 characters or fewer** -- the limit is a *floor*, not a
+  ceiling, which is the opposite of every other cluster. Verified in both
+  directions: `convert.sbatch`'s 63-character name and the benchmark jobs'
+  69-70 character names all submit, and a short name is refused. This is why
+  the job names here are absurdly descriptive -- do not shorten them
 - `MODEL_OUTPUT_DIR` set under `/rlwrld-unified-checkpoints/<user>/checkpoints/<job>`
 - `--wckey=project-short-name:sub_4dpdata` on **every** `sbatch` and `srun`.
   The string `project-short-name:` is a **literal part of the required
@@ -164,8 +168,8 @@ retrain it.
 ## How to run things
 
 ```bash
-bash slurm/submit_overnight.sh --dry    # full preflight, no GPU time, no submit
-bash slurm/submit_overnight.sh          # the real run (one long job)
+bash slurm/submit_benchmark.sh --dry    # full preflight, no GPU time, no submit
+bash slurm/submit_benchmark.sh          # the real run (one job per task)
 bash slurm/smoke_test.sh                # 20 steps + 1 eval episode, isolated
 bash slurm/preserve_outputs.sh          # rescue checkpoints from retention
 ```
@@ -173,7 +177,14 @@ bash slurm/preserve_outputs.sh          # rescue checkpoints from retention
 Everything is an overridable env var (`GPUS`, `MAX_STEPS`, `TASK`, `PARTITION`,
 ...). Prefer adding a variable over editing a command line.
 
-`overnight_ablation.sbatch` is resumable: stage markers plus
+`submit_benchmark.sh` submits **one job per task**, in two tiers: `TASKS`
+(the three reported tasks) go first and unconstrained, then `EXTRA_TASKS`
+(`lift_bottle`) is submitted with `--dependency=afterany` on all of them so
+it cannot take a GPU a reported task still wants. `lift_bottle` is separate
+because it is the only task a hyperparameter sweep may touch without
+fitting the reported numbers.
+
+`benchmark_task.sbatch` is resumable: stage markers plus
 `--resume-from-checkpoint`. It also **pins the training recipe** on first run
 (GPU count and `MAX_STEPS`) and refuses a mismatch, because `--num-gpus`
 multiplies the effective batch size -- training the two variants at different

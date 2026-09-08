@@ -81,7 +81,7 @@ BASE_MODEL="${BASE_MODEL:-nvidia/GR00T-N1.7-3B}"
 # Training-outputs policy: checkpoints belong under the cluster's unified
 # folder, {NFS}/{user}/... (Kakao: /rlwrld-unified-checkpoints). Default to
 # MODEL_OUTPUT_DIR rather than /tmp or scratch, and require one of them --
-# see the same check in overnight_ablation.sbatch.
+# see the same check in benchmark_task.sbatch.
 OUTPUT_DIR="${OUTPUT_DIR:-${MODEL_OUTPUT_DIR:-}}"
 if [[ -z "${OUTPUT_DIR}" ]]; then
   echo "error: set OUTPUT_DIR, or MODEL_OUTPUT_DIR=/rlwrld-unified-checkpoints/\$USER/checkpoints/<job>" >&2
