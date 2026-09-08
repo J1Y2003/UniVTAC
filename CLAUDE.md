@@ -92,8 +92,8 @@ unhelpful "Unspecified error":
 
 - job name **longer than 50 characters**
 - `MODEL_OUTPUT_DIR` set under `/rlwrld-unified-checkpoints/<user>/checkpoints/<job>`
-- `--wckey=sub_4dpdata` on **every** `sbatch` and `srun`. The project name is
-  strictly `sub_4dpdata` -- no prefix. The earlier
+- `--wckey=project-short-name:sub_4dpdata` on **every** `sbatch` and `srun`. The project name is
+  strictly `project-short-name:sub_4dpdata` -- no prefix. The earlier
   `project-short-name:sub_4dpdata` in this repo was an unfilled placeholder.
 
   **A `#SBATCH --wckey` header is not enough.** sbatch precedence is
@@ -101,7 +101,7 @@ unhelpful "Unspecified error":
   `SBATCH_WCKEY` in your shell -- e.g. an `env.sh` copied from the old
   `env.example.sh` -- silently overrides the header and the job goes out under
   the wrong project. `env.sh` is gitignored, so fixing the repo does not fix
-  yours: `export SBATCH_WCKEY=sub_4dpdata`.
+  yours: `export SBATCH_WCKEY=project-short-name:sub_4dpdata`.
 
   **Do not export `SLURM_WCKEY`.** SLURM sets it *inside* a job to report the
   wckey the job actually got, which is what every `.sbatch` re-checks at

@@ -54,7 +54,7 @@ GPUS="${GPUS:-1}"
 # first -- a limit can only ever cut the run short. A walltime kill is safe
 # anyway, since training resumes from its last checkpoint.
 # Site rule: every sbatch and srun carries this.
-WCKEY="${WCKEY:-sub_4dpdata}"
+WCKEY="${WCKEY:-project-short-name:sub_4dpdata}"
 
 # One job per task -- GR00T is finetuned PER TASK, matching UniVTAC's ACT,
 # which trains one policy per task. Three separate jobs rather than one long
@@ -121,7 +121,7 @@ for task in ${TASKS}; do
       echo "  ok  ${task}/${variant}: ${n} parquet in ${dataset}"
     else
       echo "  MISSING dataset ${dataset}" >&2
-      echo "        convert it: sbatch --wckey=sub_4dpdata --export=ALL,TASK=${task},VARIANT=${variant},EPISODES=50 slurm/convert.sbatch" >&2
+      echo "        convert it: sbatch --wckey=project-short-name:sub_4dpdata --export=ALL,TASK=${task},VARIANT=${variant},EPISODES=50 slurm/convert.sbatch" >&2
       FAIL=1
     fi
   done

@@ -351,7 +351,7 @@ Run it as soon as a finetune finishes, not days later.
 | `cuDNN error: CUDNN_STATUS_NOT_INITIALIZED` on the first `get_action` | The server inherited `LD_LIBRARY_PATH`/`CUDA_HOME` from the UniVTAC conda env (CUDA 12.4) while its torch is cu128. Launch it with `env -u LD_LIBRARY_PATH -u CUDA_HOME -u CUDA_PATH`; the job scripts do this automatically. Check free VRAM first, since genuine OOM reports the same error. |
 | `Arm motion planning failed on action 0` | cuRobo, not GR00T. Verify UniVTAC's own expert works: `bash collect_data.sh grasp_classify demo 0` |
 | `ValueError: Fast download using 'hf_transfer' is enabled (HF_HUB_ENABLE_HF_TRANSFER=1) but 'hf_transfer' package is not available` | The flag is a hard error, not a fallback, and it fires mid-download inside the *server* log so it reads like a checkpoint fault. `eval_ablation.sbatch` now probes `GROOT_PYTHON` for the package and only enables the flag when present. Override with `HF_HUB_ENABLE_HF_TRANSFER=0`, or install it: `$GROOT_PYTHON -m pip install hf_transfer` (worth it for the ~15 GB of weights). |
-| `sbatch: error: ... Batch job submission failed: Unspecified error` | This cluster's submit filter enforces site rules and rejects the job before it queues. Known rules: a job name **longer than 50 characters**, `MODEL_OUTPUT_DIR` set under `/rlwrld-unified-checkpoints`, `--wckey=sub_4dpdata`, and **no** `--cpus-per-task`, `--mem` or `--time` (jobs take the node's per-GPU defaults and the partition's maximum time). Check with `sbatch --test-only`, which runs the filter without queueing anything. |
+| `sbatch: error: ... Batch job submission failed: Unspecified error` | This cluster's submit filter enforces site rules and rejects the job before it queues. Known rules: a job name **longer than 50 characters**, `MODEL_OUTPUT_DIR` set under `/rlwrld-unified-checkpoints`, `--wckey=project-short-name:sub_4dpdata`, and **no** `--cpus-per-task`, `--mem` or `--time` (jobs take the node's per-GPU defaults and the partition's maximum time). Check with `sbatch --test-only`, which runs the filter without queueing anything. |
 | Port already in use with concurrent jobs | `eval_ablation.sbatch` derives a per-job port from `SLURM_JOB_ID`; pass `PORT=` to override |
 
 ---
@@ -393,7 +393,7 @@ interactive shell on a compute node and iterate there:
 
 ```bash
 # Adjust the partition/account names to your cluster.
-srun --gres=gpu:1 --wckey=sub_4dpdata --pty bash
+srun --gres=gpu:1 --wckey=project-short-name:sub_4dpdata --pty bash
 
 # Then, inside the allocation, run the two processes in one shell:
 export REPO_ROOT=~/UniVTAC-GR00T UNIVTAC_ROOT=~/UniVTAC
@@ -414,7 +414,7 @@ The eval job hosts Isaac Sim (scene plus offscreen rendering) *and* GR00T N1.7
 of VRAM for a single-GPU run. If your nodes are tighter than that, ask for two:
 
 ```bash
-sbatch --wckey=sub_4dpdata --gres=gpu:2 --export=ALL,VARIANT=baseline,TASK=insert_hole slurm/eval_ablation.sbatch
+sbatch --wckey=project-short-name:sub_4dpdata --gres=gpu:2 --export=ALL,VARIANT=baseline,TASK=insert_hole slurm/eval_ablation.sbatch
 ```
 
 `eval_ablation.sbatch` counts the GPUs SLURM allocated and puts the model on
@@ -438,12 +438,12 @@ bash scripts/install.sh && bash data/download.sh
 pytest tests -q
 
 # batch, in order
-sbatch --wckey=sub_4dpdata --export=ALL,VARIANT=baseline,TASK=insert_hole slurm/eval_ablation.sbatch   # zero-shot variant
+sbatch --wckey=project-short-name:sub_4dpdata --export=ALL,VARIANT=baseline,TASK=insert_hole slurm/eval_ablation.sbatch   # zero-shot variant
 
 # only if you need the tactile variant (it requires a finetune):
-sbatch --wckey=sub_4dpdata --array=0-7 --export=ALL,VARIANT=tactile slurm/convert.sbatch
-sbatch --wckey=sub_4dpdata --export=ALL,VARIANT=tactile,DATASET=$DATA_ROOT/univtac-insert_hole-tactile slurm/finetune.sbatch
-sbatch --wckey=sub_4dpdata --export=ALL,VARIANT=tactile,TASK=insert_hole,GROOT_MODEL=<ckpt> slurm/eval_ablation.sbatch
+sbatch --wckey=project-short-name:sub_4dpdata --array=0-7 --export=ALL,VARIANT=tactile slurm/convert.sbatch
+sbatch --wckey=project-short-name:sub_4dpdata --export=ALL,VARIANT=tactile,DATASET=$DATA_ROOT/univtac-insert_hole-tactile slurm/finetune.sbatch
+sbatch --wckey=project-short-name:sub_4dpdata --export=ALL,VARIANT=tactile,TASK=insert_hole,GROOT_MODEL=<ckpt> slurm/eval_ablation.sbatch
 
 # login node again
 python scripts/compare_ablation.py --results-dir eval_result --json ablation.json

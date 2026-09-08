@@ -481,7 +481,7 @@ def check_slurm(report: Report) -> None:
         report.add(WARN, "sbatch", "not on PATH - is this a submit host?")
 
 
-WCKEY = "sub_4dpdata"
+WCKEY = "project-short-name:sub_4dpdata"
 """Required on every sbatch and srun here; the submit filter rejects jobs without it."""
 
 
@@ -578,7 +578,7 @@ def next_step(*, have_results: bool, deep: bool) -> str:
     if not have_results:
         return (
             "  # Interactive first run (COMPUTE node - evaluation is GPU work):\n"
-            "  srun --gres=gpu:1 --wckey=sub_4dpdata --pty bash\n"
+            "  srun --gres=gpu:1 --wckey=project-short-name:sub_4dpdata --pty bash\n"
             "  # then follow docs/RUNBOOK.md step 4"
         )
     return (

@@ -9,11 +9,11 @@
 # One job per (task, variant). The state layout differs between variants, so each variant
 # needs its own dataset; see docs/ABLATION.md.
 #
-#   sbatch --wckey=sub_4dpdata --export=ALL,TASK=insert_hole,VARIANT=tactile slurm/convert.sbatch
+#   sbatch --wckey=project-short-name:sub_4dpdata --export=ALL,TASK=insert_hole,VARIANT=tactile slurm/convert.sbatch
 #
 # Or sweep every task as an array (one task per array index):
 #
-#   sbatch --wckey=sub_4dpdata --array=0-7 --export=ALL,VARIANT=tactile slurm/convert.sbatch
+#   sbatch --wckey=project-short-name:sub_4dpdata --array=0-7 --export=ALL,VARIANT=tactile slurm/convert.sbatch
 #
 # SITE RULES (see CLAUDE.md, "Cluster rules"). Enforced here; do not "helpfully"
 # reintroduce any of them:
@@ -24,14 +24,14 @@
 #     REASON=PartitionTimeLimit rather than failing fast.
 #   * NEVER pass --cpus-per-task or --mem. Jobs take the node's per-GPU
 #     defaults, and the submit filter rejects the job if either is specified.
-#   * ALWAYS pass --wckey=sub_4dpdata.
+#   * ALWAYS pass --wckey=project-short-name:sub_4dpdata.
 #
 # Do pass --partition explicitly, or export SBATCH_PARTITION: `debug` is the
 # default here and is short-lived, so it is not where long training belongs.
 #SBATCH --job-name=univtac-groot-convert-univtac-hdf5-demonstrations-to-lerobot-v2
 #SBATCH --output=logs/%x-%A_%a.out
 #SBATCH --error=logs/%x-%A_%a.err
-#SBATCH --wckey=sub_4dpdata
+#SBATCH --wckey=project-short-name:sub_4dpdata
 
 set -euo pipefail
 
@@ -41,17 +41,17 @@ set -euo pipefail
 # sbatch precedence is: command line > environment variable > #SBATCH directive.
 # So a stale SBATCH_WCKEY in the submitting shell (typically a copy of
 # env.example.sh from before the value was corrected) SILENTLY OVERRIDES the
-# `#SBATCH --wckey=sub_4dpdata` header above. That is exactly how a job once went
+# `#SBATCH --wckey=project-short-name:sub_4dpdata` header above. That is exactly how a job once went
 # out under the wrong project. The header alone is not enough; check it.
 #
 # SLURM_WCKEY is only set inside the job when a wckey was applied, so an unset
 # value defaults to the right answer rather than failing a valid job.
-if [[ -n "${SLURM_JOB_ID:-}" && "${SLURM_WCKEY:-sub_4dpdata}" != "sub_4dpdata" ]]; then
-  echo "error: this job's wckey is '${SLURM_WCKEY}', not 'sub_4dpdata'." >&2
-  echo "       Every job here must be accounted to 'sub_4dpdata'." >&2
+if [[ -n "${SLURM_JOB_ID:-}" && "${SLURM_WCKEY:-project-short-name:sub_4dpdata}" != "project-short-name:sub_4dpdata" ]]; then
+  echo "error: this job's wckey is '${SLURM_WCKEY}', not 'project-short-name:sub_4dpdata'." >&2
+  echo "       Every job here must be accounted to 'project-short-name:sub_4dpdata'." >&2
   echo "       Something in your environment overrode the #SBATCH header --" >&2
   echo "       almost certainly a stale SBATCH_WCKEY in env.sh. Fix it with:" >&2
-  echo "         export SBATCH_WCKEY=sub_4dpdata SLURM_WCKEY=sub_4dpdata" >&2
+  echo "         export SBATCH_WCKEY=project-short-name:sub_4dpdata SLURM_WCKEY=project-short-name:sub_4dpdata" >&2
   echo "       then resubmit. 'python scripts/preflight.py' also checks this." >&2
   exit 2
 fi
@@ -162,7 +162,7 @@ echo "=========================================================="
 
 if [[ ! -d "${RAW_DIR}" ]]; then
   echo "[job] no raw demonstrations at ${RAW_DIR}" >&2
-  echo "[job] fetch them with: bash slurm/download_data.sbatch --wckey=sub_4dpdata  (TASKS=${TASK})" >&2
+  echo "[job] fetch them with: bash slurm/download_data.sbatch --wckey=project-short-name:sub_4dpdata  (TASKS=${TASK})" >&2
   echo "[job] or collect them: bash collect_data.sh ${TASK} ${TASK_CONFIG} 0" >&2
   exit 1
 fi
@@ -233,4 +233,4 @@ PYTHONPATH="${REPO_ROOT}" "${CMD[@]}"
 
 echo "[job] converted dataset: ${OUT_DIR}"
 echo "[job] finetune with:"
-echo "  sbatch --wckey=sub_4dpdata --export=ALL,VARIANT=${VARIANT},DATASET=${OUT_DIR} ${REPO_ROOT}/slurm/finetune.sbatch"
+echo "  sbatch --wckey=project-short-name:sub_4dpdata --export=ALL,VARIANT=${VARIANT},DATASET=${OUT_DIR} ${REPO_ROOT}/slurm/finetune.sbatch"

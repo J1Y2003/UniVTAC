@@ -66,8 +66,8 @@ python scripts/convert_univtac_to_lerobot.py --task insert_hole \
     --out "$DATA/univtac-insert_hole-tactile" --variant tactile
 
 # 2. Finetune both, same recipe
-sbatch --wckey=sub_4dpdata --export=ALL,VARIANT=baseline_finetuned,DATASET=$DATA/univtac-insert_hole-baseline slurm/finetune.sbatch
-sbatch --wckey=sub_4dpdata --export=ALL,VARIANT=tactile,DATASET=$DATA/univtac-insert_hole-tactile           slurm/finetune.sbatch
+sbatch --wckey=project-short-name:sub_4dpdata --export=ALL,VARIANT=baseline_finetuned,DATASET=$DATA/univtac-insert_hole-baseline slurm/finetune.sbatch
+sbatch --wckey=project-short-name:sub_4dpdata --export=ALL,VARIANT=tactile,DATASET=$DATA/univtac-insert_hole-tactile           slurm/finetune.sbatch
 
 # 3. Evaluate all three variants
 bash slurm/submit_ablation.sh   # VARIANTS="baseline baseline_finetuned tactile"

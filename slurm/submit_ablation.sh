@@ -46,7 +46,7 @@ for variant in ${VARIANTS}; do
     # cannot be the short "uv-<variant>-<task>" it used to be. No --time, no
     # --cpus-per-task, no --mem; --wckey always. See CLAUDE.md, "Cluster rules".
     jobname="univtac-groot-evaluate-one-variant-on-one-task-${variant}-${task}"
-    cmd=(sbatch --job-name="${jobname}" --wckey="${WCKEY:-sub_4dpdata}"
+    cmd=(sbatch --job-name="${jobname}" --wckey="${WCKEY:-project-short-name:sub_4dpdata}"
          --export="${exports}" "${REPO_ROOT}/slurm/eval_ablation.sbatch")
     echo "${cmd[*]}"
     if [[ "${DRY_RUN:-0}" != "1" ]]; then

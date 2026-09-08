@@ -61,9 +61,9 @@ export HF_TOKEN="hf_REPLACE_ME"
 # --------------------------------------------------------------------------- #
 
 # This cluster requires a wckey on every sbatch and srun. The job scripts pass
-# `--wckey=sub_4dpdata` themselves; this export covers anything you submit by
+# `--wckey=project-short-name:sub_4dpdata` themselves; this export covers anything you submit by
 # hand, since sbatch reads SBATCH_WCKEY.
-export SBATCH_WCKEY="sub_4dpdata"
+export SBATCH_WCKEY="project-short-name:sub_4dpdata"
 
 # Do NOT export SLURM_WCKEY. SLURM sets it *inside* a job to report the wckey
 # the job actually received, which is what every .sbatch here re-checks at

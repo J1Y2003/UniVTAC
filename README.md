@@ -96,7 +96,7 @@ export UNIVTAC_PYTHON=$(conda run -n UniVTAC which python)
 export GROOT_PYTHON=~/Isaac-GR00T/.venv/bin/python   # uv's venv, not a conda env
 
 # Baseline, one task, 50 episodes
-sbatch --wckey=sub_4dpdata --export=ALL,VARIANT=baseline,TASK=insert_hole slurm/eval_ablation.sbatch
+sbatch --wckey=project-short-name:sub_4dpdata --export=ALL,VARIANT=baseline,TASK=insert_hole slurm/eval_ablation.sbatch
 
 # The full sweep: both variants x eight tasks
 TACTILE_MODEL=/ckpt/univtac-tactile/checkpoint-20000 bash slurm/submit_ablation.sh

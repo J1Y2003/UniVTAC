@@ -2,8 +2,8 @@
 # Full ablation for one task, unattended: finetune both variants, evaluate both,
 # compare. Designed to be submitted and left alone overnight.
 #
-#   sbatch --wckey=sub_4dpdata slurm/overnight_ablation.sbatch
-#   sbatch --wckey=sub_4dpdata --export=ALL,TASK=lift_bottle,EPISODES=50 slurm/overnight_ablation.sbatch
+#   sbatch --wckey=project-short-name:sub_4dpdata slurm/overnight_ablation.sbatch
+#   sbatch --wckey=project-short-name:sub_4dpdata --export=ALL,TASK=lift_bottle,EPISODES=50 slurm/overnight_ablation.sbatch
 #
 # Prefer slurm/submit_overnight.sh, which resolves every path for you. Do not
 # raise --gres above gpu:1 -- see the note on the #SBATCH --gres line below.
@@ -12,9 +12,9 @@
 # full preflight, prints the exact arguments every stage would use, checks the
 # aggregator imports, and exits -- cheap enough for a login node:
 #
-#   bash -n slurm/overnight_ablation.sbatch --wckey=sub_4dpdata          # syntax only, instant
-#   DRY_RUN=1 bash slurm/overnight_ablation.sbatch --wckey=sub_4dpdata   # paths, datasets, plan
-#   sbatch --wckey=sub_4dpdata --test-only slurm/overnight_ablation.sbatch  # submit filter + resources
+#   bash -n slurm/overnight_ablation.sbatch --wckey=project-short-name:sub_4dpdata          # syntax only, instant
+#   DRY_RUN=1 bash slurm/overnight_ablation.sbatch --wckey=project-short-name:sub_4dpdata   # paths, datasets, plan
+#   sbatch --wckey=project-short-name:sub_4dpdata --test-only slurm/overnight_ablation.sbatch  # submit filter + resources
 #
 # Stages, in order:
 #   1. preflight     -- every path and dataset checked BEFORE any GPU time is spent
@@ -43,7 +43,7 @@
 #     REASON=PartitionTimeLimit rather than failing fast.
 #   * NEVER pass --cpus-per-task or --mem. Jobs take the node's per-GPU
 #     defaults, and the submit filter rejects the job if either is specified.
-#   * ALWAYS pass --wckey=sub_4dpdata.
+#   * ALWAYS pass --wckey=project-short-name:sub_4dpdata.
 #
 # Do pass --partition explicitly, or export SBATCH_PARTITION: `debug` is the
 # default here and is short-lived, so it is not where long training belongs.
@@ -54,7 +54,7 @@
 # in nn.DataParallel, which dies with "module must have its parameters ... on
 # device: cpu". Overridden by slurm/submit_overnight.sh's --gres.
 #SBATCH --gres=gpu:1
-#SBATCH --wckey=sub_4dpdata
+#SBATCH --wckey=project-short-name:sub_4dpdata
 
 # Deliberately NOT `set -e`: a failing stage must be recorded and stepped over,
 # not abort the job. Stage failures are tracked explicitly instead.
@@ -66,17 +66,17 @@ set -uo pipefail
 # sbatch precedence is: command line > environment variable > #SBATCH directive.
 # So a stale SBATCH_WCKEY in the submitting shell (typically a copy of
 # env.example.sh from before the value was corrected) SILENTLY OVERRIDES the
-# `#SBATCH --wckey=sub_4dpdata` header above. That is exactly how a job once went
+# `#SBATCH --wckey=project-short-name:sub_4dpdata` header above. That is exactly how a job once went
 # out under the wrong project. The header alone is not enough; check it.
 #
 # SLURM_WCKEY is only set inside the job when a wckey was applied, so an unset
 # value defaults to the right answer rather than failing a valid job.
-if [[ -n "${SLURM_JOB_ID:-}" && "${SLURM_WCKEY:-sub_4dpdata}" != "sub_4dpdata" ]]; then
-  echo "error: this job's wckey is '${SLURM_WCKEY}', not 'sub_4dpdata'." >&2
-  echo "       Every job here must be accounted to 'sub_4dpdata'." >&2
+if [[ -n "${SLURM_JOB_ID:-}" && "${SLURM_WCKEY:-project-short-name:sub_4dpdata}" != "project-short-name:sub_4dpdata" ]]; then
+  echo "error: this job's wckey is '${SLURM_WCKEY}', not 'project-short-name:sub_4dpdata'." >&2
+  echo "       Every job here must be accounted to 'project-short-name:sub_4dpdata'." >&2
   echo "       Something in your environment overrode the #SBATCH header --" >&2
   echo "       almost certainly a stale SBATCH_WCKEY in env.sh. Fix it with:" >&2
-  echo "         export SBATCH_WCKEY=sub_4dpdata SLURM_WCKEY=sub_4dpdata" >&2
+  echo "         export SBATCH_WCKEY=project-short-name:sub_4dpdata SLURM_WCKEY=project-short-name:sub_4dpdata" >&2
   echo "       then resubmit. 'python scripts/preflight.py' also checks this." >&2
   exit 2
 fi
@@ -445,7 +445,7 @@ for variant in ${VARIANTS}; do
   echo "[stage] log -> ${log}"
 
   if [[ "${DRY_RUN:-0}" == "1" ]]; then
-    echo "[dry-run] would run slurm/finetune.sbatch --wckey=sub_4dpdata with:"
+    echo "[dry-run] would run slurm/finetune.sbatch --wckey=project-short-name:sub_4dpdata with:"
     echo "[dry-run]   VARIANT=${variant}"
     echo "[dry-run]   DATASET=${DATA_ROOT}/univtac-${TASK}-${variant}"
     echo "[dry-run]   OUTPUT_DIR=${out_dir}"
@@ -505,7 +505,7 @@ for variant in ${VARIANTS}; do
   summary="${RESULTS_DIR}/${variant}/${TASK}/seed0-0.summary.json"
 
   if [[ "${DRY_RUN:-0}" == "1" ]]; then
-    echo "[dry-run] would run slurm/eval_ablation.sbatch --wckey=sub_4dpdata with:"
+    echo "[dry-run] would run slurm/eval_ablation.sbatch --wckey=project-short-name:sub_4dpdata with:"
     echo "[dry-run]   VARIANT=${variant} TASK=${TASK} TASK_CONFIG=${TASK_CONFIG}"
     echo "[dry-run]   GROOT_MODEL=${ckpt:-<from the finetune stage>}"
     echo "[dry-run]   EPISODES=${EPISODES} EXECUTION_HORIZON=${EXECUTION_HORIZON}"
