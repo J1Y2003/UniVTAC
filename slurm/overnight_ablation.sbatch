@@ -90,7 +90,8 @@ fi
 # --------------------------------------------------------------------------- #
 TASK="${TASK:-lift_bottle}"
 TASK_CONFIG="${TASK_CONFIG:-clean}"
-EPISODES="${EPISODES:-50}"
+# 100 test rollouts, matching the paper's evaluation protocol.
+EPISODES="${EPISODES:-100}"
 EXECUTION_HORIZON="${EXECUTION_HORIZON:-8}"
 # ARM= was the old name for this. Honour it rather than ignoring it: an
 # unrecognised environment variable fails *silently*, so a stale

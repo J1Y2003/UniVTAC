@@ -242,6 +242,78 @@ many evaluation episodes and which seeds those used. Ours follow their
 `1_000_000 * (1 + seed)` convention, but 50 versus 100 evaluation seeds are not
 comparable intervals.
 
+## What the paper actually specifies
+
+Read from the paper PDF, Appendix B ("Implementation Details for Simulation
+Experiments") and Section V-A / Table I. Quote everything rather than
+paraphrasing, because two of these were guessed wrong before the PDF was read.
+
+**Training.** *"For each task, we collected 50 episodes of synthetic data used
+for training. All ACT models were trained for a total of 4,000 optimization
+steps using a batch size of 64. The learning rate was set to 1e-5 for both the
+vision and tactile encoders, with a weight decay of 1e-4."*
+
+Note the learning rate is stated **for the encoders** — ACT's original code
+splits `--lr` (transformer) from `--lr_backbone` (vision). The transformer's
+learning rate is not stated in the paper; ACT's upstream default is also 1e-5.
+
+**Architecture and action chunking.** *"The model employs a transformer-based
+architecture with 4 layers in the encoder and 7 layers in the decoder. For
+positional encoding, we adopt fixed sine-cosine embeddings for visual features,
+while learnable positional embeddings are used for tactile features. The model
+predicts a sequence of **50 future actions** from the current observation, which
+are executed using **time aggregation** to produce smoother and more stable
+motor outputs."*
+
+**Cameras.** *"Visual observations are primarily captured from a third-person
+camera view. However, task-specific configurations vary: both insert tube and
+lift bottle utilize multi-view inputs, combining third-person and wrist-mounted
+camera views; all other tasks use only the third-person view."*
+
+**Evaluation.** *"All policies are trained on 50 automatically collected full
+trajectories per task and evaluated over **100 test rollouts**."*
+
+**Proprioception is not specified.** The paper never states what robot state ACT
+receives. `policy/ACT/train_config*.yml` declares `state_dim: 8`, while
+`embodiment/joint` on disk is 9-D (see [UPSTREAM.md](UPSTREAM.md)). Treat our
+17-D state as a disclosed difference, not a matched setting.
+
+### Table I — ACT without tactile input, per task
+
+This is the row to compare against. **Do not use the 30.9 average** unless you
+run all eight tasks.
+
+| Task | ACT (vision only) | ACT + UniVTAC Encoder | VITaL |
+| --- | --- | --- | --- |
+| Lift Bottle | 42.0 | 71.0 | 72.0 |
+| Pull-out Key | **28.0** | 46.0 | 47.0 |
+| Lift Can | 20.0 | 29.0 | 8.0 |
+| Put Bottle in Shelf | 28.0 | 31.0 | 32.0 |
+| Insert Hole | **19.0** | 24.0 | 25.0 |
+| Insert HDMI | 15.0 | 28.0 | 6.0 |
+| Insert Tube | **45.0** | 56.0 | 34.0 |
+| Grasp Classify | 50.0 | 99.0 | 100.0 |
+| *Average (8 tasks)* | *30.9* | *48.0* | *40.5* |
+
+Bold are the three tasks currently in flight. At 100 rollouts a Wilson 95 %
+interval near 20 % is roughly ±8 points, so `insert_hole` at 19.0 % is
+`[12.4, 27.8]` — a beatable bar, but only with 100 rollouts of our own.
+
+### Three things we cannot or do not match
+
+| Item | Paper (ACT) | Us | Status |
+| --- | --- | --- | --- |
+| action chunk length | **50** | `ACTION_HORIZON = 16` | **cannot match.** GR00T N1.7's `action_horizon` is 40 and `validate_action_horizons` rejects a configured horizon above it, so 50 is unreachable. 40 is the closest possible |
+| chunk execution | **time aggregation** (re-plans and averages every step) | receding horizon, `EXECUTION_HORIZON=8` | **not implemented.** `univtac_groot/receding_horizon.py` does execute-k-then-replan only; there is no temporal ensembling. `EXECUTION_HORIZON=1` re-plans every step, which is the closest behaviour, at 8x the inference cost |
+| robot state | unspecified; config says 8-D | 17-D (`eef_9d` + joints + gripper) | disclose |
+
+The execution difference is not neutral. Time aggregation re-plans every
+environment step, so ACT is markedly more closed-loop than GR00T at
+`EXECUTION_HORIZON=8` — and closed-loop control is exactly what helps on
+contact-rich insertion. That difference currently **favours ACT**, so it is a
+conservative setting for us rather than a flattering one, which is worth saying
+in the writeup either way.
+
 ## Fairness checklist against the paper's ACT numbers
 
 Ordered by how badly each one can invalidate the comparison. The first two are
@@ -298,13 +370,12 @@ rates from the paper's table and compare task by task.
 makes the epoch count match for free — 4,000 steps x batch 64 = 256,000 samples
 over 50 x ~310 frames is ~16.5 epochs, essentially their number.
 
-**5. Evaluation episodes and seeds.** Confirm how many evaluation episodes
-their published numbers use. Our seeding follows their
+**5. Evaluation episodes: 100.** Settled by the paper — *"evaluated over 100
+test rollouts."* `EPISODES` now defaults to 100 everywhere; it was 50, which
+would have produced intervals roughly 1.4x wider than theirs and invited an
+apples-to-oranges comparison. Our seeding already follows their
 `1_000_000 * (1 + seed)` convention and errored episodes decrement `test_num`
-the same way, so the protocol matches; only N is in question. Evaluating *more*
-episodes than they did is fine and tightens your interval — just report both
-Ns, and never compare a 50-episode interval to a 100-episode one as though they
-were equivalent.
+the same way, so the protocol matches.
 
 **6. Task config.** Keep `TASK_CONFIG` consistent between download, conversion
 and evaluation, and confirm which config their ACT models were trained on.

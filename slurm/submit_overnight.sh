@@ -64,7 +64,11 @@ WCKEY="${WCKEY:-sub_4dpdata}"
 # Default is the three tasks the project cares about. `TASK=x` still works.
 TASKS="${TASKS:-${TASK:-insert_hole insert_tube pull_out_key}}"
 TASK_CONFIG="${TASK_CONFIG:-clean}"
-EPISODES="${EPISODES:-50}"
+# 100, from the paper: "All policies are trained on 50 automatically collected
+# full trajectories per task and evaluated over 100 test rollouts." Comparing a
+# 50-episode interval against their 100-episode number would not be comparing
+# like with like.
+EPISODES="${EPISODES:-100}"
 # Vision only. The tactile pipeline stays in the repo and still works, but the
 # question right now is how GR00T N1.7 does on UniVTAC WITHOUT touch, so the
 # default trains one variant. Set VARIANTS="tactile baseline_finetuned" to run

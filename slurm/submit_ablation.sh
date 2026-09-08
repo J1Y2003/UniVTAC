@@ -18,7 +18,7 @@ REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 # The eight benchmark tasks under UniVTAC/envs/ ('collect' is data-gen only).
 TASKS="${TASKS:-lift_bottle lift_can insert_HDMI insert_hole insert_tube pull_out_key put_bottle_in_shelf grasp_classify}"
 VARIANTS="${VARIANTS:-baseline tactile}"
-EPISODES="${EPISODES:-50}"
+EPISODES="${EPISODES:-100}"   # paper: "evaluated over 100 test rollouts"
 TASK_CONFIG="${TASK_CONFIG:-demo}"
 EXECUTION_HORIZON="${EXECUTION_HORIZON:-8}"
 
