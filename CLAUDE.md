@@ -92,9 +92,20 @@ unhelpful "Unspecified error":
 
 - job name **longer than 50 characters**
 - `MODEL_OUTPUT_DIR` set under `/rlwrld-unified-checkpoints/<user>/checkpoints/<job>`
-- `--wckey=project-short-name:sub_4dpdata` on **every** `sbatch` and `srun`. The project name is
-  strictly `project-short-name:sub_4dpdata` -- no prefix. The earlier
-  `project-short-name:sub_4dpdata` in this repo was an unfilled placeholder.
+- `--wckey=project-short-name:sub_4dpdata` on **every** `sbatch` and `srun`.
+  The string `project-short-name:` is a **literal part of the required
+  format**, not a template to fill in. It looks exactly like a placeholder and
+  is not one: strip it and the submit filter answers
+
+  ```
+  ❌ ERROR: WCKey를 project-short-name:<name> 형식으로 지정해야 합니다.
+     예: #SBATCH --wckey=project-short-name:human
+  ```
+
+  Note the filter's own example keeps the prefix verbatim. `sub_4dpdata` is the
+  project name and goes after the colon. **Do not "clean this up"** -- it was
+  removed once on the assumption it was a placeholder and every submission
+  failed until it was put back.
 
   **A `#SBATCH --wckey` header is not enough.** sbatch precedence is
   **command line > environment variable > `#SBATCH` directive**, so a stale

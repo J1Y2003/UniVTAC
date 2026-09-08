@@ -489,8 +489,13 @@ def check_wckey(report: Report) -> None:
     """The site wckey, for anything submitted by hand.
 
     ``sbatch`` reads ``SBATCH_WCKEY``; that is the one worth exporting, because
-    the submit filter rejects a job without a wckey and the only symptom is
-    "Batch job submission failed: Unspecified error".
+    the submit filter rejects a job without a valid wckey.
+
+    The value must be ``project-short-name:sub_4dpdata`` in full. The
+    ``project-short-name:`` prefix is a literal part of the format the filter
+    demands -- it reads like a placeholder and is not one. Dropping it gives
+    ``WCKey를 project-short-name:<name> 형식으로 지정해야 합니다`` followed by
+    ``Batch job submission failed: Unspecified error``.
 
     ``SLURM_WCKEY`` is deliberately NOT required. SLURM sets it *inside* a job
     to report the wckey the job actually got, which is what every ``.sbatch``
@@ -509,8 +514,9 @@ def check_wckey(report: Report) -> None:
         report.add(
             FAIL, "wckey", f"SBATCH_WCKEY={sbatch_key!r} (want {WCKEY!r})",
             f"  export SBATCH_WCKEY={WCKEY}\n"
-            "  An earlier env.example.sh carried a 'project-short-name:' prefix\n"
-            "  that was never a real value.",
+            "  The 'project-short-name:' prefix is LITERAL -- part of the format\n"
+            "  the submit filter demands, not a placeholder. Dropping it fails\n"
+            "  every submission.",
         )
     else:
         report.add(
