@@ -145,9 +145,14 @@ VARIANTS="${VARIANTS:-tactile baseline_finetuned}"
 # curve; if it overfits, pick a step count on a task you are NOT reporting
 # (lift_bottle) and freeze it before evaluating.
 #
-# SAVE_TOTAL_LIMIT is 3 rather than GR00T's 5 for disk, not for science: a 3B
-# checkpoint carries optimizer + scheduler + RNG state and lands around 40 GB,
-# so 5 per variant is ~200 GB on a shared mount already at 91%.
+# SAVE_TOTAL_LIMIT is 3 rather than GR00T's 5 for I/O, not for science and not
+# for space: /rlwrld-unified-checkpoints measured 54T used at 1% -- an earlier
+# comment here claimed 91% full, which was wrong. The real cost is wall-clock.
+# A 3B checkpoint carries optimizer + scheduler + RNG state and lands around
+# 40 GB, and writing that to NFS stalls the step it lands on -- the smoke test
+# showed 9.82 s/it against a 1.89 s/it steady state. Fewer, larger gaps between
+# saves is the cheap setting; SAVE_TOTAL_LIMIT=1 is defensible too, since there
+# is no best-checkpoint selection and only the last one is the final model.
 #
 # There is no metric-based "best checkpoint" to select: launch_finetune.py
 # exposes no eval metric or load-best-at-end option, so the last checkpoint is
