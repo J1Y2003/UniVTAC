@@ -142,15 +142,29 @@ export TOKENIZERS_PARALLELISM=false
 export PYTHONUNBUFFERED=1
 export OMP_NUM_THREADS="${OMP_NUM_THREADS:-8}"
 
-# Training hits the same cuDNN wall as inference on a driver older than GR00T's
-# CUDA build. launch_finetune.py spawns its own worker processes, so a flag on
-# the parent is not enough -- a sitecustomize hook on PYTHONPATH reaches them
-# all. Set DISABLE_CUDNN=1 to enable. See docs/SETUP.md.
-if [[ "${DISABLE_CUDNN:-0}" == "1" ]]; then
-  export UNIVTAC_DISABLE_CUDNN=1
-  export UNIVTAC_DISABLE_CUDNN_VERBOSE=1
-  export PYTHONPATH="${REPO_ROOT}/tools/nocudnn${PYTHONPATH:+:${PYTHONPATH}}"
-  echo "[job] cuDNN disabled for every child process via sitecustomize"
+# --------------------------------------------------------------------------- #
+# cuDNN, checked before anything expensive happens
+# --------------------------------------------------------------------------- #
+# There is deliberately NO option here to run without cuDNN. A mismatched cuDNN
+# reports CUDNN_STATUS_NOT_INITIALIZED, which reads like a too-old driver, and
+# the obvious workaround -- stop using cuDNN -- costs ~86x on GR00T's vision
+# tower with no error message at all: a step goes from 1.89 s to 170 s and the
+# job merely looks slow. So the only supported response is to fix the pin, and
+# this guard states the fix.
+#
+# It fails ONLY on a definite mismatch (wrong version loaded, cannot dlopen, or
+# a real convolution fails). Anything it cannot determine is a warning, so it
+# never blocks a job it cannot actually indict. SKIP_CUDNN_CHECK=1 skips the
+# check itself, for the case where the check is what is broken -- it does not
+# change how the job runs.
+if [[ "${SKIP_CUDNN_CHECK:-0}" != "1" ]]; then
+  if ! "${GROOT_PYTHON}" "${REPO_ROOT}/scripts/check_cudnn.py"; then
+    echo "error: aborting before spending GPU time. Fix cuDNN as printed above," >&2
+    echo "       or set SKIP_CUDNN_CHECK=1 if this check is itself broken." >&2
+    exit 1
+  fi
+else
+  echo "[job] cuDNN check skipped (SKIP_CUDNN_CHECK=1)"
 fi
 
 # --------------------------------------------------------------------------- #

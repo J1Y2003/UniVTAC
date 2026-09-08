@@ -59,10 +59,6 @@ GPUS="${GPUS:-1}"
 # No --time: site rule. `debug` caps at 3 h and the job takes that automatically.
 # Site rule: every sbatch and srun carries this.
 WCKEY="${WCKEY:-project-short-name:sub_4dpdata}"
-# Default OFF -- see the note in benchmark_task.sbatch. cuDNN disabled
-# costs ~86x on the vision tower, so a smoke test with it on tells you nothing
-# useful about the step rate.
-DISABLE_CUDNN="${DISABLE_CUDNN:-0}"
 # Off by default so a throwaway run does not clutter the real project's plots.
 USE_WANDB="${USE_WANDB:-0}"
 
@@ -145,7 +141,6 @@ EXPORTS+=",EPISODES=${EPISODES}"
 EXPORTS+=",MAX_STEPS=${MAX_STEPS}"
 EXPORTS+=",SAVE_STEPS=${SAVE_STEPS}"
 EXPORTS+=",SAVE_TOTAL_LIMIT=${SAVE_TOTAL_LIMIT}"
-EXPORTS+=",DISABLE_CUDNN=${DISABLE_CUDNN}"
 EXPORTS+=",USE_WANDB=${USE_WANDB}"
 # DRY_RUN left exported from testing would ride in on --export=ALL and the job
 # would exit in seconds having proved nothing.

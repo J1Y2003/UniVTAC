@@ -146,7 +146,7 @@ working, which reads convincingly like a too-old driver and is not.
 
 Two claims to reject on sight, because both are wrong and both are plausible:
 that 9.13 fails on a driver older than r570 (it is the pin mismatch, not the
-driver), and that `--disable-cudnn` is a viable workaround (it costs ~86x on
+driver), and that disabling cuDNN is a viable workaround (it costs ~86x on
 the vision tower). Verify by asking the loaded library, not pip metadata, and
 see
 [SETUP.md](SETUP.md#cudnn-check-the-library-not-the-metadata).

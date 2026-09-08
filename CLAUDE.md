@@ -74,9 +74,11 @@ GR00T venv's cuDNN is not the `9.10.2.21` that torch 2.9.0+cu128 pins. It is
 not the driver. `uv pip list` reports the pinned version even when the files on
 disk are another release, so only
 `ctypes.CDLL("libcudnn.so.9").cudnnGetVersion()` catches it (want `91002`);
-`scripts/preflight.py --deep` does. Never reach for `DISABLE_CUDNN=1`: it costs
-~86x on Qwen3-VL's patch-embed `Conv3d` and turns a 1.89 s training step into
-170 s.
+`scripts/preflight.py --deep` does, and `scripts/check_cudnn.py` re-checks it
+inside every GPU job before weights load. **There is deliberately no way to run
+without cuDNN here** -- no `DISABLE_CUDNN`, no `--disable-cudnn`. It costs ~86x
+on Qwen3-VL's patch-embed `Conv3d`, turning a 1.89 s step into 170 s with no
+error message, so do not reintroduce a switch for it.
 
 **Verify upstream, do not assume.** The facts most likely to be guessed wrong:
 the action horizon is **40**, not 16; tactile is **320x240 imagery**, not a

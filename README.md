@@ -156,6 +156,7 @@ policy/GR00T/           Drop-in plug-in for UniVTAC's own evaluator
 configs/modality/       GR00T ModalityConfigs for the finetuned variants
 scripts/
   preflight.py                   Setup checklist; prints the next command
+  check_cudnn.py                 cuDNN pin guard; runs inside every GPU job
   run_eval.py                    Headless eval driver
   compare_ablation.py            Results table
   convert_univtac_to_lerobot.py  UniVTAC HDF5 -> GR00T LeRobot v2

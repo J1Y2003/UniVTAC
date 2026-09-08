@@ -184,7 +184,7 @@ you get current wheels for everything.
 conda activate univtac-groot
 cd $REPO_ROOT
 
-pytest tests -q                  # expect: 94 passed
+pytest tests -q
 python scripts/preflight.py --deep
 ```
 
@@ -195,6 +195,16 @@ simulator env means neither can be broken by this repo.
 Get preflight to all-green before touching a GPU. It catches wrong paths, a
 missing HF token, and the wrong interpreter in seconds instead of after a
 20-minute queue wait plus a checkpoint load.
+
+**Do not skip the cuDNN line in that output.** It is the one check whose
+failure is silent: a cuDNN that does not match torch's pin makes training
+~86x slower with no error message at all, so the job looks like it is working
+and simply never finishes. `--deep` on a login node still verifies the
+version (it can only skip the GPU convolution), and every GPU job re-runs the
+same check via `scripts/check_cudnn.py` before loading weights, so a mismatch
+aborts the job in seconds instead of wasting a night. If it fails, the output
+prints the exact reinstall commands. Detail and rationale:
+[SETUP.md](SETUP.md#cudnn-check-the-library-not-the-metadata).
 
 ## Step 4 — first evaluation, interactively `[compute]`
 

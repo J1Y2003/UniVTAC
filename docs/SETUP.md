@@ -93,10 +93,23 @@ from an admin.
 
 ## Slow training steps
 
-**Never set `DISABLE_CUDNN=1`.** It costs ~86x and is the reason a training
-step once took 170 s instead of 1.89 s.
+**There is deliberately no way to run without cuDNN in this repo.** No
+`DISABLE_CUDNN` flag, no `--disable-cudnn` on the server, no
+`sitecustomize` hook. They existed, and removing them is the point: running
+without cuDNN costs ~86x and is the reason a training step once took 170 s
+instead of 1.89 s. Because the penalty is silent -- no error, just a job that
+never finishes -- an available switch is worse than no switch.
 
-It looks like a cheap trade -- only convolutions use cuDNN, and
+What replaces it: **`scripts/check_cudnn.py` runs automatically in every GPU
+job**, from `finetune.sbatch` and `eval_ablation.sbatch`, before any weights
+load. It asks the loaded library its own version, compares it against torch's
+pin, runs a real GPU convolution, and on a definite mismatch aborts the job
+printing the reinstall commands above. It fails only on evidence -- an
+unreadable pin or an absent GPU is a warning, never a block --- and
+`SKIP_CUDNN_CHECK=1` skips the check itself without changing how the job runs.
+`scripts/preflight.py --deep` performs the same check from a login node.
+
+Disabling cuDNN looks like a cheap trade -- only convolutions use cuDNN, and
 FlashAttention-2 and the DiT's SDPA path do not. But GR00T has one conv on the
 hot path: Qwen3-VL's vision patch embed. Qwen3VL reshapes every visual patch
 into its own batch element (`transformers/models/qwen3_vl/modeling_qwen3_vl.py`,

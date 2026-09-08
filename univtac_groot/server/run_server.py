@@ -187,17 +187,6 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="disable GR00T's observation/action validation (not recommended)",
     )
-    parser.add_argument(
-        "--disable-cudnn",
-        action="store_true",
-        help=(
-            "run convolutions through PyTorch's native kernels instead of cuDNN. "
-            "An escape hatch for a broken/mismatched cuDNN in this environment "
-            "(symptom: CUDNN_STATUS_NOT_INITIALIZED on the first get_action). "
-            "Slower, and it changes only the conv path -- FlashAttention is "
-            "unaffected -- so results stay comparable. Fix the install when you can."
-        ),
-    )
     return parser
 
 
@@ -212,15 +201,6 @@ def main(argv: list[str] | None = None) -> int:
     )
     from gr00t.policy.gr00t_policy import Gr00tPolicy, Gr00tSimPolicyWrapper
     from gr00t.policy.server_client import PolicyServer
-
-    if args.disable_cudnn:
-        import torch
-
-        torch.backends.cudnn.enabled = False
-        print(
-            "[server] cuDNN DISABLED by request: convolutions use PyTorch's native "
-            "kernels. This is a workaround, not a fix -- see docs/SETUP.md."
-        )
 
     if args.modality_config_path:
         load_modality_config(args.modality_config_path)

@@ -215,9 +215,29 @@ SERVER_CMD=(
 if [[ -n "${MODALITY_CONFIG}" ]]; then
   SERVER_CMD+=(--modality-config-path "${MODALITY_CONFIG}")
 fi
-# Escape hatch for a broken cuDNN in the GR00T env: DISABLE_CUDNN=1
-if [[ "${DISABLE_CUDNN:-0}" == "1" ]]; then
-  SERVER_CMD+=(--disable-cudnn)
+# --------------------------------------------------------------------------- #
+# cuDNN, checked before anything expensive happens
+# --------------------------------------------------------------------------- #
+# There is deliberately NO option here to run without cuDNN. A mismatched cuDNN
+# reports CUDNN_STATUS_NOT_INITIALIZED, which reads like a too-old driver, and
+# the obvious workaround -- stop using cuDNN -- costs ~86x on GR00T's vision
+# tower with no error message at all: a step goes from 1.89 s to 170 s and the
+# job merely looks slow. So the only supported response is to fix the pin, and
+# this guard states the fix.
+#
+# It fails ONLY on a definite mismatch (wrong version loaded, cannot dlopen, or
+# a real convolution fails). Anything it cannot determine is a warning, so it
+# never blocks a job it cannot actually indict. SKIP_CUDNN_CHECK=1 skips the
+# check itself, for the case where the check is what is broken -- it does not
+# change how the job runs.
+if [[ "${SKIP_CUDNN_CHECK:-0}" != "1" ]]; then
+  if ! "${GROOT_PYTHON}" "${REPO_ROOT}/scripts/check_cudnn.py"; then
+    echo "error: aborting before spending GPU time. Fix cuDNN as printed above," >&2
+    echo "       or set SKIP_CUDNN_CHECK=1 if this check is itself broken." >&2
+    exit 1
+  fi
+else
+  echo "[job] cuDNN check skipped (SKIP_CUDNN_CHECK=1)"
 fi
 
 # The server must NOT inherit the UniVTAC environment's CUDA settings. UniVTAC's

@@ -341,10 +341,11 @@ def check_cudnn(report: Report, deep: bool) -> None:
     else:
         report.add(
             FAIL, "  cuDNN conv", str(conv),
-            "  cuDNN loads but cannot run a convolution. Do NOT paper over this\n"
-            "  with DISABLE_CUDNN=1 -- that costs ~86x on the vision tower (170 s\n"
-            "  per training step). Try an older pin-compatible cuDNN, or the\n"
-            "  cluster's container path (srun --container). See docs/SETUP.md.",
+            "  cuDNN loads but cannot run a convolution. There is deliberately\n"
+            "  no way to run without cuDNN here -- it costs ~86x on the vision\n"
+            "  tower (170 s per training step, with no error). Try an older\n"
+            "  pin-compatible cuDNN (9.8.0.87, 9.7.1.26), or the cluster's\n"
+            "  container path (srun --container). See docs/SETUP.md.",
         )
 
 

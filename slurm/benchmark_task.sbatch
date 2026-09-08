@@ -217,13 +217,6 @@ export PYTHONUNBUFFERED=1
 
 # Default OFF. This was 1 for a while on the belief that cuDNN could not
 # initialise on this cluster's driver; the real cause was a cuDNN in the GR00T
-# venv that did not match torch's pin (see docs/SETUP.md, "cuDNN"). Turning
-# cuDNN off is NOT cheap: it costs ~86x on the Qwen3-VL vision tower, because
-# the patch-embed Conv3d loses the fast kernel and falls back to a per-patch
-# ATen loop -- measured at 170 s/step versus a few seconds. Only set this to 1
-# as a deliberate last resort, and expect the run to be unusably slow.
-# `scripts/preflight.py --deep` now fails if the cuDNN pin has drifted again.
-DISABLE_CUDNN="${DISABLE_CUDNN:-0}"
 
 # SLURM re-indexes allocated GPUs to 0..N-1 inside the job, so counting
 # CUDA_VISIBLE_DEVICES gives the usable width for data-parallel training.
@@ -261,7 +254,6 @@ echo " gpus=${NUM_GPUS} (CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:-unset})"
 echo " data=${DATA_ROOT}"
 echo " ckpt=${CKPT_ROOT}"
 echo " results=${RESULTS_DIR}"
-echo " disable_cudnn=${DISABLE_CUDNN}"
 echo " stage logs=${STAGE_LOG_DIR}"
 if [[ "${USE_WANDB:-1}" != "1" ]]; then
   echo " wandb=disabled (USE_WANDB=0) -- stdout logs are the only training record"
@@ -460,7 +452,7 @@ for variant in ${VARIANTS}; do
     echo "[dry-run]   VARIANT=${variant}"
     echo "[dry-run]   DATASET=${DATA_ROOT}/univtac-${TASK}-${variant}"
     echo "[dry-run]   OUTPUT_DIR=${out_dir}"
-    echo "[dry-run]   NUM_GPUS=${NUM_GPUS}  DISABLE_CUDNN=${DISABLE_CUDNN}"
+    echo "[dry-run]   NUM_GPUS=${NUM_GPUS}"
     echo "[dry-run]   EXTRA_ARGS=--max-steps ${MAX_STEPS} --save-steps ${SAVE_STEPS} --save-total-limit ${SAVE_TOTAL_LIMIT}${HP_ARGS} ${resume_args}"
     record "finetune ${variant}: DRY-RUN (not executed)"
     continue
@@ -473,7 +465,6 @@ for variant in ${VARIANTS}; do
   DATASET="${DATA_ROOT}/univtac-${TASK}-${variant}" \
   OUTPUT_DIR="${out_dir}" \
   NUM_GPUS="${NUM_GPUS}" \
-  DISABLE_CUDNN="${DISABLE_CUDNN}" \
   HF_HOME="${HF_HOME}" \
   USE_WANDB="${USE_WANDB:-1}" \
   WANDB_PROJECT="${WANDB_PROJECT:-univtac-groot-ablation}" \
@@ -549,7 +540,6 @@ for variant in ${VARIANTS}; do
   EXECUTION_HORIZON="${EXECUTION_HORIZON}" \
   GROOT_MODEL="${ckpt}" \
   RESULTS_DIR="${RESULTS_DIR}" \
-  DISABLE_CUDNN="${DISABLE_CUDNN}" \
   HF_HOME="${HF_HOME}" \
     bash "${REPO_ROOT}/slurm/eval_ablation.sbatch" >"${log}" 2>&1
   status=$?

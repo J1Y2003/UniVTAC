@@ -91,7 +91,7 @@ the ACT row without retraining. Confirm their episode count and seeds first --
 
 | Symptom | Cause |
 |---|---|
-| `CUDNN_STATUS_NOT_INITIALIZED` | cuDNN on disk does not match torch's pin (9.13.0 present, 9.10.2.21 required). Not the driver. `uv cache clean nvidia-cudnn-cu12`, reinstall the pin; `preflight.py --deep` catches it. Never work around it with `DISABLE_CUDNN=1` -- that costs ~86x |
+| `CUDNN_STATUS_NOT_INITIALIZED` | cuDNN on disk does not match torch's pin (9.13.0 present, 9.10.2.21 required). Not the driver. `uv cache clean nvidia-cudnn-cu12`, reinstall the pin. `scripts/check_cudnn.py` runs in every GPU job and aborts on a mismatch; `preflight.py --deep` checks it from a login node. There is deliberately no way to run without cuDNN -- it costs ~86x, silently |
 | ~170 s/step; GPU at 48% but ~110 W of a 400 W limit and ~0% memory-access time | the above, via Qwen3-VL's patch-embed `Conv3d` falling off the cuDNN path. See [SETUP.md](SETUP.md#slow-training-steps) |
 | `module must have its parameters ... on device: cpu` | `--num-gpus 2` wraps the model in `nn.DataParallel`, which needs everything on `cuda:0`. **Use 1 GPU** |
 | `401` on `nvidia/Cosmos-Reason2-2B` | no `HF_TOKEN` in the job. Preflight probes read access |
