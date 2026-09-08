@@ -1,0 +1,104 @@
+# Working on this repo
+
+Benchmark `nvidia/GR00T-N1.7-3B` on the UniVTAC visuo-tactile benchmark as a
+two-condition ablation. Read [docs/RUNBOOK.md](docs/RUNBOOK.md) for the
+end-to-end order, [docs/UPSTREAM.md](docs/UPSTREAM.md) before touching anything
+that talks to GR00T or UniVTAC, and [docs/STATUS.md](docs/STATUS.md) for where
+the work currently stands.
+
+## The experiment in one paragraph
+
+Two **variants**, same 100 episodes, same recipe, differing only in whether
+pooled tactile depth is appended to the state vector: `baseline_finetuned`
+(17-D state) and `tactile` (113-D state = 17 proprioception + 96 pooled
+GelSight depth). "Variant" means experimental condition; UniVTAC has exactly one
+robot arm (Franka Panda), and the word "arm" in this codebase always means the
+manipulator. A third variant `baseline` exists for zero-shot smoke tests only --
+it is not a fair comparator to a finetuned model.
+
+## Non-obvious things that will cost you a day
+
+**Two processes, not one.** UniVTAC needs Python 3.10 (Isaac Sim), GR00T needs
+3.12. They cannot share a virtualenv, so they talk over loopback ZeroMQ. This is
+forced, not a design preference.
+
+**Three checkouts, similar names.** `UniVTAC/` is this repo (submit jobs from
+here). `UniVTAC-sim/` is the simulator (`$UNIVTAC_ROOT`). `Isaac-GR00T/` is
+GR00T (`$GROOT_ROOT`); its `.venv` was made by `uv` so it has **no pip** --
+use `uv pip install --python .venv/bin/python`, with `env -u CONDA_PREFIX -u
+VIRTUAL_ENV`, or uv resolves the wrong environment.
+
+**Shared account.** The cluster user is shared with a senior who runs his own
+jobs (named `iclr2027*`) and a monitoring dashboard on the same UID. Never
+`pkill` by pattern, never `wandb login` or `hf auth login` (they write into his
+`~/.netrc` / token store), never install into `(base)` conda or `~/.local`.
+Filter `squeue` output to `univtac-groot` to see only our jobs. For tokens,
+export `HF_TOKEN` / `WANDB_API_KEY` in the submitting shell -- `--export=ALL`
+carries them in.
+
+**`sbatch` copies the script to `/var/spool/slurm/d/`,** so
+`dirname "${BASH_SOURCE[0]}"` resolves to the spool, not the repo. All
+`slurm/*.sbatch` resolve `REPO_ROOT` from `SLURM_SUBMIT_DIR` first and validate
+it contains `univtac_groot/spec.py`. Do not "simplify" that back.
+
+**`--export=ALL` carries your whole shell environment.** A stray `DRY_RUN=1`
+left over from testing makes the job exit in seconds having trained nothing;
+the submitters pin `DRY_RUN=0` for this reason.
+
+**Verify upstream, do not assume.** Several confident assumptions were wrong and
+cost real time: the guideline's 16-step action horizon (it is 40), tactile as a
+small array (it is 320x240 imagery), the dataset's HDF5 layout (images are JPEG
+byte streams; state/action are a one-step shift of a single `embodiment/joint`
+array), and the marker field's shape. `docs/UPSTREAM.md` records each fact with
+its source; add to it rather than re-deriving.
+
+## Cluster rules (Kakao SLURM)
+
+The submit filter rejects jobs violating any of these, usually with an
+unhelpful "Unspecified error":
+
+- job name **longer than 50 characters**
+- `MODEL_OUTPUT_DIR` set under `/rlwrld-unified-checkpoints/<user>/checkpoints/<job>`
+- `--wckey=project-short-name:sub_4dpdata`
+- **no** `--cpus-per-task` and **no** `--mem` (jobs take the node's defaults)
+
+`sbatch --test-only <script>` runs the filter without queueing -- use it before
+blaming the script. `srun` is restricted to the `debug` partition. `debug` is
+the *default* partition and caps at 3 hours, which is why untuned jobs sit
+pending with `PartitionTimeLimit`; every other partition allows 2 days.
+`PriorityTier` is a strict ordering (`background` 1 < `sjw_alinlab` 2 <
+`sjw_alinlab_premium` 3), so a single premium job outranks yours permanently.
+
+`logs/` must exist **before** submitting: SLURM opens `--output` before the
+script runs, so a missing directory kills the job with no log at all.
+
+Checkpoints under `/rlwrld-unified-checkpoints` are archived off NFS after
+**4 days** untouched and deleted 90 days later. Run
+`bash slurm/preserve_outputs.sh` as soon as a finetune finishes or you will
+retrain it.
+
+## How to run things
+
+```bash
+bash slurm/submit_overnight.sh --dry    # full preflight, no GPU time, no submit
+bash slurm/submit_overnight.sh          # the real run (one long job)
+bash slurm/smoke_test.sh                # 20 steps + 1 eval episode, isolated
+bash slurm/preserve_outputs.sh          # rescue checkpoints from retention
+```
+
+Everything is an overridable env var (`GPUS`, `MAX_STEPS`, `TASK`, `PARTITION`,
+...). Prefer adding a variable over editing a command line.
+
+`overnight_ablation.sbatch` is resumable: stage markers plus
+`--resume-from-checkpoint`. It also **pins the training recipe** on first run
+(GPU count and `MAX_STEPS`) and refuses a mismatch, because `--num-gpus`
+multiplies the effective batch size -- training the two variants at different
+batch sizes would confound the ablation. `ALLOW_RECIPE_CHANGE=1` overrides.
+
+## Working style expected here
+
+Verify before asserting; say plainly when something is unverified or when you
+were wrong. Do not claim to have pushed -- the user handles git unless they ask.
+Give commands that work against the user's *current* checkout, not against
+uncommitted local edits. The user works from an allocated node or a login node
+and dislikes long copy-paste blocks: prefer one script with sensible defaults.

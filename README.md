@@ -4,6 +4,8 @@ An evaluation pipeline for benchmarking [`nvidia/GR00T-N1.7-3B`](https://hugging
 on the [UniVTAC](https://github.com/univtac/UniVTAC) visuo-tactile manipulation
 benchmark, set up as a two-variant ablation:
 
+**Current state, blockers and next actions: [docs/STATUS.md](docs/STATUS.md).**
+
 | Variant | Observation | Checkpoint |
 | --- | --- | --- |
 | **Baseline** | vision + language + 1-D proprioception + embodiment id | zero-shot on the released model |
