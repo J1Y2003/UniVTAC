@@ -37,7 +37,28 @@ fi
 VARIANT="${VARIANT:-tactile}"                 # tactile | baseline_finetuned
 DATASET="${DATASET:?set DATASET to the converted LeRobot dataset root}"
 BASE_MODEL="${BASE_MODEL:-nvidia/GR00T-N1.7-3B}"
-OUTPUT_DIR="${OUTPUT_DIR:-${SCRATCH:-/tmp}/univtac-groot-${VARIANT}}"
+# Training-outputs policy: checkpoints belong under the cluster's unified
+# folder, {NFS}/{user}/... (Kakao: /rlwrld-unified-checkpoints). Default to
+# MODEL_OUTPUT_DIR rather than /tmp or scratch, and require one of them --
+# see the same check in overnight_ablation.sbatch.
+OUTPUT_DIR="${OUTPUT_DIR:-${MODEL_OUTPUT_DIR:-}}"
+if [[ -z "${OUTPUT_DIR}" ]]; then
+  echo "error: set OUTPUT_DIR, or MODEL_OUTPUT_DIR=/rlwrld-unified-checkpoints/\$USER/checkpoints/<job>" >&2
+  echo "       (training-outputs policy: outputs must live in the unified folder)" >&2
+  exit 2
+fi
+case "${OUTPUT_DIR}" in
+  /rlwrld-unified-checkpoints/*) ;;
+  *)
+    if [[ "${ALLOW_NONSTANDARD_OUTPUT:-0}" == "1" ]]; then
+      echo "[job] WARNING: OUTPUT_DIR=${OUTPUT_DIR} is outside the unified folder." >&2
+    else
+      echo "error: OUTPUT_DIR=${OUTPUT_DIR} is outside /rlwrld-unified-checkpoints." >&2
+      echo "       Pass ALLOW_NONSTANDARD_OUTPUT=1 to override deliberately." >&2
+      exit 2
+    fi
+    ;;
+esac
 NUM_GPUS="${NUM_GPUS:-1}"
 
 # Locate the repo. `dirname "${BASH_SOURCE[0]}"` is NOT reliable here: under

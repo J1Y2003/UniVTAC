@@ -33,7 +33,8 @@ HF_HOME="${HF_HOME:-${HOME}/jaewon/hf_cache}"
 # The submit filter requires this under /rlwrld-unified-checkpoints, and it is
 # also where the ~120 GB of checkpoints per variant belongs rather than on the
 # shared home mount.
-MODEL_OUTPUT_DIR="${MODEL_OUTPUT_DIR:-/rlwrld-unified-checkpoints/${USER}/univtac-groot}"
+# Shape follows the training-outputs policy: {NFS}/{user}/checkpoints/<job>.
+MODEL_OUTPUT_DIR="${MODEL_OUTPUT_DIR:-/rlwrld-unified-checkpoints/${USER}/checkpoints/univtac-groot}"
 
 # --------------------------------------------------------------------------- #
 # Job shape

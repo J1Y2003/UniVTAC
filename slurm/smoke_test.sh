@@ -38,7 +38,7 @@ DATA_ROOT="${DATA_ROOT:-${WORKSPACE}/groot-data}"
 HF_HOME="${HF_HOME:-${HOME}/jaewon/hf_cache}"
 
 # Everything this run writes lives here. Delete it and nothing is lost.
-SMOKE_ROOT="${SMOKE_ROOT:-/rlwrld-unified-checkpoints/${WHOAMI}/univtac-groot-smoke}"
+SMOKE_ROOT="${SMOKE_ROOT:-/rlwrld-unified-checkpoints/${WHOAMI}/checkpoints/univtac-groot-smoke}"
 # The submit filter demands MODEL_OUTPUT_DIR under /rlwrld-unified-checkpoints.
 MODEL_OUTPUT_DIR="${MODEL_OUTPUT_DIR:-${SMOKE_ROOT}}"
 

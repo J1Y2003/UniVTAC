@@ -222,6 +222,43 @@ there is no fully offline contract check, because the authoritative answer lives
 in the checkpoint. Keep the server from step 4 running while you iterate on
 steps 5 and 6 — reloading the checkpoint per attempt is the main time sink.
 
+## Training-outputs policy (Kakao cluster)
+
+Per "모델 학습 Outputs 통합 저장 및 Retention 정책", checkpoints must be written
+to the cluster's unified folder, `{NFS}/{user}/...`:
+
+| Cluster | NFS root |
+| --- | --- |
+| Kakao | `/rlwrld-unified-checkpoints` |
+| Naver (MLXP) | `/data/rlwrld-unified-checkpoints` |
+| AWS (SKT) | `/fsx/rlwrld-unified-checkpoints` |
+
+`MODEL_OUTPUT_DIR` is **required**, not defaulted: the policy's own
+`train.sbatch` asserts it, jobs submitted without it are to be rejected
+outright in future, and a silent fallback to home NFS is the sprawl the
+policy exists to stop. `overnight_ablation.sbatch` and `finetune.sbatch` both
+refuse an output path outside the unified folder unless
+`ALLOW_NONSTANDARD_OUTPUT=1`.
+
+**Retention is the part that bites a multi-week study.** A folder untouched
+for 4 days (§5.1 body; the §5.1 table says 7 -- the document contradicts
+itself, so plan for 4) is moved to Object Storage and removed from NFS, then
+deleted 90 days later. So a checkpoint you want to re-evaluate weeks later
+will not be there, and `<output_dir>/final` becomes a dangling symlink.
+
+§7 gives the remedy: write to the unified folder first, then move anything
+needing permanent retention into your own user folder. That is what
+`slurm/preserve_outputs.sh` does -- it copies only the *final* checkpoint per
+variant and lets intermediates expire, because each is ~40 GB with optimizer
+state:
+
+```bash
+bash slurm/preserve_outputs.sh --check   # what exists, days until archival
+bash slurm/preserve_outputs.sh           # copy finals to KEEP_ROOT
+```
+
+Run it as soon as a finetune finishes, not days later.
+
 ## Common failures
 
 | Symptom | Cause |

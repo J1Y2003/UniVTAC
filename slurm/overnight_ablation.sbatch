@@ -113,12 +113,33 @@ SAVE_STEPS="${SAVE_STEPS:-2500}"
 SAVE_TOTAL_LIMIT="${SAVE_TOTAL_LIMIT:-3}"
 
 DATA_ROOT="${DATA_ROOT:-${HOME}/jaewon/workspace/groot-data}"
-# This cluster's submit filter requires MODEL_OUTPUT_DIR under
-# /rlwrld-unified-checkpoints and rejects the job at `sbatch` time without it.
-# Honour it as the checkpoint root by default: it is the cluster's designated
-# place for model outputs, and it keeps ~120 GB per variant off the shared home
-# mount. CKPT_ROOT still wins if set explicitly.
-CKPT_ROOT="${CKPT_ROOT:-${MODEL_OUTPUT_DIR:-${HOME}/jaewon/workspace/groot-ckpt}}"
+# Training outputs policy ("모델 학습 Outputs 통합 저장 및 Retention 정책"):
+# every checkpoint must land under the cluster's unified folder,
+# {NFS}/{user}/..., which on Kakao is /rlwrld-unified-checkpoints. Required, not
+# defaulted: the policy's own train.sbatch asserts MODEL_OUTPUT_DIR, jobs
+# without it are to be rejected outright in future, and a silent fallback to
+# home NFS is precisely the sprawl the policy exists to stop.
+: "${MODEL_OUTPUT_DIR:?set MODEL_OUTPUT_DIR=/rlwrld-unified-checkpoints/\$USER/checkpoints/<job> (training-outputs policy)}"
+CKPT_ROOT="${CKPT_ROOT:-${MODEL_OUTPUT_DIR}}"
+# CKPT_ROOT can still be redirected (the smoke test does), but not off the
+# unified folder -- that would put tens of GB back on home NFS.
+case "${CKPT_ROOT}" in
+  /rlwrld-unified-checkpoints/*) ;;
+  *)
+    if [[ "${ALLOW_NONSTANDARD_OUTPUT:-0}" == "1" ]]; then
+      echo "[job] WARNING: CKPT_ROOT=${CKPT_ROOT} is outside" >&2
+      echo "[job] /rlwrld-unified-checkpoints -- against the training-outputs" >&2
+      echo "[job] policy. Proceeding because ALLOW_NONSTANDARD_OUTPUT=1." >&2
+    else
+      echo "error: CKPT_ROOT=${CKPT_ROOT} is outside /rlwrld-unified-checkpoints." >&2
+      echo "       The training-outputs policy requires checkpoints under" >&2
+      echo "       {NFS}/{user}/... on the unified folder. Set MODEL_OUTPUT_DIR" >&2
+      echo "       (and CKPT_ROOT, if you override it) accordingly, or pass" >&2
+      echo "       ALLOW_NONSTANDARD_OUTPUT=1 if you really mean it." >&2
+      exit 2
+    fi
+    ;;
+esac
 RESULTS_DIR="${RESULTS_DIR:-${REPO_ROOT}/eval_result}"
 STAGE_DIR="${STAGE_DIR:-${CKPT_ROOT}/.stages}"
 
