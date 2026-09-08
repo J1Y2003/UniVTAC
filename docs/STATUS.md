@@ -5,6 +5,15 @@ the state changes; it is the handoff document between sessions and machines.
 
 ## Verified working
 
+* **The three benchmark datasets are converted and verified** (2026-09-08).
+  `insert_hole`, `insert_tube`, `pull_out_key`, variant `baseline_finetuned`,
+  all 100 released episodes, config `clean`. 100 parquet each; **100 mp4 for
+  `insert_hole` and `pull_out_key`, 200 for `insert_tube`** — that asymmetry
+  is the per-task camera rule from the paper working (two views on
+  `insert_tube` and `lift_bottle`, third-person only elsewhere), split
+  100-per-camera across `observation.images.head` and `.wrist`. Raw side:
+  100 HDF5 per task under `data/isaac45/<task>/hdf5` with the
+  `data/<task>/clean` symlink bridge resolving.
 * **Dataset conversion, at full scale.** Both variants converted from
   `isaac45/lift_bottle` (100 episodes, config `clean`): 100 parquet + 200 mp4
   each, `state` 113-D (tactile) / 17-D (baseline), `action` 8-D, **310 rows per
@@ -103,6 +112,7 @@ already in the table below).
 | `results=/var/spool/slurm/d/...` | `sbatch` copies the script to the spool; `REPO_ROOT` now prefers `SLURM_SUBMIT_DIR` |
 | job pending 8 h | ordinary queue wait behind the senior's jobs on the shared account — not partition tier |
 | `Batch job submission failed: Unspecified error` | a submit-filter rule; see CLAUDE.md |
+| a per-task convert loop converts only ONE task | all jobs share one `.venv-convert`, and `python -m venv` writes `bin/python` before pip installs anything, so the losers skipped the build and ran with no `pyarrow`. `convert.sbatch` now serialises on a flock and gates on the imports, not on a file existing |
 
 ## Cluster facts learned while debugging
 

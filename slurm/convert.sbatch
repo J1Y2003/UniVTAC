@@ -210,19 +210,60 @@ if [[ -n "${MISSING}" && "${MISSING}" != "IMPORT_CHECK_FAILED" ]]; then
     echo "       Do NOT install into the shared base conda env." >&2
     exit 1
   fi
-  if [[ ! -x "${CONVERT_VENV}/bin/python" ]]; then
+  # CONCURRENCY: every (task, variant) job resolves CONVERT_VENV to the SAME
+  # path, and the intended way to run this script is several jobs at once (a
+  # per-task loop, or --array). `python -m venv` writes bin/python BEFORE pip
+  # installs anything, so an existence check alone is not a valid guard: the
+  # first job starts building, the others see bin/python, skip the build, and
+  # run the converter against a venv with no pyarrow in it. That is how a
+  # three-task loop converted exactly one task. So: serialise on a lock, and
+  # gate on the imports actually working rather than on a file existing.
+  _venv_ready() {
+    [[ -x "${CONVERT_VENV}/bin/python" ]] &&
+      "${CONVERT_VENV}/bin/python" -c \
+        'import numpy, h5py, pyarrow, imageio, cv2' 2>/dev/null
+  }
+
+  _build_venv() {
     echo "[job] building a private venv at ${CONVERT_VENV}"
     echo "[job] (isolated on purpose -- the UniVTAC conda env is left untouched)"
+    rm -rf "${CONVERT_VENV}"
     "${CONVERT_PYTHON}" -m venv "${CONVERT_VENV}" || {
       echo "error: could not create a venv with ${CONVERT_PYTHON}." >&2
-      exit 1
+      return 1
     }
     "${CONVERT_VENV}/bin/python" -m pip install --quiet --upgrade pip
     "${CONVERT_VENV}/bin/python" -m pip install --quiet --only-binary=:all: \
       -r "${REPO_ROOT}/requirements-convert.txt" || {
       echo "error: pip install -r requirements-convert.txt failed -- see above." >&2
-      exit 1
+      return 1
     }
+    _venv_ready || {
+      echo "error: ${CONVERT_VENV} still cannot import the converter's deps" >&2
+      echo "       after a successful pip install. Inspect it by hand." >&2
+      return 1
+    }
+  }
+
+  if ! _venv_ready; then
+    # flock holds the lock for as long as fd 9 is open, so a job that waits
+    # here resumes only once the builder has finished (or died). Losers then
+    # re-test _venv_ready and use what the winner built.
+    _LOCK="${CONVERT_VENV}.lock"
+    if command -v flock >/dev/null 2>&1; then
+      exec 9>"${_LOCK}"
+      echo "[job] waiting for the ${CONVERT_VENV} lock"
+      flock 9
+      _venv_ready || _build_venv || exit 1
+      flock -u 9
+      exec 9>&-
+    else
+      # No flock: fall back to a private venv per job. Wastes a few hundred MB
+      # per task but cannot race, which matters more.
+      CONVERT_VENV="${CONVERT_VENV}-${TASK}-${VARIANT}"
+      echo "[job] no flock available; using a per-job venv ${CONVERT_VENV}"
+      _venv_ready || _build_venv || exit 1
+    fi
   fi
   CONVERT_PYTHON="${CONVERT_VENV}/bin/python"
   echo "[job] using ${CONVERT_PYTHON}"
