@@ -170,6 +170,78 @@ DROID data is 15 Hz. A per-step joint delta learned at 15 Hz means something
 different at the sim's rate. This mostly affects the zero-shot variant; a finetune
 learns the deployment rate from the data.
 
+## Comparability with UniVTAC's ACT
+
+The paper's ACT recipe, verbatim: *"For each task, we collected 50 episodes of
+synthetic data used for training. All ACT models were trained for a total of
+4,000 optimization steps using a batch size of 64. The learning rate was set to
+1x10^-5 for both the vision and tactile encoders, with a weight decay of
+1x10^-4."*
+
+Three of those four knobs we can match exactly, and one we currently do not.
+
+| Knob | Paper (ACT) | This repo | Matched? |
+| --- | --- | --- | --- |
+| optimization steps | 4,000 | `MAX_STEPS=4000` (default) | yes |
+| batch size | 64 | GR00T `--global-batch-size` 64 (default) | yes |
+| learning rate | 1e-5 | GR00T default, **~1e-4** peak (see below) | **no, by default** |
+| weight decay | 1e-4 | GR00T default | **no, by default** |
+| training episodes | **50** per task | **100** per task | **no** |
+
+**Steps and batch size line up for free**, which is worth noting: 4,000 steps
+at batch 64 is 256,000 samples seen, and GR00T's default global batch size is
+already 64. So GR00T gets the same number of gradient updates over the same
+batch size as the published baseline.
+
+**The episode count does not.** Our converted datasets carry 100 episodes
+(28,932 samples); the paper used 50. Matching steps and batch while doubling
+the data means the same gradient signal drawn from twice the demonstrations:
+~8.9 epochs for us versus ~17.7 for them. Neither setting is wrong, but they
+are different experiments, and the difference favours GR00T. Two honest
+options:
+
+* **Match their data.** Convert and train on 50 episodes, so the only
+  difference from ACT is the policy class. This is the cleaner head-to-head.
+* **Keep 100 episodes** and state plainly that GR00T saw twice the
+  demonstrations at the same step budget. Defensible, but it must appear next
+  to the number, not in an appendix.
+
+Whichever you pick, it applies identically to `tactile` and
+`baseline_finetuned`, so it never threatens the *internal* ablation — only the
+external comparison to the ACT row.
+
+**The optimiser settings are a real decision, not an oversight.** GR00T's
+`launch_finetune.py` does not use 1e-5. In a real run the logged learning rate
+climbed +2e-7 per step through warmup, which extrapolates to a peak near 1e-4 —
+roughly 10x the paper. That is not obviously wrong: ACT is a small policy with
+a pretrained ResNet encoder trained largely from scratch, whereas this is a
+finetune of 1.62 B trainable parameters, where 1e-4 is on the aggressive side.
+Both scripts now expose the knobs so the choice is explicit rather than
+inherited:
+
+```bash
+LEARNING_RATE=1e-5 WEIGHT_DECAY=1e-4 bash slurm/submit_overnight.sh
+```
+
+`overnight_ablation.sbatch` records the learning rate and weight decay in its
+pinned recipe alongside the GPU count and step budget, and refuses a
+resubmission that changes them — otherwise a walltime kill could train the
+second variant at a different learning rate and confound the ablation
+invisibly.
+
+Confirm GR00T's actual defaults rather than trusting the extrapolation above:
+
+```bash
+"${GROOT_PYTHON}" "${GROOT_ROOT}/gr00t/experiment/launch_finetune.py" --help \
+    | grep -A2 -E "learning-rate|weight-decay|warmup|global-batch-size"
+```
+
+One further caveat on the comparison, carried over from `docs/STATUS.md`:
+before claiming a head-to-head against their *published* numbers, confirm how
+many evaluation episodes and which seeds those used. Ours follow their
+`1_000_000 * (1 + seed)` convention, but 50 versus 100 evaluation seeds are not
+comparable intervals.
+
 ## Reading the results
 
 `scripts/compare_ablation.py` reports per-task and pooled success rates with

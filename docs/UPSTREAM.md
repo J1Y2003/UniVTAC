@@ -137,16 +137,24 @@ The guideline flagged its own references as preliminary. What research changed:
 
 ## Known environment constraints
 
-**Driver vs. CUDA runtime.** GR00T pins `torch==2.9.0` on cu128 (CUDA 12.8) in
-`pyproject.toml`, alongside a URL-pinned flash-attn wheel built for that pair, so
-the CUDA version is not practically adjustable. On a driver older than r570
-(e.g. 550.54.14 = CUDA 12.4) PyTorch itself still works through CUDA
-minor-version compatibility, but **cuDNN 9.13 fails to initialise**: its internal
-`cudaGetDeviceCount` returns an error and it reports
-`CUDNN_STATUS_NOT_INITIALIZED`. Only the convolution path is affected --
-FlashAttention-2 and the DiT's SDPA path do not use cuDNN -- so
-`--disable-cudnn` is a viable workaround, applied identically to both ablation
-variants. See [SETUP.md](SETUP.md#common-failures).
+**cuDNN must match torch's pin.** GR00T pins `torch==2.9.0` on cu128 (CUDA
+12.8) in `pyproject.toml`, alongside a URL-pinned flash-attn wheel built for
+that pair, so the CUDA version is not practically adjustable. torch 2.9.0+cu128
+requires **`nvidia-cudnn-cu12==9.10.2.21`** (= `91002`); a venv carrying a
+different cuDNN reports `CUDNN_STATUS_NOT_INITIALIZED` while cuBLAS keeps
+working, which reads convincingly like a too-old driver and is not.
+
+This was diagnosed wrongly here for days -- an earlier version of this file
+asserted "cuDNN 9.13 fails to initialise on a driver older than r570" and
+recommended `--disable-cudnn` as a viable workaround. Both halves were wrong:
+the venv simply had 9.13 on disk instead of the pinned 9.10.2, and disabling
+cuDNN costs ~86x on the vision tower rather than being roughly free. Verify by
+asking the loaded library, not pip metadata, and see
+[SETUP.md](SETUP.md#cudnn-check-the-library-not-the-metadata).
+
+**Driver versions vary across this fleet.** Observed: `worker-node3` (A100
+80GB PCIe) on 550.54.14, `worker-node109` (A100-SXM4-80GB) on 550.163.01. Do
+not write "the cluster's driver" as though it were one value.
 
 ## Things deliberately left to the operator
 

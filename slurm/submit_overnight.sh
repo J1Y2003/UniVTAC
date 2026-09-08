@@ -9,7 +9,7 @@
 # Everything below is an overridable default, so a changed path is one variable
 # and not a rewritten command line:
 #
-#   GPUS=4 TASK=insert_hole bash slurm/submit_overnight.sh
+#   TASK=insert_hole MAX_STEPS=2000 bash slurm/submit_overnight.sh
 #
 # Why a wrapper: the `sbatch --export=ALL,...` form needs seven absolute paths
 # plus four site-specific flags, which is unreadable to type and easy to get
@@ -42,11 +42,13 @@ MODEL_OUTPUT_DIR="${MODEL_OUTPUT_DIR:-/rlwrld-unified-checkpoints/${USER}/checkp
 # `debug` is the cluster default and caps at 3 hours, which is why training jobs
 # sit pending with REASON=PartitionTimeLimit. Name a 2-day partition instead.
 PARTITION="${PARTITION:-sjw_alinlab}"
-# 2 GPUs schedules far sooner than 4 on partially-allocated nodes, and 4 vs 2
-# changes the effective batch size rather than just the speed -- see the recipe
-# pinning in overnight_ablation.sbatch. Whatever you pick is locked in for both
-# variants once the first one trains.
-GPUS="${GPUS:-2}"
+# 1, and do not raise it without fixing the cause first: launch_finetune.py
+# wraps the model in nn.DataParallel for --num-gpus > 1, which fails with
+# "module must have its parameters and buffers ... on device: cuda:0 ... but
+# found one on device: cpu". More GPUs would also change the effective batch
+# size rather than just the speed, and whatever you pick is locked in for both
+# variants by the recipe pinning in overnight_ablation.sbatch.
+GPUS="${GPUS:-1}"
 # Honest under-request: shorter jobs fit backfill gaps a 2-day job cannot, and a
 # walltime kill is safe here because training resumes from its last checkpoint.
 TIMELIMIT="${TIMELIMIT:-1-00:00:00}"

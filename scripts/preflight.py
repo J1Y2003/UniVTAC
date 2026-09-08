@@ -14,6 +14,7 @@ sequence; the full runbook is docs/RUNBOOK.md.
 from __future__ import annotations
 
 import argparse
+import json
 import os
 from pathlib import Path
 import shutil
@@ -215,6 +216,136 @@ def check_interpreters(report: Report, deep: bool) -> None:
                 detail,
                 f"  {module} is not installed in {python}. See docs/SETUP.md.",
             )
+
+
+_CUDNN_PROBE = r"""
+import ctypes, json
+out = {}
+try:
+    import importlib.metadata as md
+    out["wheel"] = md.version("nvidia-cudnn-cu12")
+except Exception:
+    out["wheel"] = None
+try:
+    import torch
+    out["torch"] = torch.__version__
+    out["header"] = torch.backends.cudnn.version()
+except Exception as exc:
+    out["fatal"] = f"{type(exc).__name__}: {exc}"[:200]
+    print(json.dumps(out)); raise SystemExit(0)
+try:
+    _lib = ctypes.CDLL("libcudnn.so.9")
+    _lib.cudnnGetVersion.restype = ctypes.c_size_t
+    out["runtime"] = int(_lib.cudnnGetVersion())
+except Exception as exc:
+    out["runtime"] = None
+    out["dlopen"] = str(exc)[:200]
+if torch.cuda.is_available():
+    try:
+        import torch.nn as nn
+        torch.backends.cudnn.enabled = True
+        _c = nn.Conv2d(3, 4, 3).cuda()
+        with torch.backends.cudnn.flags(enabled=True):
+            _c(torch.randn(2, 3, 16, 16, device="cuda")).sum().item()
+        out["conv"] = "ok"
+    except Exception as exc:
+        out["conv"] = f"{type(exc).__name__}: {str(exc)[:160]}"
+else:
+    out["conv"] = "no-gpu"
+print(json.dumps(out))
+"""
+
+
+def _encode_cudnn_version(wheel: str) -> int | None:
+    """``"9.10.2.21"`` -> ``91002``, cuDNN's own MAJOR*10000+MINOR*100+PATCH."""
+    parts = wheel.split(".")
+    if len(parts) < 3:
+        return None
+    try:
+        major, minor, patch = (int(p) for p in parts[:3])
+    except ValueError:
+        return None
+    return major * 10000 + minor * 100 + patch
+
+
+def check_cudnn(report: Report, deep: bool) -> None:
+    """The cuDNN that GR00T's venv actually loads is the one torch pins.
+
+    This exists because getting it wrong cost days. The venv had cuDNN 9.13 on
+    disk while ``torch==2.9.0+cu128`` pins ``nvidia-cudnn-cu12==9.10.2.21``, and
+    the mismatched library reported ``CUDNN_STATUS_NOT_INITIALIZED``. That was
+    misread as "the cluster's driver is too old", cuDNN was disabled as a
+    workaround, and disabling it costs ~86x on GR00T's vision tower -- 170 s per
+    training step instead of a few. Nothing in the stack complains: pip metadata
+    reported the pinned version while the files on disk were a different
+    release, so only asking the library its own version catches it.
+    """
+    python = env_path("GROOT_PYTHON")
+    if python is None or not python.is_file():
+        report.add(SKIP, "cuDNN", "GROOT_PYTHON not usable")
+        return
+    if not deep:
+        report.add(SKIP, "cuDNN", "use --deep to probe (imports torch)")
+        return
+
+    try:
+        result = subprocess.run(
+            [str(python), "-c", _CUDNN_PROBE],
+            capture_output=True, text=True, timeout=300,
+        )
+        info = json.loads((result.stdout or "").strip().splitlines()[-1])
+    except Exception as exc:
+        report.add(FAIL, "cuDNN", f"probe failed: {type(exc).__name__}",
+                   f"  Run by hand to see why:\n    {python} -c '<see _CUDNN_PROBE>'")
+        return
+
+    if "fatal" in info:
+        report.add(FAIL, "cuDNN", info["fatal"],
+                   f"  {python} cannot import torch. See docs/SETUP.md.")
+        return
+
+    wheel = info.get("wheel")
+    runtime = info.get("runtime")
+    expected = _encode_cudnn_version(wheel) if wheel else None
+    fix = (
+        "  The loaded cuDNN is not the one torch pins. Reinstall it:\n"
+        f"    cd $GROOT_ROOT\n"
+        "    env -u CONDA_PREFIX -u VIRTUAL_ENV uv cache clean nvidia-cudnn-cu12\n"
+        "    env -u CONDA_PREFIX -u VIRTUAL_ENV uv pip install --python .venv/bin/python \\\n"
+        f"        --reinstall nvidia-cudnn-cu12=={wheel}\n"
+        "  The cache clean matters: uv hardlinks these .so files out of its\n"
+        "  content cache, so a plain --reinstall can re-link the same bad files.\n"
+        "  See docs/SETUP.md, \"cuDNN\"."
+    )
+
+    if runtime is None:
+        report.add(FAIL, "cuDNN", f"cannot dlopen libcudnn.so.9: {info.get('dlopen', '?')}", fix)
+        return
+    if expected is None:
+        report.add(WARN, "cuDNN", f"runtime {runtime}, pinned version unreadable ({wheel})")
+    elif runtime != expected:
+        report.add(
+            FAIL, "cuDNN",
+            f"loaded {runtime} but torch pins {wheel} (= {expected}) -- MISMATCH",
+            fix,
+        )
+        return
+    else:
+        report.add(PASS, "cuDNN", f"{runtime} matches the pin ({wheel})")
+
+    conv = info.get("conv")
+    if conv == "ok":
+        report.add(PASS, "  cuDNN conv", "runs on this GPU")
+    elif conv == "no-gpu":
+        report.add(SKIP, "  cuDNN conv", "no GPU here; re-run on a compute node")
+    else:
+        report.add(
+            FAIL, "  cuDNN conv", str(conv),
+            "  cuDNN loads but cannot run a convolution. Do NOT paper over this\n"
+            "  with DISABLE_CUDNN=1 -- that costs ~86x on the vision tower (170 s\n"
+            "  per training step). Try an older pin-compatible cuDNN, or the\n"
+            "  cluster's container path (srun --container). See docs/SETUP.md.",
+        )
 
 
 def check_client_deps(report: Report, deep: bool) -> None:
@@ -428,6 +559,7 @@ def main(argv: list[str] | None = None) -> int:
     check_repo(report)
     check_univtac(report)
     check_interpreters(report, args.deep)
+    check_cudnn(report, args.deep)
     check_client_deps(report, args.deep)
     check_hf(report)
     check_gated_access(report, args.deep)

@@ -3,7 +3,10 @@
 # compare. Designed to be submitted and left alone overnight.
 #
 #   sbatch slurm/overnight_ablation.sbatch
-#   sbatch --gres=gpu:4 --export=ALL,TASK=lift_bottle,EPISODES=50 slurm/overnight_ablation.sbatch
+#   sbatch --export=ALL,TASK=lift_bottle,EPISODES=50 slurm/overnight_ablation.sbatch
+#
+# Prefer slurm/submit_overnight.sh, which resolves every path for you. Do not
+# raise --gres above gpu:1 -- see the note on the #SBATCH --gres line below.
 #
 # BEFORE submitting, verify it without spending GPU time. DRY_RUN=1 runs the
 # full preflight, prints the exact arguments every stage would use, checks the
@@ -41,7 +44,10 @@
 #SBATCH --job-name=univtac-groot-full-ablation-finetune-both-variants-then-evaluate-and-compare
 #SBATCH --output=logs/%x-%j.out
 #SBATCH --error=logs/%x-%j.err
-#SBATCH --gres=gpu:4
+# 1 GPU, deliberately: --num-gpus > 1 makes launch_finetune.py wrap the model
+# in nn.DataParallel, which dies with "module must have its parameters ... on
+# device: cpu". Overridden by slurm/submit_overnight.sh's --gres.
+#SBATCH --gres=gpu:1
 #SBATCH --wckey=project-short-name:sub_4dpdata
 
 # Deliberately NOT `set -e`: a failing stage must be recorded and stepped over,
@@ -108,9 +114,51 @@ VARIANTS="${VARIANTS:-tactile baseline_finetuned}"
 # the final model by definition. This script therefore points a stable
 # `<output_dir>/final` symlink at the highest-numbered checkpoint after
 # training, which is what evaluation uses.
-MAX_STEPS="${MAX_STEPS:-10000}"
-SAVE_STEPS="${SAVE_STEPS:-2500}"
+# MAX_STEPS=4000 matches the UniVTAC paper's ACT recipe ("All ACT models were
+# trained for a total of 4,000 optimization steps using a batch size of 64"),
+# and GR00T's --global-batch-size is already 64, so GR00T sees the same number
+# of gradient updates over the same batch size as the published baseline. That
+# is the number to keep if you want the ACT row to be a fair comparator.
+#
+# CAVEAT on epochs, which is NOT matched: the paper trained on 50 episodes per
+# task, our converted datasets carry 100 (28,932 samples). Same steps x same
+# batch = 256,000 samples seen either way, but that is ~8.9 epochs over our 100
+# episodes versus ~17.7 over their 50. So GR00T sees the same amount of
+# gradient signal drawn from twice the data. Decide deliberately and say which
+# you did -- see docs/ABLATION.md, "Comparability with UniVTAC's ACT".
+#
+# With MAX_STEPS=4000 and SAVE_STEPS=1000 the run saves at 1000/2000/3000/4000
+# and SAVE_TOTAL_LIMIT=3 keeps a rolling window of the last three, so the final
+# checkpoint plus two fallbacks -- roughly 120 GB per variant.
+#
+# Note there is no metric-based "best checkpoint" to select: launch_finetune.py
+# exposes no eval metric or load-best-at-end option, so the last checkpoint is
+# the final model by definition. This script therefore points a stable
+# `<output_dir>/final` symlink at the highest-numbered checkpoint after
+# training, which is what evaluation uses.
+MAX_STEPS="${MAX_STEPS:-4000}"
+SAVE_STEPS="${SAVE_STEPS:-1000}"
 SAVE_TOTAL_LIMIT="${SAVE_TOTAL_LIMIT:-3}"
+
+# Optimiser hyperparameters. Left UNSET by default, which means GR00T's own
+# launch_finetune.py defaults apply -- confirm them rather than trusting this
+# comment:
+#   "${GROOT_PYTHON}" "${GROOT_ROOT}/gr00t/experiment/launch_finetune.py" --help \
+#       | grep -A2 -E "learning-rate|weight-decay|warmup"
+#
+# For reference, the UniVTAC paper's ACT recipe is lr 1e-5 and weight decay
+# 1e-4. GR00T's default is NOT that: the LR observed in a real run climbed
+# +2e-7/step through warmup, which extrapolates to a peak near 1e-4, i.e. ~10x
+# the paper. That is not automatically wrong -- ACT is a small policy with a
+# pretrained ResNet encoder, this is a 1.62 B-trainable-parameter finetune, and
+# 1e-4 is aggressive for the latter -- but it is a choice, so make it on
+# purpose:
+#   LEARNING_RATE=1e-5 WEIGHT_DECAY=1e-4 bash slurm/submit_overnight.sh
+LEARNING_RATE="${LEARNING_RATE:-}"
+WEIGHT_DECAY="${WEIGHT_DECAY:-}"
+HP_ARGS=""
+[[ -n "${LEARNING_RATE}" ]] && HP_ARGS+=" --learning-rate ${LEARNING_RATE}"
+[[ -n "${WEIGHT_DECAY}" ]] && HP_ARGS+=" --weight-decay ${WEIGHT_DECAY}"
 
 DATA_ROOT="${DATA_ROOT:-${HOME}/jaewon/workspace/groot-data}"
 # Training outputs policy ("모델 학습 Outputs 통합 저장 및 Retention 정책"):
@@ -155,10 +203,15 @@ export HF_HUB_ENABLE_HF_TRANSFER="${HF_HUB_ENABLE_HF_TRANSFER:-0}"
 export HF_HOME="${HF_HOME:-${HOME}/jaewon/hf_cache}"
 export PYTHONUNBUFFERED=1
 
-# cuDNN cannot initialise on a driver older than GR00T's CUDA 12.8 build (see
-# docs/SETUP.md). Leave this at 1 until an admin upgrades the driver; it costs
-# wall-clock on the conv path but keeps results comparable across variants.
-DISABLE_CUDNN="${DISABLE_CUDNN:-1}"
+# Default OFF. This was 1 for a while on the belief that cuDNN could not
+# initialise on this cluster's driver; the real cause was a cuDNN in the GR00T
+# venv that did not match torch's pin (see docs/SETUP.md, "cuDNN"). Turning
+# cuDNN off is NOT cheap: it costs ~86x on the Qwen3-VL vision tower, because
+# the patch-embed Conv3d loses the fast kernel and falls back to a per-patch
+# ATen loop -- measured at 170 s/step versus a few seconds. Only set this to 1
+# as a deliberate last resort, and expect the run to be unusably slow.
+# `scripts/preflight.py --deep` now fails if the cuDNN pin has drifted again.
+DISABLE_CUDNN="${DISABLE_CUDNN:-0}"
 
 # SLURM re-indexes allocated GPUs to 0..N-1 inside the job, so counting
 # CUDA_VISIBLE_DEVICES gives the usable width for data-parallel training.
@@ -291,18 +344,25 @@ done
 RECIPE_FILE="${STAGE_DIR}/recipe-${TASK}.env"
 if [[ -f "${RECIPE_FILE}" ]]; then
   RECORDED_NUM_GPUS=""; RECORDED_MAX_STEPS=""
+  RECORDED_LEARNING_RATE=""; RECORDED_WEIGHT_DECAY=""
   # shellcheck source=/dev/null
   source "${RECIPE_FILE}"
-  if [[ "${RECORDED_NUM_GPUS}" != "${NUM_GPUS}" || "${RECORDED_MAX_STEPS}" != "${MAX_STEPS}" ]]; then
+  if [[ "${RECORDED_NUM_GPUS}" != "${NUM_GPUS}" \
+     || "${RECORDED_MAX_STEPS}" != "${MAX_STEPS}" \
+     || "${RECORDED_LEARNING_RATE}" != "${LEARNING_RATE:-groot-default}" \
+     || "${RECORDED_WEIGHT_DECAY}" != "${WEIGHT_DECAY:-groot-default}" ]]; then
     if [[ "${ALLOW_RECIPE_CHANGE:-0}" == "1" ]]; then
       echo " WARNING: recipe changed (was ${RECORDED_NUM_GPUS} gpu / ${RECORDED_MAX_STEPS} steps," >&2
       echo " now ${NUM_GPUS} gpu / ${MAX_STEPS} steps). Proceeding because" >&2
       echo " ALLOW_RECIPE_CHANGE=1 -- the variants are no longer directly comparable." >&2
     else
-      fatal "recipe mismatch: this task was started with ${RECORDED_NUM_GPUS} GPU(s) and
-       --max-steps ${RECORDED_MAX_STEPS}, but this run has ${NUM_GPUS} GPU(s) and
-       --max-steps ${MAX_STEPS}. Training the two variants under different effective
-       batch sizes would confound the ablation. Either resubmit with
+      fatal "recipe mismatch: this task was started with ${RECORDED_NUM_GPUS} GPU(s),
+       --max-steps ${RECORDED_MAX_STEPS}, lr=${RECORDED_LEARNING_RATE},
+       wd=${RECORDED_WEIGHT_DECAY}; this run has ${NUM_GPUS} GPU(s),
+       --max-steps ${MAX_STEPS}, lr=${LEARNING_RATE:-groot-default},
+       wd=${WEIGHT_DECAY:-groot-default}. Training the two variants under different
+       effective batch sizes or optimiser settings would confound the ablation.
+       Either resubmit with
        --gres=gpu:${RECORDED_NUM_GPUS} and MAX_STEPS=${RECORDED_MAX_STEPS}, or pass
        ALLOW_RECIPE_CHANGE=1 and delete ${STAGE_DIR} to restart the experiment."
     fi
@@ -310,9 +370,11 @@ if [[ -f "${RECIPE_FILE}" ]]; then
     echo " recipe: ${NUM_GPUS} gpu, ${MAX_STEPS} steps (matches ${RECIPE_FILE})"
   fi
 elif [[ "${DRY_RUN:-0}" != "1" ]]; then
-  printf 'RECORDED_NUM_GPUS=%s\nRECORDED_MAX_STEPS=%s\n' "${NUM_GPUS}" "${MAX_STEPS}" \
+  printf 'RECORDED_NUM_GPUS=%s\nRECORDED_MAX_STEPS=%s\nRECORDED_LEARNING_RATE=%s\nRECORDED_WEIGHT_DECAY=%s\n' \
+    "${NUM_GPUS}" "${MAX_STEPS}" "${LEARNING_RATE:-groot-default}" "${WEIGHT_DECAY:-groot-default}" \
     >"${RECIPE_FILE}"
-  echo " recipe: ${NUM_GPUS} gpu, ${MAX_STEPS} steps (recorded in ${RECIPE_FILE})"
+  echo " recipe: ${NUM_GPUS} gpu, ${MAX_STEPS} steps, lr=${LEARNING_RATE:-groot-default},"
+  echo "         wd=${WEIGHT_DECAY:-groot-default} (recorded in ${RECIPE_FILE})"
 fi
 
 df -h "${CKPT_ROOT}" 2>/dev/null || true
@@ -387,7 +449,7 @@ for variant in ${VARIANTS}; do
     echo "[dry-run]   DATASET=${DATA_ROOT}/univtac-${TASK}-${variant}"
     echo "[dry-run]   OUTPUT_DIR=${out_dir}"
     echo "[dry-run]   NUM_GPUS=${NUM_GPUS}  DISABLE_CUDNN=${DISABLE_CUDNN}"
-    echo "[dry-run]   EXTRA_ARGS=--max-steps ${MAX_STEPS} --save-steps ${SAVE_STEPS} --save-total-limit ${SAVE_TOTAL_LIMIT} ${resume_args}"
+    echo "[dry-run]   EXTRA_ARGS=--max-steps ${MAX_STEPS} --save-steps ${SAVE_STEPS} --save-total-limit ${SAVE_TOTAL_LIMIT}${HP_ARGS} ${resume_args}"
     record "finetune ${variant}: DRY-RUN (not executed)"
     continue
   fi
@@ -406,7 +468,7 @@ for variant in ${VARIANTS}; do
   WANDB_RUN_GROUP="${WANDB_RUN_GROUP:-univtac-${TASK}-${SLURM_JOB_ID:-local}}" \
   WANDB_API_KEY="${WANDB_API_KEY:-}" \
   WANDB_MODE="${WANDB_MODE:-}" \
-  EXTRA_ARGS="--max-steps ${MAX_STEPS} --save-steps ${SAVE_STEPS} --save-total-limit ${SAVE_TOTAL_LIMIT} ${resume_args} ${EXTRA_ARGS:-}" \
+  EXTRA_ARGS="--max-steps ${MAX_STEPS} --save-steps ${SAVE_STEPS} --save-total-limit ${SAVE_TOTAL_LIMIT}${HP_ARGS} ${resume_args} ${EXTRA_ARGS:-}" \
     bash "${REPO_ROOT}/slurm/finetune.sbatch" >"${log}" 2>&1
   status=$?
 

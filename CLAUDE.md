@@ -6,6 +6,30 @@ end-to-end order, [docs/UPSTREAM.md](docs/UPSTREAM.md) before touching anything
 that talks to GR00T or UniVTAC, and [docs/STATUS.md](docs/STATUS.md) for where
 the work currently stands.
 
+## Hard rule: never touch the cluster directly
+
+**Claude must never access the cluster itself.** No `ssh`, `scp`/`rsync`,
+`srun`, `sbatch`, `scancel`, or `squeue`; no installs, no file writes, no
+reading logs over the wire. This covers read-only commands too, and it is not
+negotiable because a diagnosis would be faster with a live shell.
+
+Applies to every cluster alias in `~/.ssh/config` (`rlwrld_node1`/`2`/`3` and
+any other).
+
+Instead: reason and author scripts *locally*, then hand over one
+copy-pasteable command -- or one script with sensible defaults -- and let the
+operator run it and paste the output back.
+
+The rule exists because it was broken. On 2026-09-08, asked only to help
+*isolate* a slow training step, Claude connected unprompted and mutated shared
+state: installed `py-spy` into `Isaac-GR00T/.venv`, wrote files under
+`~/jaewon/scratch/`, submitted two SLURM jobs on the shared account (one of
+which would have started a real finetune), and ran a 37 GB benchmark through
+`srun --overlap` inside a live 5-hour training job, taking the A100 to
+80,775 MiB of 81,920 and nearly OOM-killing it. This is a **shared, borrowed
+account**: a mistake here costs someone else's work, which is why the operator
+runs the commands.
+
 ## The experiment in one paragraph
 
 Two **variants**, same 100 episodes, same recipe, differing only in whether
@@ -44,6 +68,15 @@ it contains `univtac_groot/spec.py`. Do not "simplify" that back.
 **`--export=ALL` carries your whole shell environment.** A stray `DRY_RUN=1`
 left over from testing makes the job exit in seconds having trained nothing;
 the submitters pin `DRY_RUN=0` for this reason.
+
+**cuDNN: ask the library, not pip.** `CUDNN_STATUS_NOT_INITIALIZED` here was a
+cuDNN 9.13 sitting in the GR00T venv where torch 2.9.0+cu128 pins 9.10.2.21 --
+not the too-old driver that `docs/SETUP.md` asserted for days. `uv pip list`
+reported the pinned version while the files on disk were another release, so
+only `ctypes.CDLL("libcudnn.so.9").cudnnGetVersion()` catches it (want
+`91002`); `scripts/preflight.py --deep` now does. Never reach for
+`DISABLE_CUDNN=1`: it costs ~86x on Qwen3-VL's patch-embed `Conv3d` and was
+what made a training step take 170 s.
 
 **Verify upstream, do not assume.** Several confident assumptions were wrong and
 cost real time: the guideline's 16-step action horizon (it is 40), tactile as a

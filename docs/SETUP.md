@@ -50,6 +50,82 @@ the same thing for the same reason (`policy/smolvla/smolvla_server.py` runs in
 
 ---
 
+## cuDNN: check the library, not the metadata
+
+`CUDNN_STATUS_NOT_INITIALIZED` on this cluster was **not** a driver problem,
+and the difference matters because the workaround is catastrophically
+expensive.
+
+**What it actually was.** The GR00T venv had cuDNN **9.13.0** on disk while
+`torch==2.9.0+cu128` pins `nvidia-cudnn-cu12==9.10.2.21`. Reinstalling the
+pinned version fixed it outright, with no driver change and no admin:
+
+```bash
+cd $GROOT_ROOT
+env -u CONDA_PREFIX -u VIRTUAL_ENV uv cache clean nvidia-cudnn-cu12
+env -u CONDA_PREFIX -u VIRTUAL_ENV uv pip install --python .venv/bin/python \
+    --reinstall nvidia-cudnn-cu12==9.10.2.21
+```
+
+The `uv cache clean` is not optional. uv hardlinks these `.so` files out of its
+content-addressed cache -- `ls -la` shows a link count above 1 -- so a plain
+`--reinstall` can re-link the very files you are trying to replace.
+
+**Why it hid for so long.** Every signal that is cheap to check agreed with
+itself and was wrong:
+
+* `uv pip list` reported `nvidia-cudnn-cu12 9.10.2.21` -- the *metadata* was
+  correct while the *files* were a different release.
+* `torch.backends.cudnn.version()` returned `91300`, which reads like "the
+  expected version" unless you know torch pins 9.10.2 (= `91002`).
+* This document previously asserted "cuDNN 9.13" as though 9.13 were what
+  shipped with torch 2.9.
+* cuBLAS worked fine, which pointed suspicion at the driver -- when in fact
+  cuBLAS working while cuDNN fails is the classic signature of the *dynamic
+  linker* resolving a mismatched cuDNN, since CUDA minor-version compatibility
+  covers the runtime but says nothing about a separate shared library.
+
+Only asking the loaded library its own version distinguishes these:
+
+```bash
+$GROOT_PYTHON -c "import ctypes, torch; l=ctypes.CDLL('libcudnn.so.9'); \
+  l.cudnnGetVersion.restype=ctypes.c_size_t; print(l.cudnnGetVersion())"
+```
+
+Want `91002`. `scripts/preflight.py --deep` now performs exactly this check and
+fails on a mismatch, so it cannot silently recur.
+
+**Why never to just set `DISABLE_CUDNN=1`.** It looks like a cheap trade --
+only convolutions use cuDNN, and FlashAttention-2 and the DiT's SDPA path do
+not. But GR00T has one conv that matters and it is on the hot path: Qwen3-VL's
+vision patch embed. Qwen3VL reshapes every visual patch into its own batch
+element (`transformers/models/qwen3_vl/modeling_qwen3_vl.py`, class
+`Qwen3VLVisionPatchEmbed`), so `Conv3d(3, 1024, (2,16,16), stride=(2,16,16))`
+runs over ~32,768 batch elements per step -- 64 samples x 2 cameras x 256
+patches at 256 px. Without cuDNN, ATen walks that batch with a per-element
+im2col loop driven from the main Python thread; GR00T's own
+`_apply_vision_patch_embed_channels_last` workaround exists precisely to select
+the fast *cuDNN* kernel here, so disabling cuDNN disables the thing that
+workaround is reaching for.
+
+Measured on an A100 (sm_80), vision-tower forward+backward at 32 images:
+
+| Patch embed | Time | |
+| --- | --- | --- |
+| shipped `Conv3d`, cuDNN off | 46.16 s | 98.8% of the whole tower |
+| algebraically identical matmul | 0.53 s | **86x faster** |
+
+Scaled to the real 128-image batch that is ~185 s against an observed 170 s
+step -- i.e. with cuDNN off, this single conv is essentially the entire
+training step, and a 10,000-step finetune projects to 470 hours.
+
+**If the pinned cuDNN still will not initialise**, in order of preference:
+an older pin-compatible cuDNN (`9.8.0.87`, `9.7.1.26`); the cluster's
+container path (`srun --container`, which is available here -- there is no
+module system and no `enroot`/`apptainer` binary); a driver upgrade to r570+ or
+`cuda-compat-12-8` from an admin. `DISABLE_CUDNN=1` is a last resort that makes
+training unusably slow, not a workaround.
+
 ## Prerequisites
 
 You need **two separate environments** on a Linux machine with an NVIDIA GPU.
@@ -271,7 +347,7 @@ Run it as soon as a finetune finishes, not days later.
 | `Could not load libtorchcodec ... versions 4, 5, 6 and 7` | FFmpeg 8 installed; downgrade to <8 |
 | Parquet files in `demo_data/` unreadable | Cloned Isaac-GR00T without `git-lfs` |
 | `CUDA_HOME is unset` during finetune | Run GR00T's `scripts/deployment/dgpu/install_deps.sh` |
-| `CUDNN_STATUS_NOT_INITIALIZED`, cuDNN debug log says `cudaGetDeviceCount(&count) != cudaSuccess` with `GPU=NULL` and compute capability `0.0` | **Driver older than GR00T's CUDA runtime.** torch is `2.9.0+cu128` (CUDA 12.8); a CUDA 12.4-era driver (e.g. 550.54.14) runs it via minor-version compatibility, so cuBLAS/tensor ops work, but cuDNN 9.13 cannot enumerate the device. Not a misinstall. Workaround: `--disable-cudnn` (or `DISABLE_CUDNN=1`). Real fixes need an admin: driver r570+, or NVIDIA's `cuda-compat-12-8` forward-compatibility package (supported on data-center GPUs like A100). Diagnose with `CUDNN_LOGLEVEL_DBG=3 CUDNN_LOGDEST_DBG=stdout`. |
+| `CUDNN_STATUS_NOT_INITIALIZED`, cuDNN debug log says `cudaGetDeviceCount(&count) != cudaSuccess` with `GPU=NULL` and compute capability `0.0` | **The cuDNN in the GR00T venv is not the one torch pins.** See the dedicated section below -- this was misdiagnosed as a driver problem for days and the workaround cost 86x. Run `python scripts/preflight.py --deep`, which now checks it. |
 | `cuDNN error: CUDNN_STATUS_NOT_INITIALIZED` on the first `get_action` | The server inherited `LD_LIBRARY_PATH`/`CUDA_HOME` from the UniVTAC conda env (CUDA 12.4) while its torch is cu128. Launch it with `env -u LD_LIBRARY_PATH -u CUDA_HOME -u CUDA_PATH`; the job scripts do this automatically. Check free VRAM first, since genuine OOM reports the same error. |
 | `Arm motion planning failed on action 0` | cuRobo, not GR00T. Verify UniVTAC's own expert works: `bash collect_data.sh grasp_classify demo 0` |
 | `ValueError: Fast download using 'hf_transfer' is enabled (HF_HUB_ENABLE_HF_TRANSFER=1) but 'hf_transfer' package is not available` | The flag is a hard error, not a fallback, and it fires mid-download inside the *server* log so it reads like a checkpoint fault. `eval_ablation.sbatch` now probes `GROOT_PYTHON` for the package and only enables the flag when present. Override with `HF_HUB_ENABLE_HF_TRANSFER=0`, or install it: `$GROOT_PYTHON -m pip install hf_transfer` (worth it for the ~15 GB of weights). |

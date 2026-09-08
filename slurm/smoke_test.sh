@@ -57,7 +57,10 @@ EPISODES="${EPISODES:-1}"
 PARTITION="${PARTITION:-debug}"
 GPUS="${GPUS:-1}"
 TIMELIMIT="${TIMELIMIT:-2:55:00}"
-DISABLE_CUDNN="${DISABLE_CUDNN:-1}"
+# Default OFF -- see the note in overnight_ablation.sbatch. cuDNN disabled
+# costs ~86x on the vision tower, so a smoke test with it on tells you nothing
+# useful about the step rate.
+DISABLE_CUDNN="${DISABLE_CUDNN:-0}"
 # Off by default so a throwaway run does not clutter the real project's plots.
 USE_WANDB="${USE_WANDB:-0}"
 
