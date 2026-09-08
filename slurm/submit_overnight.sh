@@ -5,13 +5,16 @@
 #   bash slurm/submit_overnight.sh --print         # show the sbatch command only
 #   bash slurm/submit_overnight.sh --test-only     # run the submit filter, queue nothing
 #   bash slurm/submit_overnight.sh --dry           # DRY_RUN=1 locally, no sbatch at all
-#   bash slurm/submit_overnight.sh --chunks 8      # 8 chained 3h jobs on `debug`
+#   bash slurm/submit_overnight.sh --next          # ONE 3h job on `debug`
+#   bash slurm/submit_overnight.sh --status        # progress, submit nothing
 #
-# Use --chunks when the long-walltime partitions are contended. The 2-day
-# partitions have the walltime but not the availability; eight 3-hour `debug`
-# slots that actually start beat one 24-hour slot that pends all night. Chunks
-# are chained with --dependency=afterany, so each starts when the previous ends
-# and resumes from its last checkpoint.
+# Use --next when the long-walltime partitions are contended. The 2-day
+# partitions have the walltime but not the availability; a 3-hour `debug` slot
+# that actually starts beats a 24-hour slot that pends all night. It submits
+# exactly one job and refuses if one of yours is already queued, so it is safe
+# to re-run: each job resumes from the last checkpoint. This cluster caps GPUs
+# per user across *queued* jobs, not just running ones, so pre-submitting a
+# dependency chain blocks itself -- one at a time is the only thing that works.
 #
 # Everything below is an overridable default, so a changed path is one variable
 # and not a rewritten command line:
@@ -44,21 +47,24 @@ HF_HOME="${HF_HOME:-${HOME}/jaewon/hf_cache}"
 # also where the ~120 GB of checkpoints per variant belongs rather than on the
 # shared home mount.
 MODEL_OUTPUT_DIR="${MODEL_OUTPUT_DIR:-/rlwrld-unified-checkpoints/${USER:-$(id -un)}/univtac-groot}"
+# Must match the CKPT_ROOT default inside overnight_ablation.sbatch, since
+# --status reads its stage markers and checkpoints from here.
+CKPT_ROOT="${CKPT_ROOT:-${MODEL_OUTPUT_DIR}}"
 
 MODE="${1:-submit}"
 
 # --------------------------------------------------------------------------- #
 # Job shape
 # --------------------------------------------------------------------------- #
-# Chunked mode (--chunks N): submit N short jobs chained by SLURM dependencies,
+# Short-chunk mode (--next / --status): one short job at a time, re-run by hand,
 # each resuming where the last was killed. The 2-day partitions have the
 # walltime but not the availability -- an 8-hour wait for a 24-hour slot is
-# worse than eight 3-hour slots that actually start -- while `debug` is the
-# cluster default, so it is the least contended and the quickest to schedule.
+# worse than a 3-hour slot that actually starts -- while `debug` is the cluster
+# default, so it is the least contended and the quickest to schedule.
 #
 # This works only because every stage is resumable: finetuning continues via
 # --resume-from-checkpoint, and completed stages are skipped by their markers.
-if [[ "${MODE}" == "--chunks" ]]; then
+if [[ "${MODE}" == "--next" || "${MODE}" == "--status" ]]; then
   PARTITION="${PARTITION:-debug}"
   # Just inside debug's 3:00:00 cap. Slightly under so the request is never
   # rejected for exceeding it, and so backfill has a little more room.
@@ -85,7 +91,6 @@ GPUS="${GPUS:-2}"
 # walltime kill is safe here because training resumes from its last checkpoint.
 TIMELIMIT="${TIMELIMIT:-1-00:00:00}"
 MAX_STEPS="${MAX_STEPS:-10000}"
-CHUNKS="${CHUNKS:-${2:-8}}"
 
 TASK="${TASK:-lift_bottle}"
 TASK_CONFIG="${TASK_CONFIG:-clean}"
@@ -202,50 +207,81 @@ case "${MODE}" in
     exit ${status}
     ;;
   --chunks)
-    cd "${REPO_ROOT}"
-    echo "Chaining ${CHUNKS} x ${TIMELIMIT} on ${PARTITION} (${GPUS} gpu)."
-    echo "Each chunk resumes where the previous one was killed."
-    echo
-    prev=""
-    ids=()
-    for ((i = 1; i <= CHUNKS; i++)); do
-      args=("${SBATCH_ARGS[@]}")
-      # afterany, not afterok: a walltime kill is a *failure* exit, and that is
-      # the normal way a chunk ends. afterok would stop the chain on the very
-      # event it exists to handle.
-      [[ -n "${prev}" ]] && args+=(--dependency="afterany:${prev}")
-      out=$(sbatch --parsable "${args[@]}" slurm/overnight_ablation.sbatch) || {
-        echo "chunk ${i}: submission failed" >&2
-        break
-      }
-      # --parsable can return "jobid;cluster"; keep the id.
-      prev="${out%%;*}"
-      ids+=("${prev}")
-      printf '  chunk %2d/%d: job %s%s\n' "${i}" "${CHUNKS}" "${prev}" \
-        "$([[ ${i} -gt 1 ]] && echo "  (after ${ids[i-2]})")"
+    echo "--chunks is removed. It submitted all N jobs up front, chained by" >&2
+    echo "--dependency, and although only the first could run, the held jobs" >&2
+    echo "still sat in the queue with their GPU requests counted against this" >&2
+    echo "cluster's per-user GPU cap -- which blocked the whole chain." >&2
+    echo >&2
+    echo "Use --next instead: it submits exactly ONE job, and refuses if one of" >&2
+    echo "yours is already queued or running. Re-run it whenever the previous" >&2
+    echo "chunk ends; each one resumes from the last checkpoint." >&2
+    exit 2
+    ;;
+  --status | --next)
+    # Progress first, so both modes answer "where are we?" the same way.
+    echo "Progress:"
+    stage_dir="${CKPT_ROOT}/.stages"
+    for variant in tactile baseline_finetuned; do
+      out_dir="${CKPT_ROOT}/${TASK}-${variant}"
+      if [[ -f "${stage_dir}/finetune-${TASK}-${variant}.done" ]]; then
+        state="finetune COMPLETE"
+      else
+        latest=""
+        for d in "${out_dir}"/checkpoint-*; do
+          [[ -d "${d}" ]] || continue
+          n="${d##*checkpoint-}"
+          [[ "${n}" =~ ^[0-9]+$ ]] || continue
+          [[ -z "${latest}" || "${n}" -gt "${latest}" ]] && latest="${n}"
+        done
+        if [[ -n "${latest}" ]]; then
+          state="training: step ${latest}/${MAX_STEPS}"
+        else
+          state="not started (no checkpoint yet)"
+        fi
+      fi
+      summary="${REPO_ROOT}/eval_result/${variant}/${TASK}/seed0-0.summary.json"
+      [[ -f "${summary}" ]] && state+="; eval DONE"
+      printf '  %-20s %s\n' "${variant}" "${state}"
     done
     echo
-    echo "Submitted ${#ids[@]} chunk(s). Only the first competes for a slot;"
-    echo "the rest are held until their predecessor finishes."
+
+    # One job at a time, enforced here rather than relying on the scheduler.
+    # squeue's %j truncates at its default width, hence the explicit 200.
+    running=$(squeue -h -u "${WHOAMI}" --format="%i %T %200j" 2>/dev/null \
+              | grep "univtac-groot" || true)
+    if [[ -n "${running}" ]]; then
+      echo "You already have a job in the queue:"
+      echo "${running}" | sed 's/^/  /'
+      echo
+      echo "Nothing submitted. Re-run this once that job ends."
+      echo "  cancel it with: scancel $(echo "${running}" | awk '{printf "%s ", $1}')"
+      exit 0
+    fi
+
+    if [[ "${MODE}" == "--status" ]]; then
+      echo "No job of yours is queued. Submit the next one with:"
+      echo "  bash slurm/submit_overnight.sh --next"
+      exit 0
+    fi
+
+    cd "${REPO_ROOT}"
+    echo "Submitting ONE job: ${TIMELIMIT} on ${PARTITION}, ${GPUS} gpu."
+    out=$(sbatch --parsable "${SBATCH_ARGS[@]}" slurm/overnight_ablation.sbatch) || exit $?
+    jobid="${out%%;*}"
+    echo "  job ${jobid}"
     echo
-    echo "Watch:      squeue -u ${WHOAMI}"
-    echo "Progress:   tail -f logs/univtac-groot-full-*.out"
-    echo "Training:   tail -f logs/overnight-*/finetune-tactile.log"
-    echo "Stop all:   scancel ${ids[*]}"
+    echo "Watch:       squeue -u ${WHOAMI}"
+    echo "Progress:    tail -f logs/univtac-groot-full-*-${jobid}.out"
+    echo "Training:    tail -f logs/overnight-${jobid}/finetune-tactile.log"
+    echo "Where am I:  bash slurm/submit_overnight.sh --status"
+    echo "Next chunk:  bash slurm/submit_overnight.sh --next   (after this one ends)"
     echo
-    echo "IMPORTANT: check chunk 1 before trusting the chain. Dependencies are"
-    echo "'afterany', so a genuine crash (bad config, missing dataset) would let"
-    echo "all ${CHUNKS} chunks run and fail in turn. Preflight exits in seconds"
-    echo "in that case, so it is cheap -- but you would wait for nothing."
-    echo
-    echo "Also verify a checkpoint appears within the first chunk:"
-    echo "  ls ${MODEL_OUTPUT_DIR}/${TASK}-tactile/"
-    echo "If SAVE_STEPS=${SAVE_STEPS} is still too many steps for ${TIMELIMIT},"
-    echo "no checkpoint is written, every chunk restarts from zero, and the chain"
-    echo "never progresses. Lower it with SAVE_STEPS=100 and resubmit."
+    echo "If the step number under --status does not advance between chunks,"
+    echo "SAVE_STEPS=${SAVE_STEPS} is too many steps to reach in ${TIMELIMIT} and"
+    echo "every chunk is restarting from zero. Lower it: SAVE_STEPS=100."
     ;;
   *)
-    echo "usage: bash slurm/submit_overnight.sh [--print|--test-only|--dry|--chunks [N]]" >&2
+    echo "usage: bash slurm/submit_overnight.sh [--next|--status|--print|--test-only|--dry]" >&2
     exit 2
     ;;
 esac
