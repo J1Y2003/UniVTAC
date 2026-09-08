@@ -26,16 +26,23 @@
 # No GPU. Network + disk bound. modelscope resumes, so a walltime kill is safe
 # to resubmit.
 #
-# No --time here on purpose. Requesting more than a partition's limit leaves the
-# job pending forever with REASON=PartitionTimeLimit rather than failing fast, so
-# the partition's own default is safer. Check the limits with:
-#   sinfo -o "%20P %10l %10L %6D %25G"     (%l = TIMELIMIT, %L = DEFAULTTIME)
-# and pass --partition explicitly, or export SBATCH_PARTITION. Note `debug` is
-# short-lived and is where jobs land by default here -- it is not where long
-# training belongs.
+# SITE RULES (see CLAUDE.md, "Cluster rules"). Enforced here; do not "helpfully"
+# reintroduce any of them:
+#
+#   * NEVER pass --time. A job gets the maximum the partition allows, or runs
+#     until the script exits, whichever comes first, so a limit can only cut the
+#     run short. Over-requesting also leaves the job pending forever with
+#     REASON=PartitionTimeLimit rather than failing fast.
+#   * NEVER pass --cpus-per-task or --mem. Jobs take the node's per-GPU
+#     defaults, and the submit filter rejects the job if either is specified.
+#   * ALWAYS pass --wckey=sub_4dpdata.
+#
+# Do pass --partition explicitly, or export SBATCH_PARTITION: `debug` is the
+# default here and is short-lived, so it is not where long training belongs.
 #SBATCH --job-name=univtac-groot-download-univtac-demonstration-data-from-modelscope
 #SBATCH --output=logs/%x-%j.out
 #SBATCH --error=logs/%x-%j.err
+#SBATCH --wckey=sub_4dpdata
 
 set -uo pipefail
 

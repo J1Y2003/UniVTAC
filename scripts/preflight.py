@@ -481,6 +481,38 @@ def check_slurm(report: Report) -> None:
         report.add(WARN, "sbatch", "not on PATH - is this a submit host?")
 
 
+WCKEY = "sub_4dpdata"
+"""Required on every sbatch and srun here; the submit filter rejects jobs without it."""
+
+
+def check_wckey(report: Report) -> None:
+    """The site wckey is set for anything run by hand.
+
+    The job scripts all pass ``--wckey`` explicitly, so this is about ad-hoc
+    ``sbatch``/``srun``: the submit filter rejects a job without it and the only
+    symptom is "Batch job submission failed: Unspecified error". Note sbatch
+    reads ``SBATCH_WCKEY`` and srun reads ``SLURM_WCKEY`` -- different variables.
+    """
+    found = {var: os.environ.get(var, "").strip() for var in ("SBATCH_WCKEY", "SLURM_WCKEY")}
+    wrong = {v: k for v, k in found.items() if k and k != WCKEY}
+    missing = [v for v, k in found.items() if not k]
+    if wrong:
+        report.add(
+            FAIL, "wckey",
+            ", ".join(f"{v}={k!r}" for v, k in wrong.items()) + f" (want {WCKEY!r})",
+            f"  export SBATCH_WCKEY={WCKEY} SLURM_WCKEY={WCKEY}\n"
+            f"  An earlier version of env.example.sh carried a\n"
+            f"  'project-short-name:' prefix that was never a real value.",
+        )
+    elif missing:
+        report.add(
+            WARN, "wckey",
+            f"{'/'.join(missing)} unset (the job scripts pass --wckey={WCKEY} anyway)",
+        )
+    else:
+        report.add(PASS, "wckey", WCKEY)
+
+
 def check_conda(report: Report) -> None:
     """Report the active conda environment.
 
@@ -528,7 +560,7 @@ def next_step(*, have_results: bool, deep: bool) -> str:
     if not have_results:
         return (
             "  # Interactive first run (COMPUTE node - evaluation is GPU work):\n"
-            "  srun --gres=gpu:1 --cpus-per-task=8 --mem=64G --time=2:00:00 --pty bash\n"
+            "  srun --gres=gpu:1 --wckey=sub_4dpdata --pty bash\n"
             "  # then follow docs/RUNBOOK.md step 4"
         )
     return (
@@ -555,6 +587,7 @@ def main(argv: list[str] | None = None) -> int:
 
     report = Report()
     check_slurm(report)
+    check_wckey(report)
     check_conda(report)
     check_repo(report)
     check_univtac(report)

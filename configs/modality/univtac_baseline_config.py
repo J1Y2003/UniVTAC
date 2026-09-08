@@ -39,6 +39,51 @@ from gr00t.data.types import (
 )
 
 
+# --------------------------------------------------------------------------- #
+# Cameras are per-task
+# --------------------------------------------------------------------------- #
+# The UniVTAC paper trains ACT with two views on `insert_tube` and
+# `lift_bottle` and the third-person view alone on every other task, so GR00T
+# must match per task or the comparison is unfair in GR00T's favour. The table
+# lives in univtac_groot.variants (one copy, shared with the dataset
+# converter); this module only resolves it.
+#
+# Resolution order: UNIVTAC_VIDEO_KEYS (explicit, comma-separated), then TASK.
+# With neither set this raises rather than falling back to a default, because a
+# silently wrong camera set is exactly the class of bug that left UniVTAC's own
+# tactile encoder randomly initialised -- see docs/UPSTREAM.md.
+import os as _os
+import sys as _sys
+from pathlib import Path as _Path
+
+_REPO_ROOT = _Path(__file__).resolve().parents[2]
+if not (_REPO_ROOT / "univtac_groot" / "spec.py").is_file():
+    raise ImportError(
+        f"cannot locate the univtac-groot checkout from {__file__}: expected it "
+        f"two directories up, at {_REPO_ROOT}"
+    )
+if str(_REPO_ROOT) not in _sys.path:
+    _sys.path.insert(0, str(_REPO_ROOT))
+
+from univtac_groot.variants import video_keys_for_task as _video_keys_for_task  # noqa: E402
+
+_explicit = _os.environ.get("UNIVTAC_VIDEO_KEYS", "").strip()
+if _explicit:
+    VIDEO_KEYS = [k.strip() for k in _explicit.split(",") if k.strip()]
+else:
+    _task = _os.environ.get("UNIVTAC_TASK", _os.environ.get("TASK", "")).strip()
+    if not _task:
+        raise ImportError(
+            "the camera set is per-task, so this modality config needs TASK (or "
+            "UNIVTAC_TASK) in the environment -- e.g. TASK=insert_hole. Set "
+            "UNIVTAC_VIDEO_KEYS=head,wrist to override it explicitly instead. "
+            "Two views are used for insert_tube and lift_bottle, third-person "
+            "only for every other task, matching the paper's ACT setup."
+        )
+    VIDEO_KEYS = list(_video_keys_for_task(_task))
+"""Camera set for this run. See univtac_groot.variants.MULTI_VIEW_TASKS."""
+
+
 ACTION_HORIZON = 16
 """Predicted chunk length.
 
@@ -60,7 +105,7 @@ univtac_baseline_config = {
     # Video keys must match the "video" entries of the dataset's meta/modality.json.
     "video": ModalityConfig(
         delta_indices=VIDEO_DELTA_INDICES,
-        modality_keys=["head", "wrist"],
+        modality_keys=VIDEO_KEYS,
     ),
     "state": ModalityConfig(
         delta_indices=[0],

@@ -247,22 +247,35 @@ comparable intervals.
 Ordered by how badly each one can invalidate the comparison. The first two are
 the ones that would make a GR00T win meaningless.
 
-**1. Camera sets — the biggest live risk.**
-`configs/modality/univtac_baseline_config.py` requests `["head", "wrist"]` for
-*every* task. But `policy/task_settings.json` marks most tasks
-`camera_type: head`, with only `lift_can` and `insert_tube` as `all`. So for
-`insert_hole` and `pull_out_key` our pipeline feeds GR00T a **wrist camera ACT
-never saw** — a straightforward unfair advantage.
+**1. Camera sets — settled by the paper, and now enforced per task.**
+The paper states it directly: *"task-specific configurations vary: both insert
+tube and lift bottle utilize multi-view inputs, combining third-person and
+wrist-mounted camera views; all other tasks use only the third-person view."*
 
-It is worse than that. `docs/UPSTREAM.md` records that ACT's
-`process_data.py:12` reads `task_settings.json` through a `__file__`-relative
-path that does not resolve, under an `if path.exists()` guard — so the lookup
-**silently misses and defaults `camera_type` to `head`**. If the published
-numbers came from that code path, ACT was head-only for *all* tasks, including
-`insert_tube`. Verify against their released checkpoint rather than the config
-file's stated intent, then drop `wrist` from `video_keys` to match. Note also
-that the released dumps may not even contain a wrist stream for head-only
-tasks.
+So, for the three tasks in flight:
+
+| Task | Cameras |
+| --- | --- |
+| `insert_hole` | `head` only |
+| `insert_tube` | `head` + `wrist` |
+| `pull_out_key` | `head` only |
+
+This **contradicts `policy/task_settings.json`**, which marks `lift_can` — not
+`lift_bottle` — as `camera_type: all`. The paper describes what was trained, so
+the paper wins. (And per [UPSTREAM.md](UPSTREAM.md), ACT's `process_data.py:12`
+reads `task_settings.json` through a path that does not resolve, under an
+`if path.exists()` guard, so it silently defaults every task to `head` anyway —
+a third reason not to trust that file.)
+
+`univtac_groot.variants.MULTI_VIEW_TASKS` is the single source of truth, used
+by both the dataset converter and both modality configs, so the training data
+and the model's declared inputs cannot drift apart. The configs resolve it from
+`TASK` and **raise** if `TASK` is absent rather than defaulting, because giving
+GR00T a wrist camera ACT never had is an unfair advantage that is invisible in
+the results. `UNIVTAC_VIDEO_KEYS=head,wrist` overrides it deliberately.
+
+Datasets converted before this was enforced carry both streams; reconvert the
+head-only tasks.
 
 **2. Re-evaluate their released ACT checkpoint under our evaluator.**
 `data/download.sh --checkpoint` ships it. Running it through *our* harness with

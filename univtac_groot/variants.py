@@ -65,6 +65,46 @@ UNIVTAC_VIDEO_KEYS = {
 }
 """Video keys for our own finetunes; named after the UniVTAC cameras."""
 
+HEAD_ONLY_VIDEO_KEYS = {"head": "head"}
+"""Third-person view alone."""
+
+MULTI_VIEW_TASKS = frozenset({"insert_tube", "lift_bottle"})
+"""Tasks whose ACT baseline was trained with **two** camera views.
+
+Straight from the UniVTAC paper: *"task-specific configurations vary: both
+insert tube and lift bottle utilize multi-view inputs, combining third-person
+and wrist-mounted camera views; all other tasks use only the third-person
+view."*
+
+This **disagrees with the repo's own `policy/task_settings.json`**, which marks
+`lift_can` -- not `lift_bottle` -- as ``camera_type: all``. The paper describes
+what was actually trained, so the paper wins. (And per docs/UPSTREAM.md, ACT's
+``process_data.py`` reads ``task_settings.json`` through a path that does not
+resolve, under an ``if path.exists()`` guard, so it silently defaults every
+task to ``head`` anyway -- another reason not to trust that file.)
+
+Getting this wrong is not a small error: giving GR00T a wrist camera on a task
+where ACT had only the third-person view is a straightforward unfair advantage,
+and it is invisible in the results.
+"""
+
+
+def video_keys_for_task(task: str) -> dict[str, str]:
+    """Camera set for ``task``, matching the UniVTAC paper's ACT configuration.
+
+    Two views for :data:`MULTI_VIEW_TASKS`, third-person only for everything
+    else. Used by the dataset converter and by both modality configs, so the
+    training data and the model's declared inputs cannot drift apart.
+    """
+    if not task:
+        raise ValueError(
+            "video_keys_for_task() needs a task name; the camera set is "
+            "per-task (see MULTI_VIEW_TASKS)"
+        )
+    if task in MULTI_VIEW_TASKS:
+        return dict(UNIVTAC_VIDEO_KEYS)
+    return dict(HEAD_ONLY_VIDEO_KEYS)
+
 TACTILE_VIDEO_KEYS = {
     "tactile_left": "left_tactile",
     "tactile_right": "right_tactile",

@@ -34,13 +34,19 @@
 #
 # This cluster's submit filter requires a job name LONGER THAN 50 characters
 # and rejects the submission outright otherwise. Do not shorten these.
-# No --time here on purpose. Requesting more than a partition's limit leaves the
-# job pending forever with REASON=PartitionTimeLimit rather than failing fast, so
-# the partition's own default is safer. Check the limits with:
-#   sinfo -o "%20P %10l %10L %6D %25G"     (%l = TIMELIMIT, %L = DEFAULTTIME)
-# and pass --partition explicitly, or export SBATCH_PARTITION. Note `debug` is
-# short-lived and is where jobs land by default here -- it is not where long
-# training belongs.
+# SITE RULES (see CLAUDE.md, "Cluster rules"). Enforced here; do not "helpfully"
+# reintroduce any of them:
+#
+#   * NEVER pass --time. A job gets the maximum the partition allows, or runs
+#     until the script exits, whichever comes first, so a limit can only cut the
+#     run short. Over-requesting also leaves the job pending forever with
+#     REASON=PartitionTimeLimit rather than failing fast.
+#   * NEVER pass --cpus-per-task or --mem. Jobs take the node's per-GPU
+#     defaults, and the submit filter rejects the job if either is specified.
+#   * ALWAYS pass --wckey=sub_4dpdata.
+#
+# Do pass --partition explicitly, or export SBATCH_PARTITION: `debug` is the
+# default here and is short-lived, so it is not where long training belongs.
 #SBATCH --job-name=univtac-groot-full-ablation-finetune-both-variants-then-evaluate-and-compare
 #SBATCH --output=logs/%x-%j.out
 #SBATCH --error=logs/%x-%j.err
@@ -48,7 +54,7 @@
 # in nn.DataParallel, which dies with "module must have its parameters ... on
 # device: cpu". Overridden by slurm/submit_overnight.sh's --gres.
 #SBATCH --gres=gpu:1
-#SBATCH --wckey=project-short-name:sub_4dpdata
+#SBATCH --wckey=sub_4dpdata
 
 # Deliberately NOT `set -e`: a failing stage must be recorded and stepped over,
 # not abort the job. Stage failures are tracked explicitly instead.

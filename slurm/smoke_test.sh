@@ -56,7 +56,9 @@ EPISODES="${EPISODES:-1}"
 # so this does not constrain the real run's GPU count.
 PARTITION="${PARTITION:-debug}"
 GPUS="${GPUS:-1}"
-TIMELIMIT="${TIMELIMIT:-2:55:00}"
+# No --time: site rule. `debug` caps at 3 h and the job takes that automatically.
+# Site rule: every sbatch and srun carries this.
+WCKEY="${WCKEY:-sub_4dpdata}"
 # Default OFF -- see the note in overnight_ablation.sbatch. cuDNN disabled
 # costs ~86x on the vision tower, so a smoke test with it on tells you nothing
 # useful about the step rate.
@@ -149,10 +151,11 @@ EXPORTS+=",USE_WANDB=${USE_WANDB}"
 # would exit in seconds having proved nothing.
 EXPORTS+=",DRY_RUN=0"
 
+# No --time, no --cpus-per-task, no --mem: all three are site rules.
 SBATCH_ARGS=(
   --partition="${PARTITION}"
   --gres="gpu:${GPUS}"
-  --time="${TIMELIMIT}"
+  --wckey="${WCKEY}"
   --export="${EXPORTS}"
 )
 
@@ -160,7 +163,7 @@ echo "Smoke test: ${MAX_STEPS} training steps, ${EPISODES} eval episode(s)"
 echo "  task       ${TASK}/${TASK_CONFIG}"
 echo "  writes to  ${SMOKE_ROOT}          <- isolated, safe to delete"
 echo "  reads      ${DATA_ROOT}           <- shared, read-only"
-echo "  job        ${GPUS} gpu, ${TIMELIMIT} on ${PARTITION}"
+echo "  job        ${GPUS} gpu on ${PARTITION}, wckey=${WCKEY}, no --time"
 echo
 
 if [[ "${MODE}" == "--print" ]]; then
@@ -195,5 +198,5 @@ echo
 echo "Watch:   tail -f logs/univtac-groot-full-*-${jobid}.out"
 echo "Verdict: bash slurm/smoke_test.sh --check"
 echo
-echo "Expected timeline: a few minutes to load the 3B checkpoint, then 20 steps,"
-echo "then a 1-episode eval per variant. Well inside ${TIMELIMIT}."
+echo "Expected timeline: a few minutes to load the 3B checkpoint, then 20 steps"
+echo "(~1.9 s/it), two checkpoint writes, and a 1-episode eval per variant."

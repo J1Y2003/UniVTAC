@@ -42,7 +42,12 @@ for variant in ${VARIANTS}; do
     exports+=",REPO_ROOT=${REPO_ROOT}"
     [[ -n "${TACTILE_MODE:-}" ]] && exports+=",TACTILE_MODE=${TACTILE_MODE}"
 
-    cmd=(sbatch --job-name="uv-${variant}-${task}" --export="${exports}" "${REPO_ROOT}/slurm/eval_ablation.sbatch")
+    # The submit filter rejects job names of 50 characters or fewer, so this
+    # cannot be the short "uv-<variant>-<task>" it used to be. No --time, no
+    # --cpus-per-task, no --mem; --wckey always. See CLAUDE.md, "Cluster rules".
+    jobname="univtac-groot-evaluate-one-variant-on-one-task-${variant}-${task}"
+    cmd=(sbatch --job-name="${jobname}" --wckey="${WCKEY:-sub_4dpdata}"
+         --export="${exports}" "${REPO_ROOT}/slurm/eval_ablation.sbatch")
     echo "${cmd[*]}"
     if [[ "${DRY_RUN:-0}" != "1" ]]; then
       "${cmd[@]}"

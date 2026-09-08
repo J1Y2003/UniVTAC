@@ -49,9 +49,12 @@ PARTITION="${PARTITION:-sjw_alinlab}"
 # size rather than just the speed, and whatever you pick is locked in for both
 # variants by the recipe pinning in overnight_ablation.sbatch.
 GPUS="${GPUS:-1}"
-# Honest under-request: shorter jobs fit backfill gaps a 2-day job cannot, and a
-# walltime kill is safe here because training resumes from its last checkpoint.
-TIMELIMIT="${TIMELIMIT:-1-00:00:00}"
+# NO TIMELIMIT, deliberately. Site rule: never pass --time. The job gets the
+# maximum the partition allows, or runs until the script exits, whichever comes
+# first -- a limit can only ever cut the run short. A walltime kill is safe
+# anyway, since training resumes from its last checkpoint.
+# Site rule: every sbatch and srun carries this.
+WCKEY="${WCKEY:-sub_4dpdata}"
 
 # One job per task -- GR00T is finetuned PER TASK, matching UniVTAC's ACT,
 # which trains one policy per task. Three separate jobs rather than one long
@@ -89,7 +92,7 @@ printf '  %-16s %s\n' \
   MODEL_OUTPUT_DIR "${MODEL_OUTPUT_DIR}" \
   partition "${PARTITION}" \
   gpus "${GPUS}" \
-  time "${TIMELIMIT}" \
+  wckey "${WCKEY}" \
   tasks "${TASKS}" \
   task_config "${TASK_CONFIG}" \
   variants "${VARIANTS}" \
@@ -173,10 +176,12 @@ exports_for() {
 
 sbatch_args_for() {
   local task="$1"
+  # No --time, no --cpus-per-task, no --mem: all three are site rules. See the
+  # note at the top of slurm/overnight_ablation.sbatch.
   SBATCH_ARGS=(
     --partition="${PARTITION}"
     --gres="gpu:${GPUS}"
-    --time="${TIMELIMIT}"
+    --wckey="${WCKEY}"
     --job-name="$(job_name_for "${task}")"
     --export="$(exports_for "${task}")"
   )

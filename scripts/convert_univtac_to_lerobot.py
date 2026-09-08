@@ -72,7 +72,7 @@ if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
 
 from univtac_groot.action_adapter import GripperConvention  # noqa: E402
-from univtac_groot.variants import build_spec  # noqa: E402
+from univtac_groot.variants import build_spec, video_keys_for_task  # noqa: E402
 from univtac_groot.obs_adapter import (  # noqa: E402
     as_uint8_hwc,
     encode_tactile_state,
@@ -553,6 +553,11 @@ def main(argv: list[str] | None = None) -> int:
                         metavar=("ROWS", "COLS"))
     parser.add_argument("--episodes", type=int, default=None,
                         help="cap the number of episodes converted")
+    parser.add_argument("--cameras", nargs="+", default=None, metavar="CAM",
+                        help="override the per-task camera set (e.g. --cameras head wrist). "
+                             "By default the task decides: two views for insert_tube and "
+                             "lift_bottle, third-person 'head' only for every other task, "
+                             "matching the UniVTAC paper's ACT configuration.")
     parser.add_argument("--fps", type=int, default=20,
                         help="nominal control rate recorded in info.json")
     parser.add_argument("--image-size", nargs=2, type=int, default=[256, 256],
@@ -573,6 +578,15 @@ def main(argv: list[str] | None = None) -> int:
 
     grid = (int(args.tactile_pool_grid[0]), int(args.tactile_pool_grid[1]))
     spec_kwargs: dict[str, Any] = {"image_size": (args.image_size[0], args.image_size[1])}
+    # Cameras are per-task, matching the paper's ACT configuration: two views
+    # for insert_tube and lift_bottle, third-person only otherwise. Converting
+    # a wrist stream the baseline never saw would hand GR00T an unfair
+    # advantage that is invisible downstream, so it is decided here from the
+    # task rather than left to a default.
+    if args.cameras:
+        spec_kwargs["video_keys"] = {c: c for c in args.cameras}
+    else:
+        spec_kwargs["video_keys"] = video_keys_for_task(args.task)
     if args.variant == "tactile":
         spec_kwargs.update(
             mode=args.tactile_mode,

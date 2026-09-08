@@ -13,17 +13,24 @@
 #   sbatch --export=ALL,VARIANT=baseline,TASK=insert_hole slurm/eval_ablation.sbatch
 #   sbatch --export=ALL,VARIANT=tactile,TASK=insert_hole,GROOT_MODEL=/ckpt/tactile slurm/eval_ablation.sbatch
 #
-# No --time here on purpose. Requesting more than a partition's limit leaves the
-# job pending forever with REASON=PartitionTimeLimit rather than failing fast, so
-# the partition's own default is safer. Check the limits with:
-#   sinfo -o "%20P %10l %10L %6D %25G"     (%l = TIMELIMIT, %L = DEFAULTTIME)
-# and pass --partition explicitly, or export SBATCH_PARTITION. Note `debug` is
-# short-lived and is where jobs land by default here -- it is not where long
-# training belongs.
+# SITE RULES (see CLAUDE.md, "Cluster rules"). Enforced here; do not "helpfully"
+# reintroduce any of them:
+#
+#   * NEVER pass --time. A job gets the maximum the partition allows, or runs
+#     until the script exits, whichever comes first, so a limit can only cut the
+#     run short. Over-requesting also leaves the job pending forever with
+#     REASON=PartitionTimeLimit rather than failing fast.
+#   * NEVER pass --cpus-per-task or --mem. Jobs take the node's per-GPU
+#     defaults, and the submit filter rejects the job if either is specified.
+#   * ALWAYS pass --wckey=sub_4dpdata.
+#
+# Do pass --partition explicitly, or export SBATCH_PARTITION: `debug` is the
+# default here and is short-lived, so it is not where long training belongs.
 #SBATCH --job-name=univtac-groot-evaluate-one-ablation-variant-on-one-univtac-benchmark-task
 #SBATCH --output=logs/%x-%A_%a.out
 #SBATCH --error=logs/%x-%A_%a.err
 #SBATCH --gres=gpu:1
+#SBATCH --wckey=sub_4dpdata
 
 set -euo pipefail
 

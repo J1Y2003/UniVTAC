@@ -5,7 +5,7 @@
 # multi-hour interactive install is not possible.
 #
 #   sbatch --export=ALL,UNIVTAC_ROOT=$HOME/jaewon/workspace/UniVTAC-sim \
-#          --wckey=project-short-name:sub_4dpdata \
+#          --wckey=sub_4dpdata \
 #          slurm/install_univtac.sbatch
 #
 # UniVTAC's own scripts/install.sh guards every step with
@@ -15,17 +15,24 @@
 # Three things in the upstream script do not survive a batch context; this
 # wrapper works around all three without editing the repo (see PATCHES below).
 #
-# No --time here on purpose. Requesting more than a partition's limit leaves the
-# job pending forever with REASON=PartitionTimeLimit rather than failing fast, so
-# the partition's own default is safer. Check the limits with:
-#   sinfo -o "%20P %10l %10L %6D %25G"     (%l = TIMELIMIT, %L = DEFAULTTIME)
-# and pass --partition explicitly, or export SBATCH_PARTITION. Note `debug` is
-# short-lived and is where jobs land by default here -- it is not where long
-# training belongs.
+# SITE RULES (see CLAUDE.md, "Cluster rules"). Enforced here; do not "helpfully"
+# reintroduce any of them:
+#
+#   * NEVER pass --time. A job gets the maximum the partition allows, or runs
+#     until the script exits, whichever comes first, so a limit can only cut the
+#     run short. Over-requesting also leaves the job pending forever with
+#     REASON=PartitionTimeLimit rather than failing fast.
+#   * NEVER pass --cpus-per-task or --mem. Jobs take the node's per-GPU
+#     defaults, and the submit filter rejects the job if either is specified.
+#   * ALWAYS pass --wckey=sub_4dpdata.
+#
+# Do pass --partition explicitly, or export SBATCH_PARTITION: `debug` is the
+# default here and is short-lived, so it is not where long training belongs.
 #SBATCH --job-name=univtac-groot-install-univtac-isaac-lab-tacex-and-curobo-stack
 #SBATCH --output=logs/%x-%j.out
 #SBATCH --error=logs/%x-%j.err
 #SBATCH --gres=gpu:1
+#SBATCH --wckey=sub_4dpdata
 
 set -uo pipefail
 
@@ -37,7 +44,7 @@ echo "=========================================================="
 echo " UniVTAC install"
 echo " root=${UNIVTAC_ROOT}"
 echo " node=$(hostname)  gpus=${CUDA_VISIBLE_DEVICES:-none}"
-echo " job=${SLURM_JOB_ID:-none}  cpus=${SLURM_CPUS_PER_TASK:-?}"
+echo " job=${SLURM_JOB_ID:-none}  cpus=${SLURM_CPUS_ON_NODE:-?}"
 echo "=========================================================="
 
 # --------------------------------------------------------------------------- #
@@ -121,8 +128,8 @@ echo "----------------------------------------------------------"
 # Headless rendering for the smoke tests install.sh runs at the end.
 export DISPLAY=""
 export PYTHONUNBUFFERED=1
-export OMP_NUM_THREADS="${OMP_NUM_THREADS:-${SLURM_CPUS_PER_TASK:-8}}"
-export MAX_JOBS="${MAX_JOBS:-${SLURM_CPUS_PER_TASK:-8}}"   # limits C++/CUDA build parallelism
+export OMP_NUM_THREADS="${OMP_NUM_THREADS:-${SLURM_CPUS_ON_NODE:-${SLURM_CPUS_PER_TASK:-8}}}"
+export MAX_JOBS="${MAX_JOBS:-${SLURM_CPUS_ON_NODE:-${SLURM_CPUS_PER_TASK:-8}}}"   # limits C++/CUDA build parallelism
 
 bash "${PATCHED}"
 STATUS=$?

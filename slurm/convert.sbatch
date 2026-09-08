@@ -15,16 +15,23 @@
 #
 #   sbatch --array=0-7 --export=ALL,VARIANT=tactile slurm/convert.sbatch
 #
-# No --time here on purpose. Requesting more than a partition's limit leaves the
-# job pending forever with REASON=PartitionTimeLimit rather than failing fast, so
-# the partition's own default is safer. Check the limits with:
-#   sinfo -o "%20P %10l %10L %6D %25G"     (%l = TIMELIMIT, %L = DEFAULTTIME)
-# and pass --partition explicitly, or export SBATCH_PARTITION. Note `debug` is
-# short-lived and is where jobs land by default here -- it is not where long
-# training belongs.
+# SITE RULES (see CLAUDE.md, "Cluster rules"). Enforced here; do not "helpfully"
+# reintroduce any of them:
+#
+#   * NEVER pass --time. A job gets the maximum the partition allows, or runs
+#     until the script exits, whichever comes first, so a limit can only cut the
+#     run short. Over-requesting also leaves the job pending forever with
+#     REASON=PartitionTimeLimit rather than failing fast.
+#   * NEVER pass --cpus-per-task or --mem. Jobs take the node's per-GPU
+#     defaults, and the submit filter rejects the job if either is specified.
+#   * ALWAYS pass --wckey=sub_4dpdata.
+#
+# Do pass --partition explicitly, or export SBATCH_PARTITION: `debug` is the
+# default here and is short-lived, so it is not where long training belongs.
 #SBATCH --job-name=univtac-groot-convert-univtac-hdf5-demonstrations-to-lerobot-v2
 #SBATCH --output=logs/%x-%A_%a.out
 #SBATCH --error=logs/%x-%A_%a.err
+#SBATCH --wckey=sub_4dpdata
 
 set -euo pipefail
 
@@ -95,16 +102,16 @@ mkdir -p logs "$(dirname "${OUT_DIR}")"
 # every core on the node is the classic way a "CPU-only" job disrupts a shared
 # compute node.
 export PYTHONUNBUFFERED=1
-export OMP_NUM_THREADS="${OMP_NUM_THREADS:-${SLURM_CPUS_PER_TASK:-4}}"
-export MKL_NUM_THREADS="${MKL_NUM_THREADS:-${SLURM_CPUS_PER_TASK:-4}}"
-export NUMEXPR_NUM_THREADS="${NUMEXPR_NUM_THREADS:-${SLURM_CPUS_PER_TASK:-4}}"
+export OMP_NUM_THREADS="${OMP_NUM_THREADS:-${SLURM_CPUS_ON_NODE:-${SLURM_CPUS_PER_TASK:-4}}}"
+export MKL_NUM_THREADS="${MKL_NUM_THREADS:-${SLURM_CPUS_ON_NODE:-${SLURM_CPUS_PER_TASK:-4}}}"
+export NUMEXPR_NUM_THREADS="${NUMEXPR_NUM_THREADS:-${SLURM_CPUS_ON_NODE:-${SLURM_CPUS_PER_TASK:-4}}}"
 
 echo "=========================================================="
 echo " task=${TASK}  variant=${VARIANT}  config=${TASK_CONFIG}"
 echo " raw=${RAW_DIR}"
 echo " out=${OUT_DIR}"
 echo " tactile_mode=${TACTILE_MODE} pool=${POOL_ROWS}x${POOL_COLS} fps=${FPS}"
-echo " node=$(hostname)  cpus=${SLURM_CPUS_PER_TASK:-?}  job=${SLURM_JOB_ID:-none}"
+echo " node=$(hostname)  cpus=${SLURM_CPUS_ON_NODE:-?}  job=${SLURM_JOB_ID:-none}"
 echo "=========================================================="
 
 if [[ ! -d "${RAW_DIR}" ]]; then

@@ -81,7 +81,7 @@ and it continues from where it stopped.
 ### Verify before moving on `[compute, debug partition is fine]`
 
 ```bash
-srun --partition=debug --gres=gpu:1 --pty bash -l
+srun --partition=debug --gres=gpu:1 --wckey=sub_4dpdata --pty bash -l
 conda activate UniVTAC
 python -c "import isaaclab, tacex; print('ok')"
 cd ~/UniVTAC-sim && bash collect_data.sh grasp_classify demo 0
@@ -203,7 +203,7 @@ server alive across attempts: the checkpoint load is minutes, the evaluator
 restarts in seconds.
 
 ```bash
-srun --gres=gpu:1 --cpus-per-task=8 --mem=64G --time=2:00:00 --pty bash
+srun --gres=gpu:1 --wckey=sub_4dpdata --pty bash
 cd $REPO_ROOT
 
 # 4a. Start the server in the background; wait for "listening on".

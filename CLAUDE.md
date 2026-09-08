@@ -92,8 +92,18 @@ unhelpful "Unspecified error":
 
 - job name **longer than 50 characters**
 - `MODEL_OUTPUT_DIR` set under `/rlwrld-unified-checkpoints/<user>/checkpoints/<job>`
-- `--wckey=project-short-name:sub_4dpdata`
-- **no** `--cpus-per-task` and **no** `--mem` (jobs take the node's defaults)
+- `--wckey=sub_4dpdata` on **every** `sbatch` and `srun` (the earlier
+  `project-short-name:` prefix in this repo was an unfilled placeholder)
+- **no** `--cpus-per-task` and **no** `--mem` — memory and CPUs are not
+  specifiable here at all; a job takes the node's per-GPU defaults
+- **no** `--time` — a job gets the partition maximum, or runs until the script
+  exits, so a limit can only cut the run short. Over-requesting also leaves it
+  pending forever with `REASON=PartitionTimeLimit`
+
+Because `--cpus-per-task` is rejected, `SLURM_CPUS_PER_TASK` is `1` inside a
+job even when it really holds 12 CPUs. Size thread pools off
+`SLURM_CPUS_ON_NODE` instead — not `nproc`, which returns the node's full 128
+since there is no cpuset isolation here.
 
 `sbatch --test-only <script>` runs the filter without queueing -- use it before
 blaming the script. `srun` is restricted to the `debug` partition. `debug` is

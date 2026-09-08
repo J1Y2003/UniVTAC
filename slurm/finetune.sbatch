@@ -9,19 +9,26 @@
 #       --raw-dir "${UNIVTAC_ROOT}/data/insert_hole/demo" \
 #       --out "${DATA_ROOT}/univtac-insert_hole-tactile" --variant tactile
 #
-#   sbatch --export=ALL,VARIANT=tactile,DATASET=/data/univtac-insert_hole-tactile slurm/finetune.sbatch
+#   sbatch --export=ALL,TASK=insert_hole,VARIANT=tactile,DATASET=/data/univtac-insert_hole-tactile slurm/finetune.sbatch
 #
-# No --time here on purpose. Requesting more than a partition's limit leaves the
-# job pending forever with REASON=PartitionTimeLimit rather than failing fast, so
-# the partition's own default is safer. Check the limits with:
-#   sinfo -o "%20P %10l %10L %6D %25G"     (%l = TIMELIMIT, %L = DEFAULTTIME)
-# and pass --partition explicitly, or export SBATCH_PARTITION. Note `debug` is
-# short-lived and is where jobs land by default here -- it is not where long
-# training belongs.
+# SITE RULES (see CLAUDE.md, "Cluster rules"). Enforced here; do not "helpfully"
+# reintroduce any of them:
+#
+#   * NEVER pass --time. A job gets the maximum the partition allows, or runs
+#     until the script exits, whichever comes first, so a limit can only cut the
+#     run short. Over-requesting also leaves the job pending forever with
+#     REASON=PartitionTimeLimit rather than failing fast.
+#   * NEVER pass --cpus-per-task or --mem. Jobs take the node's per-GPU
+#     defaults, and the submit filter rejects the job if either is specified.
+#   * ALWAYS pass --wckey=sub_4dpdata.
+#
+# Do pass --partition explicitly, or export SBATCH_PARTITION: `debug` is the
+# default here and is short-lived, so it is not where long training belongs.
 #SBATCH --job-name=univtac-groot-finetune-one-ablation-variant-under-new-embodiment-tag
 #SBATCH --output=logs/%x-%j.out
 #SBATCH --error=logs/%x-%j.err
 #SBATCH --gres=gpu:1
+#SBATCH --wckey=sub_4dpdata
 
 set -euo pipefail
 
@@ -36,6 +43,12 @@ if [[ -n "${ARM:-}" && -z "${VARIANT:-}" ]]; then
 fi
 VARIANT="${VARIANT:-tactile}"                 # tactile | baseline_finetuned
 DATASET="${DATASET:?set DATASET to the converted LeRobot dataset root}"
+# TASK is load-bearing, not just a wandb label: the modality config resolves the
+# camera set from it (two views for insert_tube and lift_bottle, third-person
+# only otherwise, matching the paper's ACT setup). Without it the config raises
+# at import. Set UNIVTAC_VIDEO_KEYS to override explicitly.
+TASK="${TASK:?set TASK -- the modality config picks the camera set from it}"
+export TASK
 BASE_MODEL="${BASE_MODEL:-nvidia/GR00T-N1.7-3B}"
 # Training-outputs policy: checkpoints belong under the cluster's unified
 # folder, {NFS}/{user}/... (Kakao: /rlwrld-unified-checkpoints). Default to
