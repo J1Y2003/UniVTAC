@@ -9,11 +9,11 @@
 # One job per (task, variant). The state layout differs between variants, so each variant
 # needs its own dataset; see docs/ABLATION.md.
 #
-#   sbatch --wckey=project-short-name:sub_4dpdata --export=ALL,TASK=insert_hole,VARIANT=tactile slurm/convert.sbatch
+#   sbatch --wckey=project-short-name:sub_4dpdata --partition=cpu --export=ALL,TASK=insert_hole,VARIANT=tactile slurm/convert.sbatch
 #
 # Or sweep every task as an array (one task per array index):
 #
-#   sbatch --wckey=project-short-name:sub_4dpdata --array=0-7 --export=ALL,VARIANT=tactile slurm/convert.sbatch
+#   sbatch --wckey=project-short-name:sub_4dpdata --partition=cpu --array=0-7 --export=ALL,VARIANT=tactile slurm/convert.sbatch
 #
 # SITE RULES (see CLAUDE.md, "Cluster rules"). Enforced here; do not "helpfully"
 # reintroduce any of them:
@@ -28,10 +28,20 @@
 #
 # Do pass --partition explicitly, or export SBATCH_PARTITION: `debug` is the
 # default here and is short-lived, so it is not where long training belongs.
+#
+# CPU-ONLY JOB: this must go to --partition=cpu. The GPU partitions reject any
+# job that does not request a GPU:
+#   ❌ ERROR: GPU 파티션에는 GPU를 요청한 잡만 제출할 수 있습니다.
+#      CPU 전용 잡은 --partition=cpu 를 사용하세요.
+# The header below sets it, but --partition precedence is
+# command line > SBATCH_PARTITION > #SBATCH directive, so an exported
+# SBATCH_PARTITION pointing at a GPU partition silently overrides it and the
+# submission is refused. Pass --partition=cpu on the command line too.
 #SBATCH --job-name=univtac-groot-convert-univtac-hdf5-demonstrations-to-lerobot-v2
 #SBATCH --output=logs/%x-%A_%a.out
 #SBATCH --error=logs/%x-%A_%a.err
 #SBATCH --wckey=project-short-name:sub_4dpdata
+#SBATCH --partition=cpu
 
 set -euo pipefail
 
@@ -162,7 +172,8 @@ echo "=========================================================="
 
 if [[ ! -d "${RAW_DIR}" ]]; then
   echo "[job] no raw demonstrations at ${RAW_DIR}" >&2
-  echo "[job] fetch them with: bash slurm/download_data.sbatch --wckey=project-short-name:sub_4dpdata  (TASKS=${TASK})" >&2
+  echo "[job] fetch them with:" >&2
+  echo "[job]   sbatch --wckey=project-short-name:sub_4dpdata --partition=cpu --export=ALL,TASKS=${TASK} slurm/download_data.sbatch" >&2
   echo "[job] or collect them: bash collect_data.sh ${TASK} ${TASK_CONFIG} 0" >&2
   exit 1
 fi

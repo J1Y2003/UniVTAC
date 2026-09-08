@@ -18,10 +18,10 @@
 # the checkpoints, so you can validate convert -> finetune -> eval before
 # committing ~190 GB.
 #
-#   sbatch --wckey=project-short-name:sub_4dpdata --export=ALL,TASKS=lift_bottle            slurm/download_data.sbatch
-#   sbatch --wckey=project-short-name:sub_4dpdata --export=ALL,TASKS="lift_bottle lift_can" slurm/download_data.sbatch
-#   sbatch --wckey=project-short-name:sub_4dpdata --export=ALL,TASKS=all                    slurm/download_data.sbatch   # all 8, ~190 GB
-#   sbatch --wckey=project-short-name:sub_4dpdata --export=ALL,TASKS=none,CHECKPOINT=1      slurm/download_data.sbatch   # encoder only, ~minutes
+#   sbatch --wckey=project-short-name:sub_4dpdata --partition=cpu --export=ALL,TASKS=lift_bottle            slurm/download_data.sbatch
+#   sbatch --wckey=project-short-name:sub_4dpdata --partition=cpu --export=ALL,TASKS="lift_bottle lift_can" slurm/download_data.sbatch
+#   sbatch --wckey=project-short-name:sub_4dpdata --partition=cpu --export=ALL,TASKS=all                    slurm/download_data.sbatch   # all 8, ~190 GB
+#   sbatch --wckey=project-short-name:sub_4dpdata --partition=cpu --export=ALL,TASKS=none,CHECKPOINT=1      slurm/download_data.sbatch   # encoder only, ~minutes
 #
 # No GPU. Network + disk bound. modelscope resumes, so a walltime kill is safe
 # to resubmit.
@@ -39,10 +39,20 @@
 #
 # Do pass --partition explicitly, or export SBATCH_PARTITION: `debug` is the
 # default here and is short-lived, so it is not where long training belongs.
+#
+# CPU-ONLY JOB: this must go to --partition=cpu. The GPU partitions reject any
+# job that does not request a GPU:
+#   ❌ ERROR: GPU 파티션에는 GPU를 요청한 잡만 제출할 수 있습니다.
+#      CPU 전용 잡은 --partition=cpu 를 사용하세요.
+# The header below sets it, but --partition precedence is
+# command line > SBATCH_PARTITION > #SBATCH directive, so an exported
+# SBATCH_PARTITION pointing at a GPU partition silently overrides it and the
+# submission is refused. Pass --partition=cpu on the command line too.
 #SBATCH --job-name=univtac-groot-download-univtac-demonstration-data-from-modelscope
 #SBATCH --output=logs/%x-%j.out
 #SBATCH --error=logs/%x-%j.err
 #SBATCH --wckey=project-short-name:sub_4dpdata
+#SBATCH --partition=cpu
 
 set -uo pipefail
 
@@ -210,6 +220,6 @@ for task in ${TASKS}; do
   echo "  # UniVTAC's own ACT baseline (its data step, then training):"
   echo "  bash ${UNIVTAC_ROOT}/policy/ACT/process_data.sh ${task} ${RAW_CONFIG} 100"
   echo "  # this repo's GR00T path:"
-  echo "  sbatch --wckey=project-short-name:sub_4dpdata --export=ALL,TASK=${task},VARIANT=tactile,RAW_DIR=${OUTPUT}/isaac${VERSION}/${task}/hdf5 slurm/convert.sbatch"
+  echo "  sbatch --wckey=project-short-name:sub_4dpdata --partition=cpu --export=ALL,TASK=${task},VARIANT=tactile,RAW_DIR=${OUTPUT}/isaac${VERSION}/${task}/hdf5 slurm/convert.sbatch"
 done
 exit ${STATUS}

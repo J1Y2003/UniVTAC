@@ -441,7 +441,7 @@ pytest tests -q
 sbatch --wckey=project-short-name:sub_4dpdata --export=ALL,VARIANT=baseline,TASK=insert_hole slurm/eval_ablation.sbatch   # zero-shot variant
 
 # only if you need the tactile variant (it requires a finetune):
-sbatch --wckey=project-short-name:sub_4dpdata --array=0-7 --export=ALL,VARIANT=tactile slurm/convert.sbatch
+sbatch --wckey=project-short-name:sub_4dpdata --partition=cpu --array=0-7 --export=ALL,VARIANT=tactile slurm/convert.sbatch
 sbatch --wckey=project-short-name:sub_4dpdata --export=ALL,VARIANT=tactile,DATASET=$DATA_ROOT/univtac-insert_hole-tactile slurm/finetune.sbatch
 sbatch --wckey=project-short-name:sub_4dpdata --export=ALL,VARIANT=tactile,TASK=insert_hole,GROOT_MODEL=<ckpt> slurm/eval_ablation.sbatch
 

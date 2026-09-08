@@ -275,8 +275,8 @@ bash collect_data.sh insert_hole demo 0
 # 8. Convert to GR00T LeRobot v2. CPU-only, minutes-hours.     [login] -> [compute]
 #    Runs under $CONVERT_PYTHON (your univtac-groot env), not the simulator's.
 cd $REPO_ROOT
-sbatch --wckey=project-short-name:sub_4dpdata --export=ALL,TASK=insert_hole,VARIANT=tactile           slurm/convert.sbatch
-sbatch --wckey=project-short-name:sub_4dpdata --export=ALL,TASK=insert_hole,VARIANT=baseline_finetuned slurm/convert.sbatch
+sbatch --wckey=project-short-name:sub_4dpdata --partition=cpu --export=ALL,TASK=insert_hole,VARIANT=tactile           slurm/convert.sbatch
+sbatch --wckey=project-short-name:sub_4dpdata --partition=cpu --export=ALL,TASK=insert_hole,VARIANT=baseline_finetuned slurm/convert.sbatch
 
 # 9. Finetune both variants with the SAME recipe.                  [login] -> [compute]
 sbatch --export=ALL,VARIANT=tactile,DATASET=$DATA_ROOT/univtac-insert_hole-tactile \
