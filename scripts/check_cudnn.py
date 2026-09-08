@@ -90,12 +90,20 @@ def probe() -> dict:
         out["dlopen"] = str(exc)[:300]
     # A version match is necessary but not sufficient: run a real convolution
     # through the cuDNN path, which is what actually failed on this cluster.
+    #
+    # Deliberately NOT wrapped in `torch.backends.cudnn.flags(enabled=True)`:
+    # that context manager reads the legacy TF32 settings internally, which
+    # torch 2.9 warns are deprecated after 2.9, so it would both noise up every
+    # job log and break on the next upgrade. Forcing the flag is redundant
+    # anyway -- cuDNN is enabled by default and this repo has no switch that
+    # turns it off. Report it instead of overriding it, so an outer process
+    # having disabled it shows up as the defect it now is.
+    out["enabled"] = bool(torch.backends.cudnn.enabled)
     if torch.cuda.is_available():
         try:
             import torch.nn as nn
             conv = nn.Conv2d(3, 4, 3).cuda()
-            with torch.backends.cudnn.flags(enabled=True):
-                conv(torch.randn(2, 3, 16, 16, device="cuda")).sum().item()
+            conv(torch.randn(2, 3, 16, 16, device="cuda")).sum().item()
             out["conv"] = "ok"
         except Exception as exc:
             out["conv"] = f"{type(exc).__name__}: {str(exc)[:200]}"
@@ -138,6 +146,15 @@ def main() -> int:
         print("  Training would still run, and would be ~86x slower per step "
               "with no error.", file=sys.stderr)
         print(FIX.format(wheel=wheel), file=sys.stderr)
+        return 1
+
+    if info.get("enabled") is False:
+        print("cudnn-check: FAIL -- torch.backends.cudnn.enabled is False, so "
+              "convolutions", file=sys.stderr)
+        print("  would bypass cuDNN and cost ~86x on the vision tower. Nothing "
+              "in this repo", file=sys.stderr)
+        print("  disables it, so something in the environment did -- find and "
+              "remove that.", file=sys.stderr)
         return 1
 
     conv = info.get("conv")
