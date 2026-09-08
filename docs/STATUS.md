@@ -91,6 +91,27 @@ but **121 W of 400 W** with SM clocks pinned at 1410 MHz. Kernels resident half
 the time doing almost no arithmetic — that is a tiny-kernel launch flood driven
 from Python, not a data-starvation problem. Read power draw, not utilisation.
 
+**The slow run was optimising correctly.** wandb's training stream for job
+164704 (`lift_bottle-tactile`, 140 steps at 170 s/step): loss 1.20 -> 0.55,
+grad norm O(1) throughout, LR schedule advancing normally. So the pathology was
+throughput alone -- the same arithmetic, executed slowly -- not a corrupted
+graph producing garbage, which had not previously been ruled out explicitly.
+Two details worth keeping: the run reached only **~26% of peak LR** (2.6e-5 of
+1e-4, consistent with `warmup_ratio` 0.05 over 10,000 steps), so nothing about
+the full trajectory can be read from it; and loss was **flat near 1.02 from
+step 40 to 110, then fell 45% in 30 steps** alongside a 5x grad-norm spike --
+the action head leaving its initial constant-output plateau, which under
+`NEW_EMBODIMENT` comes after the randomly-initialised state/action projectors
+have been learned. Expect a long flat opening on the real runs and do not read
+it as a failure.
+
+**Still unverified:** the 121 W / 48%-utilisation signature is corroborated
+only by `nvidia-smi` snapshots taken during the run. wandb logged the same
+counters continuously in job 164704's *system* stream, which nobody has read
+back yet -- `python scripts/wandb_report.py 164704`, or the System tab on the
+run page. If it disagrees, the mechanism described above needs correcting (the
+fix does not: 1.89 s/it is measured).
+
 **Guard.** `scripts/preflight.py --deep` now asks the loaded cuDNN its own
 version via `cudnnGetVersion()` and fails on a mismatch, because pip metadata
 reported the pinned version while the files on disk were a different release.
