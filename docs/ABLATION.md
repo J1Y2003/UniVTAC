@@ -303,7 +303,7 @@ interval near 20 % is roughly ±8 points, so `insert_hole` at 19.0 % is
 
 | Item | Paper (ACT) | Us | Status |
 | --- | --- | --- | --- |
-| action chunk length | **50** | `ACTION_HORIZON = 16` | **cannot match.** GR00T N1.7's `action_horizon` is 40 and `validate_action_horizons` rejects a configured horizon above it, so 50 is unreachable. 40 is the closest possible |
+| action chunk length | **50** | `ACTION_HORIZON = 40` | **cannot match**, and we take N1.7's ceiling. Its `action_horizon` is 40 and `validate_action_horizons` rejects anything above it, so 50 is unreachable |
 | chunk execution | **time aggregation** (re-plans and averages every step) | receding horizon, `EXECUTION_HORIZON=16` | **not implemented.** `univtac_groot/receding_horizon.py` does execute-k-then-replan only; there is no temporal ensembling. `EXECUTION_HORIZON=1` re-plans every step, which is the closest behaviour, at 16x the inference cost |
 | robot state | unspecified; config says 8-D | 17-D (`eef_9d` + joints + gripper) | disclose |
 
