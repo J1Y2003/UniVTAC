@@ -128,8 +128,9 @@ unhelpful "Unspecified error":
   exits, so a limit can only cut the run short. Over-requesting also leaves it
   pending forever with `REASON=PartitionTimeLimit`
 - **`--partition=cpu` for any job that does not request a GPU.** The GPU
-  partitions refuse them: `GPU 파티셔엘엔` — in full,
-  `GPU 파티션에는 GPU를 요십한 잡만 제제할 수 있습니다`.
+  partitions refuse it with
+  `GPU 파티션에는 GPU를 요청한 잡만 제출할 수 있습니다` /
+  `CPU 전용 잡은 --partition=cpu 를 사용하세요`.
   The two CPU-only jobs here are `download_data.sbatch` and `convert.sbatch`;
   both carry `#SBATCH --partition=cpu`. The other four request `--gres=gpu:N`
   and belong on a GPU partition.
