@@ -82,7 +82,19 @@ if [[ -z "${REPO_ROOT:-}" ]]; then
   exit 2
 fi
 UNIVTAC_ROOT="${UNIVTAC_ROOT:?set UNIVTAC_ROOT to the UniVTAC checkout}"
-DATA_ROOT="${DATA_ROOT:?set DATA_ROOT to where converted datasets should land}"
+# Same default as submit_overnight.sh, smoke_test.sh and
+# overnight_ablation.sbatch. This used to be a hard `:?` requirement while
+# every other script defaulted it, so forgetting to export it failed the
+# convert job after a queue wait -- and, worse, exporting a DIFFERENT value
+# here than the trainer uses would convert to one place and train from
+# another. One default, everywhere.
+DATA_ROOT="${DATA_ROOT:-${HOME}/jaewon/workspace/groot-data}"
+case "${DATA_ROOT}" in
+  /*) ;;
+  *) echo "error: DATA_ROOT must be an absolute path on SHARED storage, got '${DATA_ROOT}'." >&2
+     echo "       The convert job and the training job run on different nodes." >&2
+     exit 2 ;;
+esac
 
 # The converter needs numpy + h5py + pyarrow + imageio[ffmpeg]; it imports
 # neither gr00t nor Isaac Sim, so any Python 3.10+ interpreter with
