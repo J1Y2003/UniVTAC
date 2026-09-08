@@ -486,31 +486,49 @@ WCKEY = "sub_4dpdata"
 
 
 def check_wckey(report: Report) -> None:
-    """The site wckey is set for anything run by hand.
+    """The site wckey, for anything submitted by hand.
 
-    The job scripts all pass ``--wckey`` explicitly, so this is about ad-hoc
-    ``sbatch``/``srun``: the submit filter rejects a job without it and the only
-    symptom is "Batch job submission failed: Unspecified error". Note sbatch
-    reads ``SBATCH_WCKEY`` and srun reads ``SLURM_WCKEY`` -- different variables.
+    ``sbatch`` reads ``SBATCH_WCKEY``; that is the one worth exporting, because
+    the submit filter rejects a job without a wckey and the only symptom is
+    "Batch job submission failed: Unspecified error".
+
+    ``SLURM_WCKEY`` is deliberately NOT required. SLURM sets it *inside* a job
+    to report the wckey the job actually got, which is what every ``.sbatch``
+    here re-checks at runtime. Exporting it from your shell would ride in on
+    ``--export=ALL`` and mask that check, so an exported value earns a warning
+    rather than a pass. For ``srun``, pass ``--wckey`` on the command line --
+    every documented ``srun`` in this repo does.
     """
-    found = {var: os.environ.get(var, "").strip() for var in ("SBATCH_WCKEY", "SLURM_WCKEY")}
-    wrong = {v: k for v, k in found.items() if k and k != WCKEY}
-    missing = [v for v, k in found.items() if not k]
-    if wrong:
+    in_job = bool(os.environ.get("SLURM_JOB_ID"))
+    sbatch_key = os.environ.get("SBATCH_WCKEY", "").strip()
+    srun_key = os.environ.get("SLURM_WCKEY", "").strip()
+
+    if sbatch_key == WCKEY:
+        report.add(PASS, "wckey", f"SBATCH_WCKEY={WCKEY}")
+    elif sbatch_key:
         report.add(
-            FAIL, "wckey",
-            ", ".join(f"{v}={k!r}" for v, k in wrong.items()) + f" (want {WCKEY!r})",
-            f"  export SBATCH_WCKEY={WCKEY} SLURM_WCKEY={WCKEY}\n"
-            f"  An earlier version of env.example.sh carried a\n"
-            f"  'project-short-name:' prefix that was never a real value.",
-        )
-    elif missing:
-        report.add(
-            WARN, "wckey",
-            f"{'/'.join(missing)} unset (the job scripts pass --wckey={WCKEY} anyway)",
+            FAIL, "wckey", f"SBATCH_WCKEY={sbatch_key!r} (want {WCKEY!r})",
+            f"  export SBATCH_WCKEY={WCKEY}\n"
+            "  An earlier env.example.sh carried a 'project-short-name:' prefix\n"
+            "  that was never a real value.",
         )
     else:
-        report.add(PASS, "wckey", WCKEY)
+        report.add(
+            WARN, "wckey",
+            f"SBATCH_WCKEY unset -- fine for the job scripts, which pass "
+            f"--wckey={WCKEY} themselves; export it for ad-hoc sbatch",
+        )
+
+    if srun_key and srun_key != WCKEY:
+        report.add(FAIL, "  SLURM_WCKEY", f"{srun_key!r} (want {WCKEY!r} or unset)",
+                   f"  unset SLURM_WCKEY   # or export SLURM_WCKEY={WCKEY}")
+    elif srun_key and not in_job:
+        report.add(
+            WARN, "  SLURM_WCKEY",
+            "exported from your shell -- this rides in on --export=ALL and masks "
+            "the runtime wckey check inside every .sbatch. Prefer `unset "
+            "SLURM_WCKEY` and --wckey on srun.",
+        )
 
 
 def check_conda(report: Report) -> None:

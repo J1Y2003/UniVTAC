@@ -101,11 +101,16 @@ unhelpful "Unspecified error":
   `SBATCH_WCKEY` in your shell -- e.g. an `env.sh` copied from the old
   `env.example.sh` -- silently overrides the header and the job goes out under
   the wrong project. `env.sh` is gitignored, so fixing the repo does not fix
-  yours: `export SBATCH_WCKEY=sub_4dpdata SLURM_WCKEY=sub_4dpdata` (sbatch
-  reads the first, srun the second). Every documented command passes `--wckey`
-  on the command line, every `.sbatch` re-checks `SLURM_WCKEY` at runtime and
-  exits 2 on a mismatch, and `scripts/preflight.py` fails if either variable
-  holds anything else.
+  yours: `export SBATCH_WCKEY=sub_4dpdata`.
+
+  **Do not export `SLURM_WCKEY`.** SLURM sets it *inside* a job to report the
+  wckey the job actually got, which is what every `.sbatch` re-checks at
+  runtime before doing any work. Exporting it from your shell rides in on
+  `--export=ALL` and masks that check. `srun` takes `--wckey` on the command
+  line instead, and every documented `srun` here does.
+
+  So: `--wckey` on every command line (strongest), a runtime re-check in every
+  `.sbatch`, and `scripts/preflight.py` failing on a wrong `SBATCH_WCKEY`.
 - **no** `--cpus-per-task` and **no** `--mem` — memory and CPUs are not
   specifiable here at all; a job takes the node's per-GPU defaults
 - **no** `--time` — a job gets the partition maximum, or runs until the script

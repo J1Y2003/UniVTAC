@@ -60,12 +60,15 @@ export HF_TOKEN="hf_REPLACE_ME"
 # SLURM
 # --------------------------------------------------------------------------- #
 
-# This cluster requires a wckey on EVERY sbatch and srun. The job scripts all
-# pass `--wckey=sub_4dpdata` explicitly, so these two exports are belt and
-# braces for anything you run by hand -- sbatch reads SBATCH_WCKEY, srun reads
-# SLURM_WCKEY, and they are not the same variable.
+# This cluster requires a wckey on every sbatch and srun. The job scripts pass
+# `--wckey=sub_4dpdata` themselves; this export covers anything you submit by
+# hand, since sbatch reads SBATCH_WCKEY.
 export SBATCH_WCKEY="sub_4dpdata"
-export SLURM_WCKEY="sub_4dpdata"
+
+# Do NOT export SLURM_WCKEY. SLURM sets it *inside* a job to report the wckey
+# the job actually received, which is what every .sbatch here re-checks at
+# runtime. Exporting it from your shell rides in on `--export=ALL` and masks
+# that check. For srun, pass --wckey on the command line instead.
 
 # Jobs here land on `debug` by default, whose time limit is short enough that a
 # training job sits pending forever with REASON=PartitionTimeLimit. Name a
