@@ -36,6 +36,28 @@
 
 set -uo pipefail
 
+# --------------------------------------------------------------------------- #
+# The site wckey, checked at runtime
+# --------------------------------------------------------------------------- #
+# sbatch precedence is: command line > environment variable > #SBATCH directive.
+# So a stale SBATCH_WCKEY in the submitting shell (typically a copy of
+# env.example.sh from before the value was corrected) SILENTLY OVERRIDES the
+# `#SBATCH --wckey=sub_4dpdata` header above. That is exactly how a job once went
+# out under the wrong project. The header alone is not enough; check it.
+#
+# SLURM_WCKEY is only set inside the job when a wckey was applied, so an unset
+# value defaults to the right answer rather than failing a valid job.
+if [[ -n "${SLURM_JOB_ID:-}" && "${SLURM_WCKEY:-sub_4dpdata}" != "sub_4dpdata" ]]; then
+  echo "error: this job's wckey is '${SLURM_WCKEY}', not 'sub_4dpdata'." >&2
+  echo "       Every job here must be accounted to 'sub_4dpdata'." >&2
+  echo "       Something in your environment overrode the #SBATCH header --" >&2
+  echo "       almost certainly a stale SBATCH_WCKEY in env.sh. Fix it with:" >&2
+  echo "         export SBATCH_WCKEY=sub_4dpdata SLURM_WCKEY=sub_4dpdata" >&2
+  echo "       then resubmit. 'python scripts/preflight.py' also checks this." >&2
+  exit 2
+fi
+
+
 UNIVTAC_ROOT="${UNIVTAC_ROOT:?set UNIVTAC_ROOT to the UniVTAC-sim checkout}"
 cd "${UNIVTAC_ROOT}"
 mkdir -p logs
@@ -142,6 +164,6 @@ else
   echo "[job] install exited ${STATUS}."
   echo "[job] This job is resumable -- every step is guarded by a 'pip show' check,"
   echo "[job] so resubmitting continues from where it stopped:"
-  echo "  sbatch --export=ALL,UNIVTAC_ROOT=${UNIVTAC_ROOT} slurm/install_univtac.sbatch"
+  echo "  sbatch --wckey=sub_4dpdata --export=ALL,UNIVTAC_ROOT=${UNIVTAC_ROOT} slurm/install_univtac.sbatch"
 fi
 exit ${STATUS}

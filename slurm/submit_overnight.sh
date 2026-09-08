@@ -121,7 +121,7 @@ for task in ${TASKS}; do
       echo "  ok  ${task}/${variant}: ${n} parquet in ${dataset}"
     else
       echo "  MISSING dataset ${dataset}" >&2
-      echo "        convert it: sbatch --export=ALL,TASK=${task},VARIANT=${variant},EPISODES=50 slurm/convert.sbatch" >&2
+      echo "        convert it: sbatch --wckey=sub_4dpdata --export=ALL,TASK=${task},VARIANT=${variant},EPISODES=50 slurm/convert.sbatch" >&2
       FAIL=1
     fi
   done

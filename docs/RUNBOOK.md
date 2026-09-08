@@ -45,7 +45,7 @@ git clone https://github.com/univtac/UniVTAC.git ~/UniVTAC-sim
 
 # 0b. Install it as a BATCH job (hours). Creates conda env `UniVTAC`, Python 3.10.
 cd $REPO_ROOT
-sbatch --export=ALL,UNIVTAC_ROOT=$HOME/UniVTAC-sim slurm/install_univtac.sbatch
+sbatch --wckey=sub_4dpdata --export=ALL,UNIVTAC_ROOT=$HOME/UniVTAC-sim slurm/install_univtac.sbatch
 
 # 0c. Scene assets.
 cd ~/UniVTAC-sim && bash data/download.sh
@@ -235,7 +235,7 @@ the pipeline works end to end and you can submit in bulk.
 cd $REPO_ROOT
 
 # One task, 50 episodes.
-sbatch --export=ALL,VARIANT=baseline,TASK=insert_hole slurm/eval_ablation.sbatch
+sbatch --wckey=sub_4dpdata --export=ALL,VARIANT=baseline,TASK=insert_hole slurm/eval_ablation.sbatch
 
 # Or all eight benchmark tasks for the baseline variant.
 VARIANTS=baseline bash slurm/submit_ablation.sh
@@ -275,8 +275,8 @@ bash collect_data.sh insert_hole demo 0
 # 8. Convert to GR00T LeRobot v2. CPU-only, minutes-hours.     [login] -> [compute]
 #    Runs under $CONVERT_PYTHON (your univtac-groot env), not the simulator's.
 cd $REPO_ROOT
-sbatch --export=ALL,TASK=insert_hole,VARIANT=tactile           slurm/convert.sbatch
-sbatch --export=ALL,TASK=insert_hole,VARIANT=baseline_finetuned slurm/convert.sbatch
+sbatch --wckey=sub_4dpdata --export=ALL,TASK=insert_hole,VARIANT=tactile           slurm/convert.sbatch
+sbatch --wckey=sub_4dpdata --export=ALL,TASK=insert_hole,VARIANT=baseline_finetuned slurm/convert.sbatch
 
 # 9. Finetune both variants with the SAME recipe.                  [login] -> [compute]
 sbatch --export=ALL,VARIANT=tactile,DATASET=$DATA_ROOT/univtac-insert_hole-tactile \
@@ -285,8 +285,8 @@ sbatch --export=ALL,VARIANT=baseline_finetuned,DATASET=$DATA_ROOT/univtac-insert
     slurm/finetune.sbatch
 
 # 10. Evaluate both, then compare them against each other.
-sbatch --export=ALL,VARIANT=tactile,TASK=insert_hole,GROOT_MODEL=<ckpt> slurm/eval_ablation.sbatch
-sbatch --export=ALL,VARIANT=baseline_finetuned,TASK=insert_hole,GROOT_MODEL=<ckpt> slurm/eval_ablation.sbatch
+sbatch --wckey=sub_4dpdata --export=ALL,VARIANT=tactile,TASK=insert_hole,GROOT_MODEL=<ckpt> slurm/eval_ablation.sbatch
+sbatch --wckey=sub_4dpdata --export=ALL,VARIANT=baseline_finetuned,TASK=insert_hole,GROOT_MODEL=<ckpt> slurm/eval_ablation.sbatch
 
 python scripts/compare_ablation.py --baseline-variant baseline_finetuned --tactile-variant tactile
 ```

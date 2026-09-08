@@ -414,7 +414,7 @@ The eval job hosts Isaac Sim (scene plus offscreen rendering) *and* GR00T N1.7
 of VRAM for a single-GPU run. If your nodes are tighter than that, ask for two:
 
 ```bash
-sbatch --gres=gpu:2 --export=ALL,VARIANT=baseline,TASK=insert_hole slurm/eval_ablation.sbatch
+sbatch --wckey=sub_4dpdata --gres=gpu:2 --export=ALL,VARIANT=baseline,TASK=insert_hole slurm/eval_ablation.sbatch
 ```
 
 `eval_ablation.sbatch` counts the GPUs SLURM allocated and puts the model on
@@ -438,12 +438,12 @@ bash scripts/install.sh && bash data/download.sh
 pytest tests -q
 
 # batch, in order
-sbatch --export=ALL,VARIANT=baseline,TASK=insert_hole slurm/eval_ablation.sbatch   # zero-shot variant
+sbatch --wckey=sub_4dpdata --export=ALL,VARIANT=baseline,TASK=insert_hole slurm/eval_ablation.sbatch   # zero-shot variant
 
 # only if you need the tactile variant (it requires a finetune):
-sbatch --array=0-7 --export=ALL,VARIANT=tactile slurm/convert.sbatch
-sbatch --export=ALL,VARIANT=tactile,DATASET=$DATA_ROOT/univtac-insert_hole-tactile slurm/finetune.sbatch
-sbatch --export=ALL,VARIANT=tactile,TASK=insert_hole,GROOT_MODEL=<ckpt> slurm/eval_ablation.sbatch
+sbatch --wckey=sub_4dpdata --array=0-7 --export=ALL,VARIANT=tactile slurm/convert.sbatch
+sbatch --wckey=sub_4dpdata --export=ALL,VARIANT=tactile,DATASET=$DATA_ROOT/univtac-insert_hole-tactile slurm/finetune.sbatch
+sbatch --wckey=sub_4dpdata --export=ALL,VARIANT=tactile,TASK=insert_hole,GROOT_MODEL=<ckpt> slurm/eval_ablation.sbatch
 
 # login node again
 python scripts/compare_ablation.py --results-dir eval_result --json ablation.json

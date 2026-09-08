@@ -92,8 +92,20 @@ unhelpful "Unspecified error":
 
 - job name **longer than 50 characters**
 - `MODEL_OUTPUT_DIR` set under `/rlwrld-unified-checkpoints/<user>/checkpoints/<job>`
-- `--wckey=sub_4dpdata` on **every** `sbatch` and `srun` (the earlier
-  `project-short-name:` prefix in this repo was an unfilled placeholder)
+- `--wckey=sub_4dpdata` on **every** `sbatch` and `srun`. The project name is
+  strictly `sub_4dpdata` -- no prefix. The earlier
+  `project-short-name:sub_4dpdata` in this repo was an unfilled placeholder.
+
+  **A `#SBATCH --wckey` header is not enough.** sbatch precedence is
+  **command line > environment variable > `#SBATCH` directive**, so a stale
+  `SBATCH_WCKEY` in your shell -- e.g. an `env.sh` copied from the old
+  `env.example.sh` -- silently overrides the header and the job goes out under
+  the wrong project. `env.sh` is gitignored, so fixing the repo does not fix
+  yours: `export SBATCH_WCKEY=sub_4dpdata SLURM_WCKEY=sub_4dpdata` (sbatch
+  reads the first, srun the second). Every documented command passes `--wckey`
+  on the command line, every `.sbatch` re-checks `SLURM_WCKEY` at runtime and
+  exits 2 on a mismatch, and `scripts/preflight.py` fails if either variable
+  holds anything else.
 - **no** `--cpus-per-task` and **no** `--mem` — memory and CPUs are not
   specifiable here at all; a job takes the node's per-GPU defaults
 - **no** `--time` — a job gets the partition maximum, or runs until the script

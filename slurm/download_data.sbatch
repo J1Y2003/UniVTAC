@@ -18,10 +18,10 @@
 # the checkpoints, so you can validate convert -> finetune -> eval before
 # committing ~190 GB.
 #
-#   sbatch --export=ALL,TASKS=lift_bottle            slurm/download_data.sbatch
-#   sbatch --export=ALL,TASKS="lift_bottle lift_can" slurm/download_data.sbatch
-#   sbatch --export=ALL,TASKS=all                    slurm/download_data.sbatch   # all 8, ~190 GB
-#   sbatch --export=ALL,TASKS=none,CHECKPOINT=1      slurm/download_data.sbatch   # encoder only, ~minutes
+#   sbatch --wckey=sub_4dpdata --export=ALL,TASKS=lift_bottle            slurm/download_data.sbatch
+#   sbatch --wckey=sub_4dpdata --export=ALL,TASKS="lift_bottle lift_can" slurm/download_data.sbatch
+#   sbatch --wckey=sub_4dpdata --export=ALL,TASKS=all                    slurm/download_data.sbatch   # all 8, ~190 GB
+#   sbatch --wckey=sub_4dpdata --export=ALL,TASKS=none,CHECKPOINT=1      slurm/download_data.sbatch   # encoder only, ~minutes
 #
 # No GPU. Network + disk bound. modelscope resumes, so a walltime kill is safe
 # to resubmit.
@@ -45,6 +45,28 @@
 #SBATCH --wckey=sub_4dpdata
 
 set -uo pipefail
+
+# --------------------------------------------------------------------------- #
+# The site wckey, checked at runtime
+# --------------------------------------------------------------------------- #
+# sbatch precedence is: command line > environment variable > #SBATCH directive.
+# So a stale SBATCH_WCKEY in the submitting shell (typically a copy of
+# env.example.sh from before the value was corrected) SILENTLY OVERRIDES the
+# `#SBATCH --wckey=sub_4dpdata` header above. That is exactly how a job once went
+# out under the wrong project. The header alone is not enough; check it.
+#
+# SLURM_WCKEY is only set inside the job when a wckey was applied, so an unset
+# value defaults to the right answer rather than failing a valid job.
+if [[ -n "${SLURM_JOB_ID:-}" && "${SLURM_WCKEY:-sub_4dpdata}" != "sub_4dpdata" ]]; then
+  echo "error: this job's wckey is '${SLURM_WCKEY}', not 'sub_4dpdata'." >&2
+  echo "       Every job here must be accounted to 'sub_4dpdata'." >&2
+  echo "       Something in your environment overrode the #SBATCH header --" >&2
+  echo "       almost certainly a stale SBATCH_WCKEY in env.sh. Fix it with:" >&2
+  echo "         export SBATCH_WCKEY=sub_4dpdata SLURM_WCKEY=sub_4dpdata" >&2
+  echo "       then resubmit. 'python scripts/preflight.py' also checks this." >&2
+  exit 2
+fi
+
 
 # Locate the repo. `dirname "${BASH_SOURCE[0]}"` is NOT reliable here: under
 # sbatch, SLURM copies the batch script into a spool directory
@@ -188,6 +210,6 @@ for task in ${TASKS}; do
   echo "  # UniVTAC's own ACT baseline (its data step, then training):"
   echo "  bash ${UNIVTAC_ROOT}/policy/ACT/process_data.sh ${task} ${RAW_CONFIG} 100"
   echo "  # this repo's GR00T path:"
-  echo "  sbatch --export=ALL,TASK=${task},VARIANT=tactile,RAW_DIR=${OUTPUT}/isaac${VERSION}/${task}/hdf5 slurm/convert.sbatch"
+  echo "  sbatch --wckey=sub_4dpdata --export=ALL,TASK=${task},VARIANT=tactile,RAW_DIR=${OUTPUT}/isaac${VERSION}/${task}/hdf5 slurm/convert.sbatch"
 done
 exit ${STATUS}

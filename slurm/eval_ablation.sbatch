@@ -10,8 +10,8 @@
 # Submit one job per (variant, task). To sweep, use the array form below or the
 # helper: slurm/submit_ablation.sh
 #
-#   sbatch --export=ALL,VARIANT=baseline,TASK=insert_hole slurm/eval_ablation.sbatch
-#   sbatch --export=ALL,VARIANT=tactile,TASK=insert_hole,GROOT_MODEL=/ckpt/tactile slurm/eval_ablation.sbatch
+#   sbatch --wckey=sub_4dpdata --export=ALL,VARIANT=baseline,TASK=insert_hole slurm/eval_ablation.sbatch
+#   sbatch --wckey=sub_4dpdata --export=ALL,VARIANT=tactile,TASK=insert_hole,GROOT_MODEL=/ckpt/tactile slurm/eval_ablation.sbatch
 #
 # SITE RULES (see CLAUDE.md, "Cluster rules"). Enforced here; do not "helpfully"
 # reintroduce any of them:
@@ -33,6 +33,28 @@
 #SBATCH --wckey=sub_4dpdata
 
 set -euo pipefail
+
+# --------------------------------------------------------------------------- #
+# The site wckey, checked at runtime
+# --------------------------------------------------------------------------- #
+# sbatch precedence is: command line > environment variable > #SBATCH directive.
+# So a stale SBATCH_WCKEY in the submitting shell (typically a copy of
+# env.example.sh from before the value was corrected) SILENTLY OVERRIDES the
+# `#SBATCH --wckey=sub_4dpdata` header above. That is exactly how a job once went
+# out under the wrong project. The header alone is not enough; check it.
+#
+# SLURM_WCKEY is only set inside the job when a wckey was applied, so an unset
+# value defaults to the right answer rather than failing a valid job.
+if [[ -n "${SLURM_JOB_ID:-}" && "${SLURM_WCKEY:-sub_4dpdata}" != "sub_4dpdata" ]]; then
+  echo "error: this job's wckey is '${SLURM_WCKEY}', not 'sub_4dpdata'." >&2
+  echo "       Every job here must be accounted to 'sub_4dpdata'." >&2
+  echo "       Something in your environment overrode the #SBATCH header --" >&2
+  echo "       almost certainly a stale SBATCH_WCKEY in env.sh. Fix it with:" >&2
+  echo "         export SBATCH_WCKEY=sub_4dpdata SLURM_WCKEY=sub_4dpdata" >&2
+  echo "       then resubmit. 'python scripts/preflight.py' also checks this." >&2
+  exit 2
+fi
+
 
 # --------------------------------------------------------------------------- #
 # Configuration (override any of these with --export)
