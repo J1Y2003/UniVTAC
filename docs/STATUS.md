@@ -125,12 +125,27 @@ already in the table below).
 
 ## Open decisions
 
-**Per-task or multi-task?** UniVTAC's ACT trains one policy per task, so
-matching it literally means 8 tasks × 2 variants = 16 finetunes. GR00T supports
-multi-dataset training, making one multi-task finetune per variant (2 total)
-both cheaper and arguably the more honest test of a generalist VLA — but it has
-GR00T solving a harder problem than the per-task baselines, which must be stated
-plainly rather than buried. Settle this before committing GPU weeks.
+## Decided (2026-09-08)
+
+**Per-task, not multi-task.** One GR00T N1.7 finetune per task, matching
+UniVTAC's ACT, which trains one policy per task. Multi-dataset training would
+be cheaper and arguably a better test of a generalist VLA, but it has GR00T
+solving a strictly harder problem than the baseline it is being compared to,
+and that asymmetry is not worth the ambiguity. Revisit only after the per-task
+numbers exist.
+
+**Vision only, for now.** The immediate question is how GR00T N1.7 performs on
+UniVTAC *without* tactile input, so only `baseline_finetuned` (17-D state) gets
+trained. The tactile pipeline stays in the repo and stays working — the
+converter, the 113-D modality config and the `tactile` variant are all
+exercised and verified — it just is not being trained. `VARIANTS` now defaults
+to `baseline_finetuned` in `submit_overnight.sh`; pass
+`VARIANTS="tactile baseline_finetuned"` to run the ablation again.
+
+**Three tasks first:** `insert_hole`, `insert_tube`, `pull_out_key`. These are
+the contact-rich insertion/extraction tasks where the benchmark is most
+interesting, and three per-task finetunes at ~2.1 h each is a day's work rather
+than a week's. `TASKS` in `submit_overnight.sh` defaults to exactly these.
 
 **50 or 100 training episodes?** The paper's ACT recipe is 50 episodes per
 task, 4,000 optimization steps, batch size 64, lr 1e-5, weight decay 1e-4.

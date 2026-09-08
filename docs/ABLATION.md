@@ -242,6 +242,85 @@ many evaluation episodes and which seeds those used. Ours follow their
 `1_000_000 * (1 + seed)` convention, but 50 versus 100 evaluation seeds are not
 comparable intervals.
 
+## Fairness checklist against the paper's ACT numbers
+
+Ordered by how badly each one can invalidate the comparison. The first two are
+the ones that would make a GR00T win meaningless.
+
+**1. Camera sets — the biggest live risk.**
+`configs/modality/univtac_baseline_config.py` requests `["head", "wrist"]` for
+*every* task. But `policy/task_settings.json` marks most tasks
+`camera_type: head`, with only `lift_can` and `insert_tube` as `all`. So for
+`insert_hole` and `pull_out_key` our pipeline feeds GR00T a **wrist camera ACT
+never saw** — a straightforward unfair advantage.
+
+It is worse than that. `docs/UPSTREAM.md` records that ACT's
+`process_data.py:12` reads `task_settings.json` through a `__file__`-relative
+path that does not resolve, under an `if path.exists()` guard — so the lookup
+**silently misses and defaults `camera_type` to `head`**. If the published
+numbers came from that code path, ACT was head-only for *all* tasks, including
+`insert_tube`. Verify against their released checkpoint rather than the config
+file's stated intent, then drop `wrist` from `video_keys` to match. Note also
+that the released dumps may not even contain a wrist stream for head-only
+tasks.
+
+**2. Re-evaluate their released ACT checkpoint under our evaluator.**
+`data/download.sh --checkpoint` ships it. Running it through *our* harness with
+*our* seeds and episode count makes the comparison apples-to-apples by
+construction, and doubles as a validation of the harness: if you reproduce
+~30.9 % vision-only, the pipeline is trustworthy; if you do not, you have found
+a protocol difference *before* publishing a claim built on it. This is the
+single highest-value thing on this list. It needs
+`tools/univtac_patches/fix_act.py` first — the shipped encoder path
+(`encoder/checkpoints/resnet18/.../best.pth`) was never published, and a
+missing encoder checkpoint leaves the encoder randomly initialised **with no
+warning**.
+
+**3. Per-task numbers, not the benchmark average.** The 30.9 % / 48.0 % figures
+are averaged over all eight tasks. Training three tasks and comparing a
+three-task mean against their eight-task mean is invalid. Pull ACT's per-task
+rates from the paper's table and compare task by task.
+
+**4. Training episodes: 50, not 100.** Convert with `EPISODES=50`. This also
+makes the epoch count match for free — 4,000 steps x batch 64 = 256,000 samples
+over 50 x ~310 frames is ~16.5 epochs, essentially their number.
+
+**5. Evaluation episodes and seeds.** Confirm how many evaluation episodes
+their published numbers use. Our seeding follows their
+`1_000_000 * (1 + seed)` convention and errored episodes decrement `test_num`
+the same way, so the protocol matches; only N is in question. Evaluating *more*
+episodes than they did is fine and tightens your interval — just report both
+Ns, and never compare a 50-episode interval to a 100-episode one as though they
+were equivalent.
+
+**6. Task config.** Keep `TASK_CONFIG` consistent between download, conversion
+and evaluation, and confirm which config their ACT models were trained on.
+
+**7. Differences to disclose rather than fix.** These are legitimate
+method differences, not unfairness, but they belong next to the number:
+
+* **State width.** Ours is 17-D (`eef_9d` 9 + `joint_position` 7 + gripper 1);
+  ACT's `train_config*.yml` declares `state_dim: 8`. The end-effector pose is a
+  known function of the joints, so this is a reparameterisation rather than
+  extra information — but say so.
+* **Action parameterisation.** `launch_finetune.py` hardcodes
+  `use_relative_action = True` and our config marks `joint_position` RELATIVE,
+  `gripper_position` ABSOLUTE; ACT predicts absolute joint targets.
+* **Action / execution horizon.** Ours is `ACTION_HORIZON = 16` with
+  `EXECUTION_HORIZON=8`, against GR00T N1.7's default of 40. ACT uses its own
+  chunk size and may use temporal ensembling. This changes the effective
+  control rate, so check what their evaluator does.
+* **Image preprocessing.** GR00T resizes to 256x256 and expects RGB (the
+  converter swaps channels, since UniVTAC stores BGR); ACT uses its own
+  pipeline at its own resolution.
+* **Optimiser.** Each method at its own tuned settings — see the learning-rate
+  discussion above. Report both rather than pretending they match.
+
+**8. Do not select checkpoints on evaluation success.** There is no validation
+split and `launch_finetune.py` exposes no eval metric, so picking the best of
+four saved checkpoints by success rate is test-set fitting. Fix the step count
+in advance, or hold out episodes.
+
 ## Reading the results
 
 `scripts/compare_ablation.py` reports per-task and pooled success rates with

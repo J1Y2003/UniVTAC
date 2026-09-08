@@ -53,9 +53,20 @@ GPUS="${GPUS:-1}"
 # walltime kill is safe here because training resumes from its last checkpoint.
 TIMELIMIT="${TIMELIMIT:-1-00:00:00}"
 
-TASK="${TASK:-lift_bottle}"
+# One job per task -- GR00T is finetuned PER TASK, matching UniVTAC's ACT,
+# which trains one policy per task. Three separate jobs rather than one long
+# one: each is independently resumable, each fits a backfill gap, and one
+# task failing does not block the others.
+#
+# Default is the three tasks the project cares about. `TASK=x` still works.
+TASKS="${TASKS:-${TASK:-insert_hole insert_tube pull_out_key}}"
 TASK_CONFIG="${TASK_CONFIG:-clean}"
 EPISODES="${EPISODES:-50}"
+# Vision only. The tactile pipeline stays in the repo and still works, but the
+# question right now is how GR00T N1.7 does on UniVTAC WITHOUT touch, so the
+# default trains one variant. Set VARIANTS="tactile baseline_finetuned" to run
+# the full ablation again.
+VARIANTS="${VARIANTS:-baseline_finetuned}"
 
 MODE="${1:-submit}"
 
@@ -79,7 +90,9 @@ printf '  %-16s %s\n' \
   partition "${PARTITION}" \
   gpus "${GPUS}" \
   time "${TIMELIMIT}" \
-  task "${TASK}/${TASK_CONFIG}" \
+  tasks "${TASKS}" \
+  task_config "${TASK_CONFIG}" \
+  variants "${VARIANTS}" \
   episodes "${EPISODES}" \
   wandb "${WANDB_API_KEY:+online}${WANDB_API_KEY:-offline (no WANDB_API_KEY)}"
 echo
@@ -91,15 +104,20 @@ check_dir  GROOT_ROOT     "${GROOT_ROOT}"
 check_exec GROOT_PYTHON   "${GROOT_PYTHON}"
 check_exec UNIVTAC_PYTHON "${UNIVTAC_PYTHON}"
 check_dir  DATA_ROOT      "${DATA_ROOT}"
-for variant in tactile baseline_finetuned; do
-  dataset="${DATA_ROOT}/univtac-${TASK}-${variant}"
-  n=$(find "${dataset}/data" -name '*.parquet' 2>/dev/null | wc -l)
-  if [[ "${n}" -gt 0 ]]; then
-    echo "  ok  ${variant}: ${n} parquet in ${dataset}"
-  else
-    echo "  MISSING dataset ${dataset} (convert it first: slurm/convert.sbatch)" >&2
-    FAIL=1
-  fi
+# Only the variants actually being trained -- demanding a tactile dataset we
+# deliberately are not training would block the submit for no reason.
+for task in ${TASKS}; do
+  for variant in ${VARIANTS}; do
+    dataset="${DATA_ROOT}/univtac-${task}-${variant}"
+    n=$(find "${dataset}/data" -name '*.parquet' 2>/dev/null | wc -l)
+    if [[ "${n}" -gt 0 ]]; then
+      echo "  ok  ${task}/${variant}: ${n} parquet in ${dataset}"
+    else
+      echo "  MISSING dataset ${dataset}" >&2
+      echo "        convert it: sbatch --export=ALL,TASK=${task},VARIANT=${variant},EPISODES=50 slurm/convert.sbatch" >&2
+      FAIL=1
+    fi
+  done
 done
 # SLURM opens the --output file before the script runs, so a missing logs/ kills
 # the job instantly with no log to explain it.
@@ -126,59 +144,101 @@ echo
 # --------------------------------------------------------------------------- #
 # Build and run
 # --------------------------------------------------------------------------- #
-EXPORTS="ALL"
-EXPORTS+=",MODEL_OUTPUT_DIR=${MODEL_OUTPUT_DIR}"
-EXPORTS+=",UNIVTAC_ROOT=${UNIVTAC_ROOT}"
-EXPORTS+=",UNIVTAC_PYTHON=${UNIVTAC_PYTHON}"
-EXPORTS+=",GROOT_ROOT=${GROOT_ROOT}"
-EXPORTS+=",GROOT_PYTHON=${GROOT_PYTHON}"
-EXPORTS+=",HF_HOME=${HF_HOME}"
-EXPORTS+=",DATA_ROOT=${DATA_ROOT}"
-EXPORTS+=",TASK=${TASK}"
-EXPORTS+=",TASK_CONFIG=${TASK_CONFIG}"
-EXPORTS+=",EPISODES=${EPISODES}"
-# DRY_RUN must be pinned off: if it is exported in the calling shell (from
-# testing), --export=ALL would carry it in and the job would exit in seconds
-# having trained nothing.
-EXPORTS+=",DRY_RUN=0"
+# The submit filter rejects job names of 50 characters or fewer, so keep the
+# per-task name long. `%x` in the sbatch --output pattern picks this up, which
+# is what keeps the three tasks' logs apart.
+job_name_for() {
+  printf 'univtac-groot-per-task-finetune-then-evaluate-vision-only-%s' "$1"
+}
 
-SBATCH_ARGS=(
-  --partition="${PARTITION}"
-  --gres="gpu:${GPUS}"
-  --time="${TIMELIMIT}"
-  --export="${EXPORTS}"
-)
+exports_for() {
+  local task="$1" e="ALL"
+  e+=",MODEL_OUTPUT_DIR=${MODEL_OUTPUT_DIR}"
+  e+=",UNIVTAC_ROOT=${UNIVTAC_ROOT}"
+  e+=",UNIVTAC_PYTHON=${UNIVTAC_PYTHON}"
+  e+=",GROOT_ROOT=${GROOT_ROOT}"
+  e+=",GROOT_PYTHON=${GROOT_PYTHON}"
+  e+=",HF_HOME=${HF_HOME}"
+  e+=",DATA_ROOT=${DATA_ROOT}"
+  e+=",TASK=${task}"
+  e+=",TASK_CONFIG=${TASK_CONFIG}"
+  e+=",EPISODES=${EPISODES}"
+  e+=",VARIANTS=${VARIANTS}"
+  # DRY_RUN must be pinned off: if it is exported in the calling shell (from
+  # testing), --export=ALL would carry it in and the job would exit in seconds
+  # having trained nothing.
+  e+=",DRY_RUN=0"
+  printf '%s' "${e}"
+}
+
+sbatch_args_for() {
+  local task="$1"
+  SBATCH_ARGS=(
+    --partition="${PARTITION}"
+    --gres="gpu:${GPUS}"
+    --time="${TIMELIMIT}"
+    --job-name="$(job_name_for "${task}")"
+    --export="$(exports_for "${task}")"
+  )
+}
 
 case "${MODE}" in
   --dry)
-    echo "Running preflight locally (DRY_RUN=1), submitting nothing:"
-    env MODEL_OUTPUT_DIR="${MODEL_OUTPUT_DIR}" UNIVTAC_ROOT="${UNIVTAC_ROOT}" \
-        UNIVTAC_PYTHON="${UNIVTAC_PYTHON}" GROOT_ROOT="${GROOT_ROOT}" \
-        GROOT_PYTHON="${GROOT_PYTHON}" HF_HOME="${HF_HOME}" DATA_ROOT="${DATA_ROOT}" \
-        TASK="${TASK}" TASK_CONFIG="${TASK_CONFIG}" EPISODES="${EPISODES}" \
-        DRY_RUN=1 bash "${REPO_ROOT}/slurm/overnight_ablation.sbatch"
+    for task in ${TASKS}; do
+      echo "=== preflight ${task} (DRY_RUN=1), submitting nothing ==="
+      env MODEL_OUTPUT_DIR="${MODEL_OUTPUT_DIR}" UNIVTAC_ROOT="${UNIVTAC_ROOT}" \
+          UNIVTAC_PYTHON="${UNIVTAC_PYTHON}" GROOT_ROOT="${GROOT_ROOT}" \
+          GROOT_PYTHON="${GROOT_PYTHON}" HF_HOME="${HF_HOME}" DATA_ROOT="${DATA_ROOT}" \
+          TASK="${task}" TASK_CONFIG="${TASK_CONFIG}" EPISODES="${EPISODES}" \
+          VARIANTS="${VARIANTS}" \
+          DRY_RUN=1 bash "${REPO_ROOT}/slurm/overnight_ablation.sbatch"
+      echo
+    done
     ;;
   --print)
-    echo "sbatch ${SBATCH_ARGS[*]} slurm/overnight_ablation.sbatch"
+    for task in ${TASKS}; do
+      sbatch_args_for "${task}"
+      echo "sbatch ${SBATCH_ARGS[*]} slurm/overnight_ablation.sbatch"
+    done
     ;;
   --test-only)
-    sbatch --test-only "${SBATCH_ARGS[@]}" "${REPO_ROOT}/slurm/overnight_ablation.sbatch"
+    for task in ${TASKS}; do
+      sbatch_args_for "${task}"
+      sbatch --test-only "${SBATCH_ARGS[@]}" "${REPO_ROOT}/slurm/overnight_ablation.sbatch"
+    done
     ;;
   submit)
     cd "${REPO_ROOT}"
-    sbatch "${SBATCH_ARGS[@]}" slurm/overnight_ablation.sbatch
-    status=$?
-    if [[ ${status} -eq 0 ]]; then
+    submitted=() ; failed=0
+    for task in ${TASKS}; do
+      sbatch_args_for "${task}"
+      if out=$(sbatch --parsable "${SBATCH_ARGS[@]}" slurm/overnight_ablation.sbatch); then
+        jobid="${out%%;*}"
+        submitted+=("${jobid} ${task}")
+        echo "submitted ${jobid}  ${task}"
+      else
+        echo "FAILED to submit ${task}" >&2
+        failed=1
+      fi
+    done
+    if ((${#submitted[@]})); then
       echo
-      echo "Watch it with:"
-      echo "  squeue -u ${USER}                       # ST=R means running"
-      echo "  tail -f logs/univtac-groot-full-*.out   # preflight, then stages"
-      echo "  tail -f logs/overnight-*/finetune-tactile.log"
+      echo "Submitted ${#submitted[@]} job(s), one per task:"
+      printf '  %s\n' "${submitted[@]}"
+      echo
+      echo "Watch them with:"
+      echo "  squeue -u ${USER} -o '%.10i %.60j %.9T %.10M %.20R'"
+      echo "  tail -f logs/univtac-groot-per-task-*.out          # preflight, then stages"
+      echo "  tail -f logs/overnight-<jobid>/finetune-${VARIANTS%% *}.log"
+      echo
+      echo "Aggregate when they finish:"
+      echo "  python scripts/compare_ablation.py --results-dir eval_result"
     fi
-    exit ${status}
+    exit ${failed}
     ;;
   *)
     echo "usage: bash slurm/submit_overnight.sh [--print|--test-only|--dry]" >&2
+    echo "  TASKS=\"a b c\"  VARIANTS=...  EPISODES=N  GPUS=N  are all overridable" >&2
     exit 2
     ;;
 esac
