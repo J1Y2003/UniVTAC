@@ -101,6 +101,17 @@ for variant in tactile baseline_finetuned; do
 done
 # SLURM opens the --output file before the script runs, so a missing logs/ kills
 # the job instantly with no log to explain it.
+# Every GR00T checkpoint loads the gated nvidia/Cosmos-Reason2-2B, so no token
+# means a 401 about a minute into training -- after the job already holds a GPU.
+# Warn here, where it costs nothing. HF_HOME is redirected, which also moves
+# where a stored login is read from ($HF_HOME/token), so HF_TOKEN in the
+# environment is the reliable route; --export=ALL carries it into the job.
+if [[ -z "${HF_TOKEN:-}" && ! -s "${HF_HOME}/token" && ! -s "${HOME}/.cache/huggingface/token" ]]; then
+  echo "WARNING: no HF_TOKEN and no token file under HF_HOME=${HF_HOME}." >&2
+  echo "         The job will fail loading nvidia/Cosmos-Reason2-2B (401)." >&2
+  echo "         Fix: export HF_TOKEN=hf_...   then re-run this." >&2
+  FAIL=1
+fi
 mkdir -p "${REPO_ROOT}/logs" || FAIL=1
 [[ -d "${REPO_ROOT}/logs" ]] && echo "  ok  logs/ exists"
 if [[ "${FAIL}" -ne 0 ]]; then

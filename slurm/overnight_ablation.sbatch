@@ -220,6 +220,33 @@ done
   || fatal "missing ${GROOT_ROOT}/gr00t/experiment/launch_finetune.py"
 "${GROOT_PYTHON}" -c "import gr00t" 2>/dev/null \
   || fatal "${GROOT_PYTHON} cannot import gr00t (try: cd ${GROOT_ROOT} && uv sync)"
+# Every GR00T checkpoint loads the gated nvidia/Cosmos-Reason2-2B backbone, so
+# without credentials training dies with a 401 about a minute in -- after the
+# job has a GPU, which on a contended cluster is an expensive way to learn it.
+# Probe actual access, not just the presence of a token: a token that lacks
+# access to the gated repo looks identical until the request is made.
+#
+# Note HF_HOME is redirected above, which also moves where a stored login is
+# looked for ($HF_HOME/token, not ~/.cache/huggingface/token). Exporting
+# HF_TOKEN avoids that entirely and takes precedence over any stored login.
+if ! "${GROOT_PYTHON}" - <<'PYCHECK' 2>/dev/null
+import sys
+try:
+    from huggingface_hub import HfApi
+    HfApi().model_info("nvidia/Cosmos-Reason2-2B")
+except Exception as exc:
+    print(f"{type(exc).__name__}: {exc}"[:300], file=sys.stderr)
+    raise SystemExit(1)
+PYCHECK
+then
+  fatal "cannot read the gated nvidia/Cosmos-Reason2-2B (needed by every GR00T
+       checkpoint). Export a token with access, in the shell you submit from:
+         export HF_TOKEN=hf_...
+       --export=ALL then carries it into the job. Request access at
+       https://huggingface.co/nvidia/Cosmos-Reason2-2B if you have none.
+       HF_TOKEN is currently ${HF_TOKEN:+set}${HF_TOKEN:-UNSET}; HF_HOME=${HF_HOME}."
+fi
+
 # Same lesson as hf_transfer: do not pass a flag whose package may be absent.
 # --use-wandb with no wandb installed would fail after the weights had loaded.
 if [[ "${USE_WANDB:-1}" == "1" ]]; then
