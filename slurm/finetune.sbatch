@@ -21,6 +21,12 @@
 #   * NEVER pass --cpus-per-task or --mem. Jobs take the node's per-GPU
 #     defaults, and the submit filter rejects the job if either is specified.
 #   * ALWAYS pass --wckey=project-short-name:sub_4dpdata.
+#   * MODEL_OUTPUT_DIR must be in the SUBMITTING environment, for every job --
+#     including CPU-only ones that write no checkpoints. The filter checks it at
+#     submit time, before this script runs, so no in-script default can help:
+#       ❌ ERROR: MODEL_OUTPUT_DIR가 없습니다.
+#          MODEL_OUTPUT_DIR=/rlwrld-unified-checkpoints/jimin/... 로 지정하세요.
+#     `source env.sh` sets it and --export=ALL carries it in.
 #
 # Do pass --partition explicitly, or export SBATCH_PARTITION: `debug` is the
 # default here and is short-lived, so it is not where long training belongs.

@@ -485,6 +485,39 @@ WCKEY = "project-short-name:sub_4dpdata"
 """Required on every sbatch and srun here; the submit filter rejects jobs without it."""
 
 
+UNIFIED_CHECKPOINTS = "/rlwrld-unified-checkpoints"
+"""The cluster's unified training-outputs folder; MODEL_OUTPUT_DIR must be under it."""
+
+
+def check_model_output_dir(report: Report) -> None:
+    """``MODEL_OUTPUT_DIR`` is set, and under the unified folder.
+
+    The submit filter rejects **every** job without it -- including CPU-only
+    ones that write no checkpoints -- and it checks at submit time, before the
+    batch script runs, so no in-script default can rescue it. The only symptom
+    is ``MODEL_OUTPUT_DIR가 없습니다`` followed by "Unspecified error".
+    """
+    raw = os.environ.get("MODEL_OUTPUT_DIR", "").strip()
+    suggested = f"{UNIFIED_CHECKPOINTS}/{os.environ.get('USER', '$USER')}/checkpoints/univtac-groot"
+    if not raw:
+        report.add(
+            FAIL, "MODEL_OUTPUT_DIR", "not set -- every sbatch will be rejected",
+            f"  export MODEL_OUTPUT_DIR={suggested}\n"
+            "  Add it to env.sh; --export=ALL then carries it into the job.",
+        )
+    elif not raw.startswith(UNIFIED_CHECKPOINTS + "/"):
+        report.add(
+            FAIL, "MODEL_OUTPUT_DIR", f"{raw} is outside {UNIFIED_CHECKPOINTS}",
+            f"  export MODEL_OUTPUT_DIR={suggested}",
+        )
+    else:
+        parts = raw.rstrip("/").split("/")
+        shape_ok = len(parts) >= 5 and parts[3] == "checkpoints"
+        report.add(PASS if shape_ok else WARN, "MODEL_OUTPUT_DIR",
+                   raw + ("" if shape_ok else
+                          "  (policy shape is {NFS}/{user}/checkpoints/{job})"))
+
+
 def check_wckey(report: Report) -> None:
     """The site wckey, for anything submitted by hand.
 
@@ -612,6 +645,7 @@ def main(argv: list[str] | None = None) -> int:
     report = Report()
     check_slurm(report)
     check_wckey(report)
+    check_model_output_dir(report)
     check_conda(report)
     check_repo(report)
     check_univtac(report)

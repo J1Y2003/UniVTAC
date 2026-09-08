@@ -82,7 +82,10 @@ export SBATCH_WCKEY="project-short-name:sub_4dpdata"
 # so the job never starts and no log is written -- the only clue is
 # "MODEL_OUTPUT_DIR가 없습니다" on stderr. It is also the right place for
 # checkpoints: the shared home mount is far more contended.
-export MODEL_OUTPUT_DIR="/rlwrld-unified-checkpoints/$USER/univtac-groot"
+# The shape matters: {NFS}/{user}/checkpoints/{job}. This example previously
+# omitted the `checkpoints/` level, which disagreed with both the policy and
+# slurm/submit_overnight.sh's own default.
+export MODEL_OUTPUT_DIR="/rlwrld-unified-checkpoints/$USER/checkpoints/univtac-groot"
 
 # Where finetuned checkpoints go. Defaults to MODEL_OUTPUT_DIR inside the job
 # scripts, which keeps tens of GB per variant off the home filesystem.
