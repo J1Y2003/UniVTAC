@@ -126,63 +126,31 @@ if [[ -n "${ARMS:-}" && -z "${VARIANTS:-}" ]]; then
 fi
 VARIANTS="${VARIANTS:-tactile baseline_finetuned}"
 
-# launch_finetune.py defaults: --max-steps 10000, --save-steps 1000,
-# --save-total-limit 5. That last one is a disk hazard here: a 3B checkpoint
-# carries optimizer + scheduler + RNG state (needed for --resume-from-checkpoint),
-# which lands around 40 GB each. Five of those per variant is ~200 GB, ~400 GB for
-# both variants, on a shared 15T mount that already sits at 91%. Keep fewer and
-# save less often -- still enough to resume, far less I/O on a network
-# filesystem.
+# GR00T's own defaults: --max-steps 10000, --save-steps 1000. Hyperparameters
+# are GR00T's business -- the benchmark fixes the data, the observation space
+# and the evaluation protocol, not the recipe. See docs/ABLATION.md.
 #
-# With MAX_STEPS=10000 and SAVE_STEPS=2500 the run saves at 2500/5000/7500/
-# 10000 and SAVE_TOTAL_LIMIT=3 keeps a rolling window of the last three, so the
-# final checkpoint plus two fallbacks -- roughly 120 GB per variant.
+# One thing to watch rather than pre-empt: 10000 steps at batch 64 over 50
+# episodes (~15.5k samples) is ~41 epochs, which is a lot for 50
+# demonstrations. Read the loss curve; if it overfits, pick a step count on a
+# task you are NOT reporting (lift_bottle) and freeze it before evaluating.
 #
-# Note there is no metric-based "best checkpoint" to select: launch_finetune.py
+# SAVE_TOTAL_LIMIT is 3 rather than GR00T's 5 for disk, not for science: a 3B
+# checkpoint carries optimizer + scheduler + RNG state and lands around 40 GB,
+# so 5 per variant is ~200 GB on a shared mount already at 91%.
+#
+# There is no metric-based "best checkpoint" to select: launch_finetune.py
 # exposes no eval metric or load-best-at-end option, so the last checkpoint is
-# the final model by definition. This script therefore points a stable
+# the final model by definition. This script points a stable
 # `<output_dir>/final` symlink at the highest-numbered checkpoint after
 # training, which is what evaluation uses.
-# MAX_STEPS=4000 matches the UniVTAC paper's ACT recipe ("All ACT models were
-# trained for a total of 4,000 optimization steps using a batch size of 64"),
-# and GR00T's --global-batch-size is already 64, so GR00T sees the same number
-# of gradient updates over the same batch size as the published baseline. That
-# is the number to keep if you want the ACT row to be a fair comparator.
-#
-# CAVEAT on epochs, which is NOT matched: the paper trained on 50 episodes per
-# task, our converted datasets carry 100 (28,932 samples). Same steps x same
-# batch = 256,000 samples seen either way, but that is ~8.9 epochs over our 100
-# episodes versus ~17.7 over their 50. So GR00T sees the same amount of
-# gradient signal drawn from twice the data. Decide deliberately and say which
-# you did -- see docs/ABLATION.md, "Comparability with UniVTAC's ACT".
-#
-# With MAX_STEPS=4000 and SAVE_STEPS=1000 the run saves at 1000/2000/3000/4000
-# and SAVE_TOTAL_LIMIT=3 keeps a rolling window of the last three, so the final
-# checkpoint plus two fallbacks -- roughly 120 GB per variant.
-#
-# Note there is no metric-based "best checkpoint" to select: launch_finetune.py
-# exposes no eval metric or load-best-at-end option, so the last checkpoint is
-# the final model by definition. This script therefore points a stable
-# `<output_dir>/final` symlink at the highest-numbered checkpoint after
-# training, which is what evaluation uses.
-MAX_STEPS="${MAX_STEPS:-4000}"
+MAX_STEPS="${MAX_STEPS:-10000}"
 SAVE_STEPS="${SAVE_STEPS:-1000}"
 SAVE_TOTAL_LIMIT="${SAVE_TOTAL_LIMIT:-3}"
 
-# Optimiser hyperparameters. Left UNSET by default, which means GR00T's own
-# launch_finetune.py defaults apply -- confirm them rather than trusting this
-# comment:
-#   "${GROOT_PYTHON}" "${GROOT_ROOT}/gr00t/experiment/launch_finetune.py" --help \
-#       | grep -A2 -E "learning-rate|weight-decay|warmup"
-#
-# For reference, the UniVTAC paper's ACT recipe is lr 1e-5 and weight decay
-# 1e-4. GR00T's default is NOT that: the LR observed in a real run climbed
-# +2e-7/step through warmup, which extrapolates to a peak near 1e-4, i.e. ~10x
-# the paper. That is not automatically wrong -- ACT is a small policy with a
-# pretrained ResNet encoder, this is a 1.62 B-trainable-parameter finetune, and
-# 1e-4 is aggressive for the latter -- but it is a choice, so make it on
-# purpose:
-#   LEARNING_RATE=1e-5 WEIGHT_DECAY=1e-4 bash slurm/submit_overnight.sh
+# Left unset, so launch_finetune.py's own defaults apply. Set them only for a
+# deliberate sweep; the pinned recipe below records whatever was used so a
+# resubmission cannot silently train the second variant differently.
 LEARNING_RATE="${LEARNING_RATE:-}"
 WEIGHT_DECAY="${WEIGHT_DECAY:-}"
 HP_ARGS=""

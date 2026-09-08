@@ -147,17 +147,14 @@ the contact-rich insertion/extraction tasks where the benchmark is most
 interesting, and three per-task finetunes at ~2.1 h each is a day's work rather
 than a week's. `TASKS` in `submit_overnight.sh` defaults to exactly these.
 
-**50 or 100 training episodes?** The paper's ACT recipe is 50 episodes per
-task, 4,000 optimization steps, batch size 64, lr 1e-5, weight decay 1e-4.
-`MAX_STEPS` now defaults to 4000 and GR00T's `--global-batch-size` is already
-64, so steps and batch match for free — but our converted datasets carry **100**
-episodes, which at the same step budget means ~8.9 epochs against their ~17.7,
-i.e. the same gradient signal drawn from twice the demonstrations. Either
-convert 50 episodes for a clean head-to-head, or keep 100 and state it next to
-the number. It applies identically to both variants either way, so the internal
-ablation is safe regardless. Full table and the learning-rate question (GR00T's
-default is ~1e-4, roughly 10× the paper) in
-[ABLATION.md](ABLATION.md#comparability-with-univtacs-act).
+**Settled: benchmark, not controlled ablation.** Hold the data (50 episodes),
+the observation space (per-task cameras) and the evaluation protocol (100
+rollouts, their seeds) fixed; run GR00T N1.7 on **its own defaults** for
+everything else — `MAX_STEPS=10000`, batch 64, `ACTION_HORIZON=40`, GR00T's
+learning rate and weight decay. Matching ACT's optimizer would answer the wrong
+question. The one thing to protect against is tuning against the 100 evaluation
+rollouts; if a sweep is wanted, run it on `lift_bottle`, which is not a reported
+task. See [ABLATION.md](ABLATION.md#comparability-with-univtacs-act).
 
 **Comparison against UniVTAC's own models.** Their configs line up with ours:
 `train_config_vision.yml` ↔ `baseline_finetuned`, `train_config.yml` ↔

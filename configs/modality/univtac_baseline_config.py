@@ -84,15 +84,19 @@ else:
 """Camera set for this run. See univtac_groot.variants.MULTI_VIEW_TASKS."""
 
 
-ACTION_HORIZON = 16
-"""Predicted chunk length.
+ACTION_HORIZON = 40
+"""Predicted chunk length -- GR00T N1.7's own default
+(``GR00T_N1d7Config.action_horizon``), and the model's maximum.
 
-GR00T N1.7's model default is 40 (``GR00T_N1d7Config.action_horizon``), and the
-shipped posttrain configs use 16 (``libero_sim``) or 8 (``simpler_env_*``). 16 is
-chosen here to match the UniVTAC control rate: the tasks cap out at
-``step_lim = 300`` actions, so a 40-step chunk executed open-loop would commit
-over a tenth of an episode per decision. Keep this identical across both variants
--- it changes the action space, so a mismatch makes the two runs incomparable.
+This was 16 for a while, chosen to keep an open-loop chunk short relative to
+UniVTAC's ``step_lim = 300``. That rationale does not apply: the rollout does
+not execute whole chunks, it re-plans every ``EXECUTION_HORIZON`` steps. The
+benchmark fixes the data, the observation space and the evaluation protocol --
+the chunk length is GR00T's business, so use GR00T's number. (For reference,
+ACT's is 50, above what N1.7 can express.)
+
+Keep this identical across both variants -- it changes the action space, so a
+mismatch makes the two runs incomparable.
 """
 
 VIDEO_DELTA_INDICES = [0]

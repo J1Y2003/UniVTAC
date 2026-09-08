@@ -82,7 +82,7 @@ else:
 """Camera set for this run. See univtac_groot.variants.MULTI_VIEW_TASKS."""
 
 
-ACTION_HORIZON = 16
+ACTION_HORIZON = 40
 """Must match ``univtac_baseline_config.ACTION_HORIZON``."""
 
 TACTILE_POOL_GRID = (8, 6)

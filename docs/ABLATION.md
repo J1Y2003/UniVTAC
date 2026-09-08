@@ -180,44 +180,44 @@ synthetic data used for training. All ACT models were trained for a total of
 
 Three of those four knobs we can match exactly, and one we currently do not.
 
-| Knob | Paper (ACT) | This repo | Matched? |
+**The stance: this is a benchmark, not a controlled ablation.** A benchmark
+fixes the task, the data, the observation space and the evaluation protocol.
+Everything downstream -- optimizer, schedule, chunk length, which modules are
+trainable -- is the method's business, and GR00T N1.7 runs on **its own
+defaults**. Requiring GR00T to use ACT's learning rate would answer "how does
+GR00T do under ACT's recipe?", which nobody is asking, and would penalise the
+model that is not ACT.
+
+| Knob | Paper (ACT) | This repo | |
 | --- | --- | --- | --- |
-| optimization steps | 4,000 | `MAX_STEPS=4000` (default) | yes |
-| batch size | 64 | GR00T `--global-batch-size` 64 (default) | yes |
-| learning rate | 1e-5 | GR00T default, **~1e-4** peak (see below) | **no, by default** |
-| weight decay | 1e-4 | GR00T default | **no, by default** |
-| training episodes | **50** per task | **100** per task | **no** |
+| training episodes | **50** per task | **50** per task | **held fixed** |
+| cameras | per-task, see below | per-task, matched | **held fixed** |
+| evaluation rollouts | **100** | **100**, their seed sequence | **held fixed** |
+| optimization steps | 4,000 | `MAX_STEPS=10000` (N1.7 default) | GR00T's own |
+| batch size | 64 | 64 (N1.7 default -- coincides) | GR00T's own |
+| learning rate | 1e-5 (encoders) | N1.7 default | GR00T's own |
+| weight decay | 1e-4 | N1.7 default | GR00T's own |
+| action chunk | 50, time aggregation | `ACTION_HORIZON = 40` (N1.7 default and ceiling) | GR00T's own |
 
-**Steps and batch size line up for free**, which is worth noting: 4,000 steps
-at batch 64 is 256,000 samples seen, and GR00T's default global batch size is
-already 64. So GR00T gets the same number of gradient updates over the same
-batch size as the published baseline.
+**The one trap.** "GR00T at its best" is where test-set fitting enters. There
+is no validation split and `launch_finetune.py` exposes no eval metric, so
+tuning the step count or the learning rate *against the 100 evaluation
+rollouts* — or picking among saved checkpoints by success rate — turns a
+benchmark result into an upper bound fitted to the test set. That is the only
+thing here that would genuinely invalidate the comparison, and it is far easier
+to do by accident than any hyperparameter mismatch.
 
-**The episode count does not.** Our converted datasets carry 100 episodes
-(28,932 samples); the paper used 50. Matching steps and batch while doubling
-the data means the same gradient signal drawn from twice the demonstrations:
-~8.9 epochs for us versus ~17.7 for them. Neither setting is wrong, but they
-are different experiments, and the difference favours GR00T. Two honest
-options:
+**Clean way out:** tune on a task you do not report. Sweep on `lift_bottle`
+(same pipeline, 50 episodes, not one of the three reported tasks), then apply
+the chosen recipe unchanged to `insert_hole`, `insert_tube` and `pull_out_key`.
+Genuinely tuned, zero contamination, and it states in one sentence.
 
-* **Match their data.** Convert and train on 50 episodes, so the only
-  difference from ACT is the policy class. This is the cleaner head-to-head.
-* **Keep 100 episodes** and state plainly that GR00T saw twice the
-  demonstrations at the same step budget. Defensible, but it must appear next
-  to the number, not in an appendix.
+**Caveat to report either way:** a tuned GR00T against an untuned published ACT
+is partly a tuning-effort comparison. True of nearly every benchmark table; the
+accepted mitigation is to say what you spent and not tune on the test rollouts.
 
-Whichever you pick, it applies identically to `tactile` and
-`baseline_finetuned`, so it never threatens the *internal* ablation — only the
-external comparison to the ACT row.
-
-**The optimiser settings are a real decision, not an oversight.** GR00T's
-`launch_finetune.py` does not use 1e-5. In a real run the logged learning rate
-climbed +2e-7 per step through warmup, which extrapolates to a peak near 1e-4 —
-roughly 10x the paper. That is not obviously wrong: ACT is a small policy with
-a pretrained ResNet encoder trained largely from scratch, whereas this is a
-finetune of 1.62 B trainable parameters, where 1e-4 is on the aggressive side.
-Both scripts now expose the knobs so the choice is explicit rather than
-inherited:
+The knobs are exposed for a deliberate sweep, left unset so GR00T's defaults
+apply:
 
 ```bash
 LEARNING_RATE=1e-5 WEIGHT_DECAY=1e-4 bash slurm/submit_overnight.sh
