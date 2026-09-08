@@ -87,9 +87,11 @@ is ~185 s against a 170 s step, i.e. essentially the whole step.
 **The signature to recognise next time.** Main Python thread pegged at 99.7% of
 one core (18,541 s of user CPU in 18,589 s elapsed) with only 16 s of *system*
 time; `pt_autograd_0` at 8 s; dataloader workers idle; GPU at 48% utilisation
-but **121 W of 400 W** with SM clocks pinned at 1410 MHz. Kernels resident half
-the time doing almost no arithmetic — that is a tiny-kernel launch flood driven
-from Python, not a data-starvation problem. Read power draw, not utilisation.
+but **~110-115 W against a confirmed 400 W limit**, SM clocks pinned at
+~1400 MHz, and **~0% of time spent accessing memory**. Kernels resident half
+the time doing almost no arithmetic and moving almost no memory — that is a
+tiny-kernel launch flood driven from Python, not a data-starvation problem.
+Read power draw, not utilisation.
 
 **The slow run was optimising correctly.** wandb's training stream for job
 164704 (`lift_bottle-tactile`, 140 steps at 170 s/step): loss 1.20 -> 0.55,
@@ -105,12 +107,36 @@ the action head leaving its initial constant-output plateau, which under
 have been learned. Expect a long flat opening on the real runs and do not read
 it as a failure.
 
-**Still unverified:** the 121 W / 48%-utilisation signature is corroborated
-only by `nvidia-smi` snapshots taken during the run. wandb logged the same
-counters continuously in job 164704's *system* stream, which nobody has read
-back yet -- `python scripts/wandb_report.py 164704`, or the System tab on the
-run page. If it disagrees, the mechanism described above needs correcting (the
-fix does not: 1.89 s/it is measured).
+**Confirmed by wandb's system stream** (read back 2026-09-08). The whole
+6.7-hour run, sampled continuously rather than snapshotted, agrees:
+
+| Counter | Reading | What it settles |
+|---|---|---|
+| GPU power | **~110-115 W sustained** | the `nvidia-smi` snapshot said 121 W; the continuous record is slightly lower, so prefer this range |
+| GPU **enforced power limit** | **400 W, flat** | the low draw is not a power cap and not a broken sensor -- the same GPU in the same job hit 400 W during the intrusion spikes below |
+| GPU utilisation | **~48-52%, flat** | matches the snapshot exactly |
+| SM clock | **pinned ~1400 MHz** | not clock throttling |
+| **GPU time spent accessing memory** | **~0%** | new, and the sharpest single number: kernels are resident half the time while moving essentially no memory *and* drawing no power. Nothing else looks like this |
+| Disk I/O | **~250-400 MB over 6.7 h**, `Disk Utilization (%)` flat 0 | kills "random-access H.264 decode was starving the GPU" with logged data rather than the CPU-time argument |
+| GPU memory errors | **0 corrected, 0 uncorrected** | no ECC or hardware fault |
+| GPU memory allocated | **~45 GB (55%), flat** | steady, no leak or thrash |
+
+Two readings in that dashboard look like contradictions and are not. wandb's
+`Process CPU Utilization (%)` shows **~0**, seemingly against the py-spy
+finding above -- but wandb normalises over every core on the node, and this
+node has 128, so one core pegged at 100% is 0.78% and renders as zero. Same for
+`Process Memory In Use (%)`: 7 GB of ~1.5 TB. And `Network Traffic` (110 GB in,
+310 GB out, in steps) is a **node-wide** counter, not this job's -- our dataset
+is 31 MB.
+
+**Read the first ~150 minutes only.** Everything later is contaminated by the
+SSH intrusion recorded in CLAUDE.md: the power spikes to 330-410 W, the
+utilisation spikes to 90-100%, and above all the **GPU memory spike to ~81 GB
+(99%) at t≈315 min** -- the 37 GB vision-tower benchmark run through
+`srun --overlap` that nearly OOM-killed this job (CLAUDE.md records 80,775 MiB
+of 81,920). The steady state before t≈150 is clean and shows the same
+110 W / 48% / 0%-memory-access / 1400 MHz, so the diagnosis rests on
+uncontaminated data.
 
 **Guard.** `scripts/preflight.py --deep` now asks the loaded cuDNN its own
 version via `cudnnGetVersion()` and fails on a mismatch, because pip metadata
@@ -126,7 +152,7 @@ already in the table below).
 | Symptom | Cause |
 |---|---|
 | `CUDNN_STATUS_NOT_INITIALIZED` | **cuDNN on disk did not match torch's pin** (9.13.0 present, 9.10.2.21 required). Not the driver. `uv cache clean nvidia-cudnn-cu12` then reinstall the pin; `preflight.py --deep` now catches it. Never "fix" it with `DISABLE_CUDNN=1` — that costs 86× |
-| 170 s/step, GPU at 48% but only 121 W | the above, via the patch-embed `Conv3d` falling off the cuDNN path |
+| 170 s/step, GPU at 48% but only ~110 W of a 400 W limit, ~0% memory-access time | the above, via the patch-embed `Conv3d` falling off the cuDNN path |
 | `module must have its parameters ... on device: cpu` | `--num-gpus 2` wraps the model in `nn.DataParallel`, which needs everything on `cuda:0`. **Use 1 GPU.** |
 | `401` on `nvidia/Cosmos-Reason2-2B` | no `HF_TOKEN` in the job. Preflight now probes read access |
 | `hf_transfer` `ValueError` | the flag is a hard error without the package. Now probed before being set |
