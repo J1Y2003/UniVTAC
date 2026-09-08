@@ -190,7 +190,7 @@ model that is not ACT.
 
 | Knob | Paper (ACT) | This repo | |
 | --- | --- | --- | --- |
-| training episodes | **50** per task | **50** per task | **held fixed** |
+| training episodes | 50 per task | **100 per task** (the full release) | **deliberate difference -- disclose** |
 | cameras | per-task, see below | per-task, matched | **held fixed** |
 | evaluation rollouts | **100** | **100**, their seed sequence | **held fixed** |
 | optimization steps | 4,000 | `MAX_STEPS=10000` (N1.7 default) | GR00T's own |
@@ -304,12 +304,12 @@ interval near 20 % is roughly ±8 points, so `insert_hole` at 19.0 % is
 | Item | Paper (ACT) | Us | Status |
 | --- | --- | --- | --- |
 | action chunk length | **50** | `ACTION_HORIZON = 16` | **cannot match.** GR00T N1.7's `action_horizon` is 40 and `validate_action_horizons` rejects a configured horizon above it, so 50 is unreachable. 40 is the closest possible |
-| chunk execution | **time aggregation** (re-plans and averages every step) | receding horizon, `EXECUTION_HORIZON=8` | **not implemented.** `univtac_groot/receding_horizon.py` does execute-k-then-replan only; there is no temporal ensembling. `EXECUTION_HORIZON=1` re-plans every step, which is the closest behaviour, at 8x the inference cost |
+| chunk execution | **time aggregation** (re-plans and averages every step) | receding horizon, `EXECUTION_HORIZON=16` | **not implemented.** `univtac_groot/receding_horizon.py` does execute-k-then-replan only; there is no temporal ensembling. `EXECUTION_HORIZON=1` re-plans every step, which is the closest behaviour, at 16x the inference cost |
 | robot state | unspecified; config says 8-D | 17-D (`eef_9d` + joints + gripper) | disclose |
 
 The execution difference is not neutral. Time aggregation re-plans every
 environment step, so ACT is markedly more closed-loop than GR00T at
-`EXECUTION_HORIZON=8` — and closed-loop control is exactly what helps on
+`EXECUTION_HORIZON=16` — and closed-loop control is exactly what helps on
 contact-rich insertion. That difference currently **favours ACT**, so it is a
 conservative setting for us rather than a flattering one, which is worth saying
 in the writeup either way.
@@ -366,9 +366,17 @@ are averaged over all eight tasks. Training three tasks and comparing a
 three-task mean against their eight-task mean is invalid. Pull ACT's per-task
 rates from the paper's table and compare task by task.
 
-**4. Training episodes: 50, not 100.** Convert with `EPISODES=50`. This also
-makes the epoch count match for free — 4,000 steps x batch 64 = 256,000 samples
-over 50 x ~310 frames is ~16.5 epochs, essentially their number.
+**4. Training episodes: 100 — the full release, and a deliberate difference.**
+ModelScope ships 100 episodes per task (`0.hdf5`..`99.hdf5`); the paper trained
+ACT on 50. We use all 100, so **GR00T trains on twice the demonstrations ACT
+had.** That is a real advantage and it must appear next to the number, not in an
+appendix. Two things make it defensible: 100 is the released dataset rather
+than a private collection, and there is no way to verify *which* 50 the paper
+used anyway. But state it plainly — e.g. "GR00T N1.7, 100 released
+demonstrations per task; ACT numbers as published, 50 demonstrations."
+
+At 10,000 steps x batch 64 that is 640,000 samples over ~28,932, so ~22
+epochs.
 
 **5. Evaluation episodes: 100.** Settled by the paper — *"evaluated over 100
 test rollouts."* `EPISODES` now defaults to 100 everywhere; it was 50, which
@@ -390,8 +398,8 @@ method differences, not unfairness, but they belong next to the number:
 * **Action parameterisation.** `launch_finetune.py` hardcodes
   `use_relative_action = True` and our config marks `joint_position` RELATIVE,
   `gripper_position` ABSOLUTE; ACT predicts absolute joint targets.
-* **Action / execution horizon.** Ours is `ACTION_HORIZON = 16` with
-  `EXECUTION_HORIZON=8`, against GR00T N1.7's default of 40. ACT uses its own
+* **Action / execution horizon.** Ours is `ACTION_HORIZON = 40` with
+  `EXECUTION_HORIZON=16`, against GR00T N1.7's default of 40. ACT uses its own
   chunk size and may use temporal ensembling. This changes the effective
   control rate, so check what their evaluator does.
 * **Image preprocessing.** GR00T resizes to 256x256 and expects RGB (the

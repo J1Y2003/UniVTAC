@@ -147,14 +147,21 @@ the contact-rich insertion/extraction tasks where the benchmark is most
 interesting, and three per-task finetunes at ~2.1 h each is a day's work rather
 than a week's. `TASKS` in `submit_overnight.sh` defaults to exactly these.
 
-**Settled: benchmark, not controlled ablation.** Hold the data (50 episodes),
-the observation space (per-task cameras) and the evaluation protocol (100
-rollouts, their seeds) fixed; run GR00T N1.7 on **its own defaults** for
-everything else — `MAX_STEPS=10000`, batch 64, `ACTION_HORIZON=40`, GR00T's
-learning rate and weight decay. Matching ACT's optimizer would answer the wrong
-question. The one thing to protect against is tuning against the 100 evaluation
-rollouts; if a sweep is wanted, run it on `lift_bottle`, which is not a reported
-task. See [ABLATION.md](ABLATION.md#comparability-with-univtacs-act).
+**Settled: benchmark, not controlled ablation.** Hold the observation space
+(per-task cameras) and the evaluation protocol (100 rollouts, their seeds)
+fixed; run GR00T N1.7 on **its own defaults** for everything else —
+`MAX_STEPS=10000`, batch 64, `ACTION_HORIZON=40`, `EXECUTION_HORIZON=16`,
+GR00T's learning rate and weight decay. Matching ACT's optimizer would answer
+the wrong question.
+
+**Training data: all 100 released episodes per task** (operator's decision,
+2026-09-08), against the paper's 50. So GR00T sees twice the demonstrations ACT
+did — a real advantage that has to be stated next to the number. It does not
+affect the internal tactile ablation, only the external ACT comparison.
+
+The one thing to protect against is tuning against the 100 evaluation rollouts;
+if a sweep is wanted, run it on `lift_bottle`, which is not a reported task.
+See [ABLATION.md](ABLATION.md#comparability-with-univtacs-act).
 
 **Comparison against UniVTAC's own models.** Their configs line up with ours:
 `train_config_vision.yml` ↔ `baseline_finetuned`, `train_config.yml` ↔

@@ -114,7 +114,11 @@ TASK="${TASK:-lift_bottle}"
 TASK_CONFIG="${TASK_CONFIG:-clean}"
 # 100 test rollouts, matching the paper's evaluation protocol.
 EPISODES="${EPISODES:-100}"
-EXECUTION_HORIZON="${EXECUTION_HORIZON:-8}"
+# Execute 16 of each 40-action chunk, then re-plan from a fresh observation.
+# Valid because the contract is 1 <= execution_horizon <= action_horizon.
+# ~19 policy calls per episode at step_lim=300. Must be identical across
+# variants: it sets how closed-loop the controller is.
+EXECUTION_HORIZON="${EXECUTION_HORIZON:-16}"
 # ARM= was the old name for this. Honour it rather than ignoring it: an
 # unrecognised environment variable fails *silently*, so a stale
 # `ARM=baseline_finetuned` command would quietly run the tactile variant
@@ -130,10 +134,10 @@ VARIANTS="${VARIANTS:-tactile baseline_finetuned}"
 # are GR00T's business -- the benchmark fixes the data, the observation space
 # and the evaluation protocol, not the recipe. See docs/ABLATION.md.
 #
-# One thing to watch rather than pre-empt: 10000 steps at batch 64 over 50
-# episodes (~15.5k samples) is ~41 epochs, which is a lot for 50
-# demonstrations. Read the loss curve; if it overfits, pick a step count on a
-# task you are NOT reporting (lift_bottle) and freeze it before evaluating.
+# One thing to watch rather than pre-empt: 10000 steps at batch 64 over the
+# full 100 released episodes (~28.9k samples) is ~22 epochs. Read the loss
+# curve; if it overfits, pick a step count on a task you are NOT reporting
+# (lift_bottle) and freeze it before evaluating.
 #
 # SAVE_TOTAL_LIMIT is 3 rather than GR00T's 5 for disk, not for science: a 3B
 # checkpoint carries optimizer + scheduler + RNG state and lands around 40 GB,

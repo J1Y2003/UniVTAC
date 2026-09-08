@@ -221,7 +221,7 @@ $UNIVTAC_PYTHON scripts/run_eval.py \
 # 4c. One real episode. This starts Isaac Sim, so allow a few minutes.
 $UNIVTAC_PYTHON scripts/run_eval.py \
     --task insert_hole --variant baseline --univtac-root $UNIVTAC_ROOT \
-    --port 5555 --episodes 1 --execution-horizon 8
+    --port 5555 --episodes 1 --execution-horizon 16
 ```
 
 Use `tmux` so a dropped SSH connection does not kill the allocation.

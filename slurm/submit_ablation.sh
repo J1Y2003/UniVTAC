@@ -20,7 +20,7 @@ TASKS="${TASKS:-lift_bottle lift_can insert_HDMI insert_hole insert_tube pull_ou
 VARIANTS="${VARIANTS:-baseline tactile}"
 EPISODES="${EPISODES:-100}"   # paper: "evaluated over 100 test rollouts"
 TASK_CONFIG="${TASK_CONFIG:-demo}"
-EXECUTION_HORIZON="${EXECUTION_HORIZON:-8}"
+EXECUTION_HORIZON="${EXECUTION_HORIZON:-16}"
 
 : "${UNIVTAC_ROOT:?set UNIVTAC_ROOT}"
 : "${GROOT_PYTHON:?set GROOT_PYTHON}"

@@ -19,7 +19,7 @@ Example::
     python scripts/run_eval.py \
         --task insert_hole --task-config demo --variant baseline \
         --host 127.0.0.1 --port 5555 \
-        --episodes 50 --execution-horizon 8 \
+        --episodes 100 --execution-horizon 16 \
         --output eval_result/baseline/insert_hole.jsonl
 """
 

@@ -72,7 +72,7 @@ VARIANT="${VARIANT:-baseline}"                       # baseline | baseline_finet
 TASK="${TASK:-insert_hole}"
 TASK_CONFIG="${TASK_CONFIG:-demo}"
 EPISODES="${EPISODES:-50}"
-EXECUTION_HORIZON="${EXECUTION_HORIZON:-8}"
+EXECUTION_HORIZON="${EXECUTION_HORIZON:-16}"
 SEED_OFFSET="${SEED_OFFSET:-0}"
 
 # Repo + environment paths.

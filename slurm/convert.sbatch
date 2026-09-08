@@ -100,7 +100,15 @@ if [[ -n "${ARM:-}" && -z "${VARIANT:-}" ]]; then
 fi
 VARIANT="${VARIANT:-tactile}"                       # tactile | baseline_finetuned
 TASK_CONFIG="${TASK_CONFIG:-demo}"          # the collection config the demos used
-EPISODES="${EPISODES:-}"                    # empty = all available
+# How many TRAINING episodes to convert. Empty = all available, which is the
+# full released 100 per task -- that is the intended setting.
+#
+# NOTE the name collision: the eval jobs (eval_ablation.sbatch,
+# overnight_ablation.sbatch) use EPISODES for the number of EVALUATION
+# ROLLOUTS, and --export=ALL carries whatever the submitting shell holds. So
+# prefer CONVERT_EPISODES here; EPISODES is still honoured for compatibility.
+CONVERT_EPISODES="${CONVERT_EPISODES:-${EPISODES:-}}"
+EPISODES="${CONVERT_EPISODES}"
 TACTILE_MODE="${TACTILE_MODE:-depth_pool}"
 POOL_ROWS="${POOL_ROWS:-8}"
 POOL_COLS="${POOL_COLS:-6}"
