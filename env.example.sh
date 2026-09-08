@@ -85,8 +85,11 @@ export MODEL_OUTPUT_DIR="/rlwrld-unified-checkpoints/$USER/univtac-groot"
 # scripts, which keeps tens of GB per variant off the home filesystem.
 export CKPT_ROOT="${MODEL_OUTPUT_DIR}"
 
-# Where converted datasets go (only needed for finetuning / the tactile variant).
-export DATA_ROOT="${SCRATCH:-/tmp}/$USER-univtac-datasets"
+# Where converted datasets go. Must be on SHARED storage: the convert job and
+# the training job land on different nodes, and a /tmp default would put the
+# dataset somewhere the trainer cannot see. Matches slurm/submit_overnight.sh's
+# own default, so conversion and training agree without extra flags.
+export DATA_ROOT="$HOME/jaewon/workspace/groot-data"
 
 # --------------------------------------------------------------------------- #
 echo "environment set:"

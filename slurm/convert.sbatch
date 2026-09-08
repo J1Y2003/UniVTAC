@@ -99,7 +99,11 @@ if [[ -n "${ARM:-}" && -z "${VARIANT:-}" ]]; then
   VARIANT="${ARM}"
 fi
 VARIANT="${VARIANT:-tactile}"                       # tactile | baseline_finetuned
-TASK_CONFIG="${TASK_CONFIG:-demo}"          # the collection config the demos used
+# Must match download_data.sbatch's RAW_CONFIG, which is what creates the
+# data/<task>/<config> symlink the converter reads. Both default to `clean`;
+# this used to default to `demo`, so a downloaded task failed to convert with a
+# missing-directory error that pointed nowhere useful.
+TASK_CONFIG="${TASK_CONFIG:-clean}"
 # How many TRAINING episodes to convert. Empty = all available, which is the
 # full released 100 per task -- that is the intended setting.
 #
