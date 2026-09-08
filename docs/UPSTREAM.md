@@ -101,39 +101,39 @@ UniVTAC requires Python 3.10 and GR00T requires Python 3.12, so no shared
 virtualenv exists — the split is forced, not chosen. See
 [SETUP.md](SETUP.md#why-it-is-a-separate-process-not-an-import).
 
-## Corrections to the original guideline
+## Easily-mistaken upstream facts
 
-The guideline flagged its own references as preliminary. What research changed:
+Each of these is load-bearing and each contradicts a plausible first guess.
+`guideline.md` is the project's original brief and is superseded wherever it
+conflicts with this file.
 
-1. **`gr00t-leapp-export` / `new_embodiment_config_defaults.py` do not exist.**
-   The real equivalents are `gr00t/configs/data/embodiment_configs.py` (which
-   defines `MODALITY_CONFIGS` and `register_modality_config`) and
-   `examples/SO100/so100_config.py` (the worked custom-embodiment example). This
-   repo follows those.
+1. **Custom embodiments register through
+   `gr00t/configs/data/embodiment_configs.py`**, which defines
+   `MODALITY_CONFIGS` and `register_modality_config`;
+   `examples/SO100/so100_config.py` is the worked example. There is no
+   `gr00t-leapp-export` package and no `new_embodiment_config_defaults.py`.
 
-2. **The action horizon is 40, not 16.** The guideline's "e.g. 16-step horizons"
-   describes N1.5/N1.6. N1.7's default is 40; shipped posttrain configs use 16 or
-   8. Nothing here hard-codes a horizon — it is read from the live policy.
+2. **N1.7's default action horizon is 40**, not 16 — 16 is N1.5/N1.6, and
+   shipped posttrain configs use 16 or 8. Nothing here hard-codes a horizon; it
+   is read from the live policy.
 
-3. **UniVTAC's tactile sensors are camera-based.** The guideline's earlier
-   premise of a small numeric tactile array does not match the simulator: a
-   reading is a 320×240 height map or a 64-marker motion field. Flattening
-   either raw exceeds the 132-D state cap, hence `TactileSpec`'s pooling. (The
-   guideline's earlier mention of a RobotEra XHAND1 also does not appear
-   anywhere in UniVTAC, which is Franka Panda only; the guideline was corrected
-   on this point.)
+3. **UniVTAC's tactile sensors are camera-based.** A reading is a 320x240
+   height map or a 64-marker motion field, not a small numeric array.
+   Flattening either raw exceeds the 132-D state cap, which is why
+   `TactileSpec` pools. UniVTAC is Franka Panda only — no other manipulator
+   appears anywhere in it.
 
-4. **`lerobot` is not used for model instantiation.** GR00T N1.7 ships its own
-   `Gr00tPolicy` over `transformers`' `AutoModel`/`AutoProcessor`, and its own
-   server/client, evaluation loop and horizon contract. `lerobot` remains
-   relevant only as the *dataset format* (v2 + `modality.json`), which
-   `scripts/convert_univtac_to_lerobot.py` writes directly. Pulling in
-   `lerobot` as a library would add a torch dependency for no benefit.
+4. **`lerobot` is a dataset format here, not a library dependency.** GR00T N1.7
+   ships its own `Gr00tPolicy` over `transformers`' `AutoModel`/`AutoProcessor`,
+   plus its own server/client, evaluation loop and horizon contract. Only the
+   on-disk format matters (v2 + `modality.json`), which
+   `scripts/convert_univtac_to_lerobot.py` writes directly. Importing `lerobot`
+   would add a torch dependency for no benefit.
 
-5. **The tactile variant cannot be evaluated zero-shot.** See
-   [ABLATION.md](ABLATION.md). This is the single most consequential finding for
-   the experiment's design, and it follows from `FINETUNE_ONLY_TAGS` shipping in
-   no checkpoint.
+5. **The tactile variant cannot be evaluated zero-shot**, because
+   `FINETUNE_ONLY_TAGS` ships in no checkpoint. This is the single most
+   consequential constraint on the experiment's design — see
+   [ABLATION.md](ABLATION.md).
 
 ## Known environment constraints
 
@@ -144,12 +144,11 @@ requires **`nvidia-cudnn-cu12==9.10.2.21`** (= `91002`); a venv carrying a
 different cuDNN reports `CUDNN_STATUS_NOT_INITIALIZED` while cuBLAS keeps
 working, which reads convincingly like a too-old driver and is not.
 
-This was diagnosed wrongly here for days -- an earlier version of this file
-asserted "cuDNN 9.13 fails to initialise on a driver older than r570" and
-recommended `--disable-cudnn` as a viable workaround. Both halves were wrong:
-the venv simply had 9.13 on disk instead of the pinned 9.10.2, and disabling
-cuDNN costs ~86x on the vision tower rather than being roughly free. Verify by
-asking the loaded library, not pip metadata, and see
+Two claims to reject on sight, because both are wrong and both are plausible:
+that 9.13 fails on a driver older than r570 (it is the pin mismatch, not the
+driver), and that `--disable-cudnn` is a viable workaround (it costs ~86x on
+the vision tower). Verify by asking the loaded library, not pip metadata, and
+see
 [SETUP.md](SETUP.md#cudnn-check-the-library-not-the-metadata).
 
 **Driver versions vary across this fleet.** Observed: `worker-node3` (A100

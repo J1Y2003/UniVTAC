@@ -234,13 +234,22 @@ the pipeline works end to end and you can submit in bulk.
 ```bash
 cd $REPO_ROOT
 
-# One task, 50 episodes.
-sbatch --wckey=project-short-name:sub_4dpdata --export=ALL,VARIANT=baseline,TASK=insert_hole slurm/eval_ablation.sbatch
+# The benchmark: finetune then evaluate, one job per task. --dry runs the
+# full preflight and submits nothing, which is how to check paths and
+# datasets without spending queue time.
+bash slurm/submit_benchmark.sh --dry
+bash slurm/submit_benchmark.sh
 
-# Or all eight benchmark tasks for the baseline variant.
+squeue -u $USER -o '%.8i %.12P %.70j %.9T %.10M %.20R'
+```
+
+That covers the three reported tasks plus `lift_bottle`, gated behind them.
+To evaluate a checkpoint that already exists without retraining, or to add the
+zero-shot `baseline` row:
+
+```bash
+BASELINE_FT_MODEL=/ckpt/univtac-insert_hole/final bash slurm/submit_ablation.sh
 VARIANTS=baseline bash slurm/submit_ablation.sh
-
-squeue -u $USER
 ```
 
 `eval_ablation.sbatch` runs the server *and* the evaluator inside the one job, so
@@ -268,28 +277,32 @@ The tactile variant **cannot run zero-shot**: extra state dimensions require the
 finetune first — days of work, not minutes.
 
 ```bash
-# 7. Collect demonstrations for each task you will evaluate.   [compute]
-cd $UNIVTAC_ROOT && conda activate UniVTAC
-bash collect_data.sh insert_hole demo 0
-
-# 8. Convert to GR00T LeRobot v2. CPU-only, minutes-hours.     [login] -> [compute]
-#    Runs under $CONVERT_PYTHON (your univtac-groot env), not the simulator's.
+# 7. Get demonstrations. The released data (100 episodes per task) is the
+#    intended source; collecting your own is only for tasks not in the release.
+#    CPU-only, so --partition=cpu. ~24 GB per task.              [login] -> [compute]
 cd $REPO_ROOT
-sbatch --wckey=project-short-name:sub_4dpdata --partition=cpu --export=ALL,TASK=insert_hole,VARIANT=tactile           slurm/convert.sbatch
-sbatch --wckey=project-short-name:sub_4dpdata --partition=cpu --export=ALL,TASK=insert_hole,VARIANT=baseline_finetuned slurm/convert.sbatch
+sbatch --wckey=project-short-name:sub_4dpdata --partition=cpu \
+    --export=ALL,TASKS=insert_hole,VERSION=45,RAW_CONFIG=clean slurm/download_data.sbatch
 
-# 9. Finetune both variants with the SAME recipe.                  [login] -> [compute]
-sbatch --export=ALL,VARIANT=tactile,DATASET=$DATA_ROOT/univtac-insert_hole-tactile \
-    slurm/finetune.sbatch
-sbatch --export=ALL,VARIANT=baseline_finetuned,DATASET=$DATA_ROOT/univtac-insert_hole-baseline_finetuned \
-    slurm/finetune.sbatch
+# 8. Convert to GR00T LeRobot v2, once per variant -- the state layout differs.
+#    CPU-only, minutes. Runs under $CONVERT_PYTHON, not the simulator's Python.
+for v in tactile baseline_finetuned; do
+  sbatch --wckey=project-short-name:sub_4dpdata --partition=cpu \
+      --export=ALL,TASK=insert_hole,VARIANT=$v,TASK_CONFIG=clean slurm/convert.sbatch
+done
 
-# 10. Evaluate both, then compare them against each other.
-sbatch --wckey=project-short-name:sub_4dpdata --export=ALL,VARIANT=tactile,TASK=insert_hole,GROOT_MODEL=<ckpt> slurm/eval_ablation.sbatch
-sbatch --wckey=project-short-name:sub_4dpdata --export=ALL,VARIANT=baseline_finetuned,TASK=insert_hole,GROOT_MODEL=<ckpt> slurm/eval_ablation.sbatch
+# 9. Finetune and evaluate both, same recipe, in one resumable job.
+#    EXTRA_TASKS="" skips the gated lift_bottle run.        [login] -> [compute]
+VARIANTS="tactile baseline_finetuned" TASKS=insert_hole EXTRA_TASKS="" \
+    bash slurm/submit_benchmark.sh
 
+# 10. Compare them against each other.
 python scripts/compare_ablation.py --baseline-variant baseline_finetuned --tactile-variant tactile
 ```
+
+Every `sbatch` needs `--wckey`, and every CPU-only job needs `--partition=cpu`;
+the submit filter rejects them otherwise. `submit_benchmark.sh` adds both for
+you, which is the main reason to prefer it over hand-written `sbatch` lines.
 
 Compare the tactile variant against `baseline_finetuned`, not against the zero-shot
 baseline — otherwise the whole finetuning effect gets credited to touch.

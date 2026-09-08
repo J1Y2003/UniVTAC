@@ -95,11 +95,13 @@ export UNIVTAC_ROOT=~/UniVTAC
 export UNIVTAC_PYTHON=$(conda run -n UniVTAC which python)
 export GROOT_PYTHON=~/Isaac-GR00T/.venv/bin/python   # uv's venv, not a conda env
 
-# Baseline, one task, 50 episodes
-sbatch --wckey=project-short-name:sub_4dpdata --export=ALL,VARIANT=baseline,TASK=insert_hole slurm/eval_ablation.sbatch
+# The benchmark: finetune then evaluate, one job per task.
+# --dry runs the full preflight and submits nothing.
+bash slurm/submit_benchmark.sh --dry
+bash slurm/submit_benchmark.sh
 
-# The full sweep: both variants x eight tasks
-TACTILE_MODEL=/ckpt/univtac-tactile/checkpoint-20000 bash slurm/submit_ablation.sh
+# Re-evaluate an existing checkpoint without retraining
+BASELINE_FT_MODEL=/ckpt/univtac-insert_hole/final bash slurm/submit_ablation.sh
 
 # Aggregate (safe on a login node: reads scalars only)
 python scripts/compare_ablation.py --results-dir eval_result --json ablation.json
@@ -148,26 +150,33 @@ univtac_groot/
   env_wrapper.py        Gymnasium surface over UniVTAC's BaseTask
   rollout.py            Episode loop: seeding, logging, error handling
   metrics.py            JSONL results, success rates, Wilson intervals
-  variants.py               The two ablation variants as one shared spec
+  variants.py           The variants and the per-task camera table
   server/run_server.py  GR00T-side inference server
 policy/GR00T/           Drop-in plug-in for UniVTAC's own evaluator
 configs/modality/       GR00T ModalityConfigs for the finetuned variants
 scripts/
-  run_eval.py                    Headless eval driver
-  compare_ablation.py            Ablation table
-  convert_univtac_to_lerobot.py  UniVTAC HDF5 -> GR00T LeRobot v2 (for finetuning)
-slurm/
-  install_univtac.sbatch  Batch-safe wrapper for UniVTAC's install.sh
-  eval_ablation.sbatch    Server + evaluator in one GPU job
-  convert.sbatch          Dataset conversion (CPU-only, array-capable)
-  finetune.sbatch         GR00T finetune for an variant
-  submit_ablation.sh      Sweep submitter
   preflight.py                   Setup checklist; prints the next command
+  run_eval.py                    Headless eval driver
+  compare_ablation.py            Results table
+  convert_univtac_to_lerobot.py  UniVTAC HDF5 -> GR00T LeRobot v2
+  wandb_report.py                Read a run's training + system metrics back
+slurm/
+  submit_benchmark.sh     THE ENTRY POINT: finetune + evaluate, one job per task
+  benchmark_task.sbatch   What it submits; resumable, recipe-pinned
+  submit_ablation.sh      Eval-only sweep over checkpoints that already exist
+  eval_ablation.sbatch    Server + evaluator in one GPU job
+  download_data.sbatch    Fetch released demonstrations (CPU-only)
+  convert.sbatch          Dataset conversion (CPU-only, array-capable)
+  finetune.sbatch         GR00T finetune for one variant
+  smoke_test.sh           20 steps + 1 eval episode, isolated from real runs
+  preserve_outputs.sh     Rescue checkpoints from NFS retention
+  install_univtac.sbatch  Batch-safe wrapper for UniVTAC's install.sh
 docs/RUNBOOK.md         Ordered: nothing -> an evaluation number  <- start here
 docs/SETUP.md           Prerequisites, environments, common failures
+docs/STATUS.md          Current state, decisions in force, failure -> cause
 docs/ABLATION.md        Experimental design, constraints, calibration checks
 docs/UPSTREAM.md        Every upstream fact this code relies on, with citations
-tests/                  94 tests; no GPU, Isaac Sim, or gr00t needed
+tests/                  No GPU, Isaac Sim, or gr00t needed
 ```
 
 ## Tests

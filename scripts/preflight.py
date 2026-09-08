@@ -622,7 +622,7 @@ def next_step(*, have_results: bool, deep: bool) -> str:
         )
     return (
         "  python scripts/compare_ablation.py     # you have results; aggregate them\n"
-        "  # or submit the rest of the sweep: bash slurm/submit_ablation.sh"
+        "  # or run the benchmark: bash slurm/submit_benchmark.sh --dry"
     )
 
 

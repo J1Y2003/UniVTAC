@@ -53,28 +53,29 @@ number and report the zero-shot variant separately.
 
 ## Running it end to end
 
+The whole tactile ablation for one task, given data already downloaded and
+converted (see [RUNBOOK.md](RUNBOOK.md)):
+
 ```bash
-# 0. Collect demonstrations with UniVTAC (its own tooling)
-cd "$UNIVTAC_ROOT" && bash collect_data.sh insert_hole demo
+# One dataset per variant -- the state layout differs, so they cannot share one
+for v in baseline_finetuned tactile; do
+  sbatch --wckey=project-short-name:sub_4dpdata --partition=cpu \
+    --export=ALL,TASK=insert_hole,VARIANT=$v,TASK_CONFIG=clean slurm/convert.sbatch
+done
 
-# 1. Convert once per variant — the state layout differs
-python scripts/convert_univtac_to_lerobot.py --task insert_hole \
-    --raw-dir "$UNIVTAC_ROOT/data/insert_hole/demo" \
-    --out "$DATA/univtac-insert_hole-baseline" --variant baseline_finetuned
-python scripts/convert_univtac_to_lerobot.py --task insert_hole \
-    --raw-dir "$UNIVTAC_ROOT/data/insert_hole/demo" \
-    --out "$DATA/univtac-insert_hole-tactile" --variant tactile
+# Finetune and evaluate both, same recipe, in one resumable job
+VARIANTS="tactile baseline_finetuned" TASKS=insert_hole EXTRA_TASKS="" \
+  bash slurm/submit_benchmark.sh
 
-# 2. Finetune both, same recipe
-sbatch --wckey=project-short-name:sub_4dpdata --export=ALL,VARIANT=baseline_finetuned,DATASET=$DATA/univtac-insert_hole-baseline slurm/finetune.sbatch
-sbatch --wckey=project-short-name:sub_4dpdata --export=ALL,VARIANT=tactile,DATASET=$DATA/univtac-insert_hole-tactile           slurm/finetune.sbatch
-
-# 3. Evaluate all three variants
-bash slurm/submit_ablation.sh   # VARIANTS="baseline baseline_finetuned tactile"
-
-# 4. Table
+# Table
 python scripts/compare_ablation.py --baseline-variant baseline_finetuned --tactile-variant tactile
 ```
+
+`benchmark_task.sbatch` pins the recipe (GPU count, `MAX_STEPS`, lr, weight
+decay) on its first run for a task and refuses a mismatch afterwards, which is
+what keeps the two variants comparable. Add the zero-shot `baseline` row with
+`VARIANTS=baseline bash slurm/submit_ablation.sh` -- it needs no finetune, and
+it is not a fair comparator to a finetuned model.
 
 ## How tactile enters the observation
 

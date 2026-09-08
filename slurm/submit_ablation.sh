@@ -1,5 +1,12 @@
 #!/bin/bash
-# Submit the full ablation sweep: both variants x all UniVTAC benchmark tasks.
+# EVALUATION-ONLY sweep: one eval job per (variant, task) against checkpoints
+# that ALREADY EXIST. It trains nothing.
+#
+# This is not the script that runs the benchmark. For that use
+# slurm/submit_benchmark.sh, which finetunes and then evaluates, one job per
+# task. Come here to re-evaluate a finished checkpoint -- a different
+# EXECUTION_HORIZON, more episodes, the zero-shot `baseline` -- without paying
+# for training again.
 #
 # Prints the sbatch commands and submits them. Everything is non-interactive;
 # set DRY_RUN=1 to print without submitting.
@@ -16,10 +23,18 @@ set -euo pipefail
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
 # The eight benchmark tasks under UniVTAC/envs/ ('collect' is data-gen only).
-TASKS="${TASKS:-lift_bottle lift_can insert_HDMI insert_hole insert_tube pull_out_key put_bottle_in_shelf grasp_classify}"
-VARIANTS="${VARIANTS:-baseline tactile}"
+# The three reported tasks, matching submit_benchmark.sh. Pass TASKS="..." for
+# others; all eight are lift_bottle lift_can insert_HDMI insert_hole
+# insert_tube pull_out_key put_bottle_in_shelf grasp_classify.
+TASKS="${TASKS:-insert_hole insert_tube pull_out_key}"
+# Vision-only, matching what is actually being trained. `baseline` is the
+# ZERO-SHOT model and is not a fair comparator to a finetuned one; `tactile`
+# needs a tactile finetune that does not currently exist.
+VARIANTS="${VARIANTS:-baseline_finetuned}"
 EPISODES="${EPISODES:-100}"   # paper: "evaluated over 100 test rollouts"
-TASK_CONFIG="${TASK_CONFIG:-demo}"
+# `clean` everywhere: it is what download_data.sbatch creates the
+# data/<task>/<config> symlink for, and what convert.sbatch reads.
+TASK_CONFIG="${TASK_CONFIG:-clean}"
 EXECUTION_HORIZON="${EXECUTION_HORIZON:-16}"
 
 : "${UNIVTAC_ROOT:?set UNIVTAC_ROOT}"

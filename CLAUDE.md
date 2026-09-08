@@ -69,21 +69,21 @@ it contains `univtac_groot/spec.py`. Do not "simplify" that back.
 left over from testing makes the job exit in seconds having trained nothing;
 the submitters pin `DRY_RUN=0` for this reason.
 
-**cuDNN: ask the library, not pip.** `CUDNN_STATUS_NOT_INITIALIZED` here was a
-cuDNN 9.13 sitting in the GR00T venv where torch 2.9.0+cu128 pins 9.10.2.21 --
-not the too-old driver that `docs/SETUP.md` asserted for days. `uv pip list`
-reported the pinned version while the files on disk were another release, so
-only `ctypes.CDLL("libcudnn.so.9").cudnnGetVersion()` catches it (want
-`91002`); `scripts/preflight.py --deep` now does. Never reach for
-`DISABLE_CUDNN=1`: it costs ~86x on Qwen3-VL's patch-embed `Conv3d` and was
-what made a training step take 170 s.
+**cuDNN: ask the library, not pip.** `CUDNN_STATUS_NOT_INITIALIZED` means the
+GR00T venv's cuDNN is not the `9.10.2.21` that torch 2.9.0+cu128 pins. It is
+not the driver. `uv pip list` reports the pinned version even when the files on
+disk are another release, so only
+`ctypes.CDLL("libcudnn.so.9").cudnnGetVersion()` catches it (want `91002`);
+`scripts/preflight.py --deep` does. Never reach for `DISABLE_CUDNN=1`: it costs
+~86x on Qwen3-VL's patch-embed `Conv3d` and turns a 1.89 s training step into
+170 s.
 
-**Verify upstream, do not assume.** Several confident assumptions were wrong and
-cost real time: the guideline's 16-step action horizon (it is 40), tactile as a
-small array (it is 320x240 imagery), the dataset's HDF5 layout (images are JPEG
-byte streams; state/action are a one-step shift of a single `embodiment/joint`
-array), and the marker field's shape. `docs/UPSTREAM.md` records each fact with
-its source; add to it rather than re-deriving.
+**Verify upstream, do not assume.** The facts most likely to be guessed wrong:
+the action horizon is **40**, not 16; tactile is **320x240 imagery**, not a
+small array; in the dataset's HDF5 images are **JPEG byte streams** and
+state/action are a **one-step shift of a single `embodiment/joint` array**; and
+the marker field's shape is not what its name suggests. `docs/UPSTREAM.md`
+records each with its source -- add to it rather than re-deriving.
 
 ## Cluster rules (Kakao SLURM)
 
