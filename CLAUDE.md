@@ -127,6 +127,18 @@ unhelpful "Unspecified error":
 - **no** `--time` — a job gets the partition maximum, or runs until the script
   exits, so a limit can only cut the run short. Over-requesting also leaves it
   pending forever with `REASON=PartitionTimeLimit`
+- **`--partition=cpu` for any job that does not request a GPU.** The GPU
+  partitions refuse them: `GPU 파티셔엘엔` — in full,
+  `GPU 파티션에는 GPU를 요십한 잡만 제제할 수 있습니다`.
+  The two CPU-only jobs here are `download_data.sbatch` and `convert.sbatch`;
+  both carry `#SBATCH --partition=cpu`. The other four request `--gres=gpu:N`
+  and belong on a GPU partition.
+
+  Same precedence trap as the wckey: `--partition` follows
+  **command line > `SBATCH_PARTITION` > `#SBATCH` directive**, and
+  `env.example.sh` suggests exporting `SBATCH_PARTITION` for the long-running
+  GPU partition — which would silently override the header on exactly these
+  two jobs. Pass `--partition=cpu` on the command line as well.
 
 Because `--cpus-per-task` is rejected, `SLURM_CPUS_PER_TASK` is `1` inside a
 job even when it really holds 12 CPUs. Size thread pools off
