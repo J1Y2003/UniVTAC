@@ -36,6 +36,11 @@
 #SBATCH --output=logs/%x-%A_%a.out
 #SBATCH --error=logs/%x-%A_%a.err
 #SBATCH --gres=gpu:1
+# Evaluation is not allowed on sjw_alinlab. This header is the floor, not the
+# guarantee: --partition on the command line and SBATCH_PARTITION in the shell
+# both outrank it, which is why slurm/submit_ablation.sh and
+# slurm/submit_benchmark.sh also pass it explicitly.
+#SBATCH --partition=background
 #SBATCH --wckey=project-short-name:sub_4dpdata
 
 set -euo pipefail

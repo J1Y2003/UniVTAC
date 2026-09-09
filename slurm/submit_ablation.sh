@@ -36,6 +36,11 @@ EPISODES="${EPISODES:-100}"   # paper: "evaluated over 100 test rollouts"
 # data/<task>/<config> symlink for, and what convert.sbatch reads.
 TASK_CONFIG="${TASK_CONFIG:-clean}"
 EXECUTION_HORIZON="${EXECUTION_HORIZON:-16}"
+# Evaluation is not allowed on sjw_alinlab; `background` is where it belongs.
+# Passed on the command line, not left to the #SBATCH header in
+# eval_ablation.sbatch, because a stale SBATCH_PARTITION in the submitting shell
+# outranks the header and would silently put these back on the training queue.
+EVAL_PARTITION="${EVAL_PARTITION:-background}"
 
 : "${UNIVTAC_ROOT:?set UNIVTAC_ROOT}"
 : "${GROOT_PYTHON:?set GROOT_PYTHON}"
@@ -62,6 +67,7 @@ for variant in ${VARIANTS}; do
     # --cpus-per-task, no --mem; --wckey always. See CLAUDE.md, "Cluster rules".
     jobname="univtac-groot-evaluate-one-variant-on-one-task-${variant}-${task}"
     cmd=(sbatch --job-name="${jobname}" --wckey="${WCKEY:-project-short-name:sub_4dpdata}"
+         --partition="${EVAL_PARTITION:-background}"
          --export="${exports}" "${REPO_ROOT}/slurm/eval_ablation.sbatch")
     echo "${cmd[*]}"
     if [[ "${DRY_RUN:-0}" != "1" ]]; then

@@ -244,16 +244,24 @@ the pipeline works end to end and you can submit in bulk.
 ```bash
 cd $REPO_ROOT
 
-# The benchmark: finetune then evaluate, one job per task. --dry runs the
-# full preflight and submits nothing, which is how to check paths and
-# datasets without spending queue time.
+# The benchmark: TWO jobs per task -- a finetune on sjw_alinlab, then an
+# evaluation on background held behind it with --dependency=afterok.
+# --dry runs the full preflight and submits nothing, which is how to check
+# paths and datasets without spending queue time.
 bash slurm/submit_benchmark.sh --dry
 bash slurm/submit_benchmark.sh
 
-squeue -u $USER -o '%.8i %.12P %.70j %.9T %.10M %.20R'
+squeue -u $USER -o '%.8i %.20P %.70j %.9T %.10M %.20R'
 ```
 
 That covers the three reported tasks plus `lift_bottle`, gated behind them.
+
+The split exists because **evaluation is not allowed on `sjw_alinlab`** and one
+job holds one allocation on one partition. Override either side with
+`PARTITION=` (training) and `EVAL_PARTITION=` (evaluation). An eval job showing
+`DependencyNeverSatisfied` means its finetune failed or was killed: resume the
+finetune, `scancel` the orphaned eval, then resubmit that task with
+`TASKS=<task> EXTRA_TASKS= bash slurm/submit_benchmark.sh`.
 To evaluate a checkpoint that already exists without retraining, or to add the
 zero-shot `baseline` row:
 
@@ -262,8 +270,8 @@ BASELINE_FT_MODEL=/ckpt/univtac-insert_hole/final bash slurm/submit_ablation.sh
 VARIANTS=baseline bash slurm/submit_ablation.sh
 ```
 
-`eval_ablation.sbatch` runs the server *and* the evaluator inside the one job, so
-you do not manage the server yourself. Budget ~24 GB VRAM; if your nodes are
+Both default to `background` too. `eval_ablation.sbatch` runs the server *and*
+the evaluator inside the one job, so you do not manage the server yourself. Budget ~24 GB VRAM; if your nodes are
 smaller, add `--gres=gpu:2` and the script splits the two processes across them.
 
 ## Step 6 — read the results `[login]`

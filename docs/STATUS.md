@@ -7,9 +7,14 @@ Last updated 2026-09-08.
 
 ## In flight
 
-Four jobs, one per task, submitted by `slurm/submit_benchmark.sh`:
-`insert_hole`, `insert_tube`, `pull_out_key` unconstrained, then `lift_bottle`
-gated behind all three with `--dependency=afterany`.
+Eight jobs, **two per task**, submitted by `slurm/submit_benchmark.sh`: a
+finetune on `sjw_alinlab` and an evaluation on `background` held behind it with
+`--dependency=afterok`. `insert_hole`, `insert_tube`, `pull_out_key`
+unconstrained, then `lift_bottle` gated behind the three finetunes with
+`--dependency=afterany`.
+
+Jobs 166346-166349, submitted before the split, are the OLD single-job shape and
+would evaluate on `sjw_alinlab`. Cancel and resubmit them.
 
 ## Verified
 
@@ -61,6 +66,12 @@ decay. Matching ACT's optimiser would answer a different question.
 which trains one policy per task. Multi-dataset training would be cheaper and
 arguably a better test of a generalist VLA, but it has GR00T solving a strictly
 harder problem than its baseline. Revisit after the per-task numbers exist.
+
+**Evaluation on `background`, training on `sjw_alinlab`.** Lab policy: no
+evaluation on the lab partition. A job holds one allocation on one partition,
+so each task is two jobs. Unverified and worth checking before a long eval
+lands there: whether `background` preempts, since `scripts/run_eval.py` has no
+resume and would restart from the first seed.
 
 **Vision only.** Only `baseline_finetuned` (17-D state) is trained. The tactile
 pipeline stays in the repo and stays working -- converter, 113-D modality

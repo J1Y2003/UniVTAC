@@ -1,6 +1,17 @@
 #!/bin/bash
-# Full ablation for one task, unattended: finetune both variants, evaluate both,
-# compare. Submit one of these per task and leave it alone; it is resumable.
+# One task's stages, unattended: finetune each variant, evaluate each, compare.
+# Resumable, so a walltime kill plus a plain resubmit continues where it stopped.
+#
+# NOT normally submitted as one job any more. Training and evaluation belong on
+# DIFFERENT PARTITIONS here -- training on sjw_alinlab, evaluation only on
+# `background` -- and one job holds one allocation on one partition. So
+# slurm/submit_benchmark.sh submits this script TWICE per task:
+#
+#   STAGES=finetune        on the training partition
+#   STAGES="eval compare"  on `background`, --dependency=afterok on the above
+#
+# STAGES defaults to all three, so a single-partition run still works for a
+# smoke test or a local `bash` invocation.
 #
 #   sbatch --wckey=project-short-name:sub_4dpdata slurm/benchmark_task.sbatch
 #   sbatch --wckey=project-short-name:sub_4dpdata --export=ALL,TASK=lift_bottle,EPISODES=50 slurm/benchmark_task.sbatch
@@ -135,6 +146,42 @@ if [[ -n "${ARMS:-}" && -z "${VARIANTS:-}" ]]; then
   VARIANTS="${ARMS}"
 fi
 VARIANTS="${VARIANTS:-tactile baseline_finetuned}"
+# Accept ':' and ',' as separators as well as spaces. sbatch --export is itself
+# a COMMA-separated list, so neither a space nor a comma can appear inside one of
+# its values -- 'STAGES=eval,compare' would make SLURM read 'compare' as a
+# variable of its own. The submitters therefore send colons.
+VARIANTS="${VARIANTS//[,:]/ }"
+
+# Which stages this job runs. The default is all three, so a plain
+# `bash slurm/benchmark_task.sbatch` still does the whole task end to end.
+#
+# It is split because THE TWO STAGES BELONG ON DIFFERENT PARTITIONS: training
+# runs on sjw_alinlab, evaluation is only allowed on `background`. One job
+# holds one allocation on one partition, so finetune-then-evaluate in a single
+# job would evaluate wherever it trained. slurm/submit_benchmark.sh therefore
+# submits two jobs per task -- STAGES=finetune on the training partition, then
+# STAGES="eval compare" on `background`, gated behind it with --dependency.
+#
+#   STAGES=finetune        train only, leave the checkpoint for a later job
+#   STAGES="eval compare"  evaluate an existing checkpoint and aggregate
+#
+# Unknown names are rejected rather than silently ignored: a typo'd
+# STAGES=finetne would otherwise run nothing and look like a clean success.
+STAGES="${STAGES:-finetune eval compare}"
+STAGES="${STAGES//[,:]/ }"   # same reason as VARIANTS above
+for _stage in ${STAGES}; do
+  case "${_stage}" in
+    finetune|eval|compare) ;;
+    *) echo "error: unknown stage '${_stage}' in STAGES='${STAGES}'." >&2
+       echo "       Valid stages: finetune eval compare" >&2
+       exit 2 ;;
+  esac
+done
+stage_enabled() {
+  local want="$1" have
+  for have in ${STAGES}; do [[ "${have}" == "${want}" ]] && return 0; done
+  return 1
+}
 
 # GR00T's own defaults: --max-steps 10000, --save-steps 1000. Hyperparameters
 # are GR00T's business -- the benchmark fixes the data, the observation space
@@ -250,6 +297,7 @@ record() { SUMMARY+=("$1"); echo "[stage] $1"; }
 # --------------------------------------------------------------------------- #
 banner "preflight"
 echo " task=${TASK} config=${TASK_CONFIG} variants='${VARIANTS}' episodes=${EPISODES}"
+echo " stages='${STAGES}'"
 echo " gpus=${NUM_GPUS} (CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:-unset})"
 echo " data=${DATA_ROOT}"
 echo " ckpt=${CKPT_ROOT}"
@@ -306,7 +354,9 @@ fi
 
 # Same lesson as hf_transfer: do not pass a flag whose package may be absent.
 # --use-wandb with no wandb installed would fail after the weights had loaded.
-if [[ "${USE_WANDB:-1}" == "1" ]]; then
+# Only the finetune stage passes --use-wandb, so an eval-only job must not be
+# blocked by a missing wandb.
+if stage_enabled finetune && [[ "${USE_WANDB:-1}" == "1" ]]; then
   "${GROOT_PYTHON}" -c "import wandb" 2>/dev/null \
     || fatal "USE_WANDB=1 but ${GROOT_PYTHON} cannot import wandb. Install it in
        that venv, or pass USE_WANDB=0 to rely on the stdout logs alone."
@@ -315,6 +365,10 @@ fi
 # A missing or truncated dataset is the classic way a long unattended run wastes a
 # night, so verify shape now rather than discovering it at step 0 of training.
 for variant in ${VARIANTS}; do
+  # Evaluation never opens the training dataset -- it talks to the policy server
+  # and Isaac Sim -- so an eval-only job must not fail on one that has since been
+  # archived off NFS by the 4-day retention.
+  stage_enabled finetune || continue
   dataset="${DATA_ROOT}/univtac-${TASK}-${variant}"
   if [[ ! -d "${dataset}" ]]; then
     fatal "no dataset for variant '${variant}' at ${dataset}"
@@ -346,7 +400,11 @@ done
 # later run differs. Set ALLOW_RECIPE_CHANGE=1 to override deliberately (e.g.
 # you are restarting the whole experiment from scratch).
 RECIPE_FILE="${STAGE_DIR}/recipe-${TASK}.env"
-if [[ -f "${RECIPE_FILE}" ]]; then
+# The pin exists to keep the two variants TRAINED alike; an eval-only job has no
+# recipe, and checking one would fail it purely for holding a different GPU count.
+if ! stage_enabled finetune; then
+  echo " recipe: not checked (this job does not train)"
+elif [[ -f "${RECIPE_FILE}" ]]; then
   RECORDED_NUM_GPUS=""; RECORDED_MAX_STEPS=""
   RECORDED_LEARNING_RATE=""; RECORDED_WEIGHT_DECAY=""
   # shellcheck source=/dev/null
@@ -422,6 +480,10 @@ latest_checkpoint() {
 # 2. Finetune each variant
 # --------------------------------------------------------------------------- #
 for variant in ${VARIANTS}; do
+  if ! stage_enabled finetune; then
+    record "finetune ${variant}: SKIPPED (not in STAGES='${STAGES}')"
+    continue
+  fi
   out_dir="${CKPT_ROOT}/${TASK}-${variant}"
   marker="${STAGE_DIR}/finetune-${TASK}-${variant}.done"
   log="${STAGE_LOG_DIR}/finetune-${variant}.log"
@@ -495,6 +557,10 @@ done
 # 3. Evaluate each variant that produced a checkpoint
 # --------------------------------------------------------------------------- #
 for variant in ${VARIANTS}; do
+  if ! stage_enabled eval; then
+    record "eval ${variant}: SKIPPED (not in STAGES='${STAGES}')"
+    continue
+  fi
   out_dir="${CKPT_ROOT}/${TASK}-${variant}"
   # Prefer the stable `final` symlink the finetune stage writes; fall back to
   # probing, so an externally trained output_dir still evaluates.
@@ -563,7 +629,9 @@ done
 banner "compare"
 # Even in a dry run, check the aggregator parses and its flags exist -- a typo
 # here would otherwise only surface after both finetunes and both evals.
-if [[ "${DRY_RUN:-0}" == "1" ]]; then
+if ! stage_enabled compare; then
+  record "compare: SKIPPED (not in STAGES='${STAGES}')"
+elif [[ "${DRY_RUN:-0}" == "1" ]]; then
   if "${UNIVTAC_PYTHON}" "${REPO_ROOT}/scripts/compare_ablation.py" --help >/dev/null 2>&1; then
     record "compare: DRY-RUN (script imports and --help works)"
   else

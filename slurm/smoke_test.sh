@@ -54,9 +54,15 @@ EPISODES="${EPISODES:-1}"
 
 # 1 GPU schedules soonest, and the recipe pinning is isolated under SMOKE_ROOT,
 # so this does not constrain the real run's GPU count.
-PARTITION="${PARTITION:-debug}"
+#
+# `background` rather than `debug`: this job EVALUATES as well as trains -- that
+# is the whole point of it -- and evaluation is only allowed on `background`.
+# The real run splits the two stages across two partitions; the smoke test
+# deliberately does not, because what it proves is that the chain holds inside
+# one job. 20 steps plus one episode fits either partition's limit.
+PARTITION="${PARTITION:-background}"
 GPUS="${GPUS:-1}"
-# No --time: site rule. `debug` caps at 3 h and the job takes that automatically.
+# No --time: site rule. The job takes the partition maximum automatically.
 # Site rule: every sbatch and srun carries this.
 WCKEY="${WCKEY:-project-short-name:sub_4dpdata}"
 # Off by default so a throwaway run does not clutter the real project's plots.

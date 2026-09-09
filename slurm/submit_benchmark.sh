@@ -1,6 +1,10 @@
 #!/bin/bash
-# Submitter for the GR00T N1.7 x UniVTAC benchmark: one finetune-then-evaluate
-# job per task. Run from the repo root:
+# Submitter for the GR00T N1.7 x UniVTAC benchmark: TWO jobs per task, a
+# finetune and then an evaluation held behind it.
+#
+# They are separate jobs because they belong on different partitions --
+# training on sjw_alinlab, evaluation only on `background` -- and one job holds
+# one allocation on one partition. Run from the repo root:
 #
 #   bash slurm/submit_benchmark.sh                 # submit
 #   bash slurm/submit_benchmark.sh --print         # show the sbatch command only
@@ -51,6 +55,15 @@ MODEL_OUTPUT_DIR="${MODEL_OUTPUT_DIR:-/rlwrld-unified-checkpoints/${USER}/checkp
 # `debug` is the cluster default and caps at 3 hours, which is why training jobs
 # sit pending with REASON=PartitionTimeLimit. Name a 2-day partition instead.
 PARTITION="${PARTITION:-sjw_alinlab}"
+# Evaluation is NOT allowed on sjw_alinlab -- it belongs on `background`.
+# That is why each task is TWO jobs and not one: a job holds one allocation on
+# one partition, so a finetune-then-evaluate job would evaluate wherever it
+# trained. The eval job is gated behind its own finetune with
+# --dependency=afterok, so nothing evaluates a checkpoint that does not exist.
+#
+# `background` is PriorityTier 1, below sjw_alinlab's 2 -- it wins nothing in a
+# contest, it simply has a shorter queue when its nodes are idle.
+EVAL_PARTITION="${EVAL_PARTITION:-background}"
 # 1, and do not raise it without fixing the cause first: launch_finetune.py
 # wraps the model in nn.DataParallel for --num-gpus > 1, which fails with
 # "module must have its parameters and buffers ... on device: cuda:0 ... but
@@ -115,7 +128,8 @@ printf '  %-16s %s\n' \
   DATA_ROOT "${DATA_ROOT}" \
   HF_HOME "${HF_HOME}" \
   MODEL_OUTPUT_DIR "${MODEL_OUTPUT_DIR}" \
-  partition "${PARTITION}" \
+  partition "${PARTITION} (finetune)" \
+  eval_partition "${EVAL_PARTITION} (evaluate)" \
   gpus "${GPUS}" \
   wckey "${WCKEY}" \
   tasks "${TASKS}" \
@@ -193,13 +207,30 @@ echo
 # --------------------------------------------------------------------------- #
 # The submit filter rejects job names of 50 characters or fewer, so keep the
 # per-task name long. `%x` in the sbatch --output pattern picks this up, which
-# is what keeps the three tasks' logs apart.
+# is what keeps the tasks' -- and now the two stages' -- logs apart.
+#
+# Shortest possible name here is 55 characters ('finetune-only' + 'lift_bottle'),
+# comfortably over the floor. Do not trim these.
 job_name_for() {
-  printf 'univtac-groot-per-task-finetune-then-evaluate-vision-only-%s' "$1"
+  local task="$1" stage="$2"
+  case "${stage}" in
+    finetune) printf 'univtac-groot-per-task-finetune-only-vision-only-%s' "${task}" ;;
+    eval)     printf 'univtac-groot-per-task-evaluate-only-vision-only-%s' "${task}" ;;
+    *) echo "job_name_for: unknown stage '${stage}'" >&2; return 1 ;;
+  esac
 }
 
+# `stage` is passed through as STAGES=, which is what makes one job train and
+# the other evaluate. Everything else is identical between the two.
 exports_for() {
-  local task="$1" e="ALL"
+  local task="$1" stage="$2" e="ALL"
+  # Colon-separated: --export is itself a comma list, so neither a space nor a
+  # comma may appear inside a value. benchmark_task.sbatch splits on ':' again.
+  case "${stage}" in
+    finetune) e+=",STAGES=finetune" ;;
+    eval)     e+=",STAGES=eval:compare" ;;
+    *) echo "exports_for: unknown stage '${stage}'" >&2; return 1 ;;
+  esac
   e+=",MODEL_OUTPUT_DIR=${MODEL_OUTPUT_DIR}"
   e+=",UNIVTAC_ROOT=${UNIVTAC_ROOT}"
   e+=",UNIVTAC_PYTHON=${UNIVTAC_PYTHON}"
@@ -210,7 +241,7 @@ exports_for() {
   e+=",TASK=${task}"
   e+=",TASK_CONFIG=${TASK_CONFIG}"
   e+=",EPISODES=${EPISODES}"
-  e+=",VARIANTS=${VARIANTS}"
+  e+=",VARIANTS=${VARIANTS// /:}"   # same reason as STAGES above
   # DRY_RUN must be pinned off: if it is exported in the calling shell (from
   # testing), --export=ALL would carry it in and the job would exit in seconds
   # having trained nothing.
@@ -218,23 +249,36 @@ exports_for() {
   printf '%s' "${e}"
 }
 
+# sbatch_args_for <task> <stage> [dependency-spec]
+#
+# The dependency spec is passed WHOLE, e.g. 'afterok:123' or 'afterany:1:2:3',
+# because the two callers need different kinds:
+#
+#   afterok  -- the eval job on its own finetune. It is a real data dependency:
+#               there is no checkpoint to evaluate if training did not finish.
+#               The cost is that a failed or walltime-killed finetune leaves the
+#               eval job in DependencyNeverSatisfied, needing a scancel and a
+#               resubmit once the finetune is resumed.
+#   afterany -- an EXTRA task's finetune on the reported tasks' finetunes. That
+#               one is pure queue ordering, not a data dependency, so a priority
+#               task crashing must not abandon it.
+#
+# --partition is passed on the COMMAND LINE, not left to a #SBATCH header: it
+# beats a stale SBATCH_PARTITION in the submitting shell, which would otherwise
+# silently put the eval job back on the training partition.
 sbatch_args_for() {
-  local task="$1" dep="${2:-}"
+  local task="$1" stage="$2" dep="${3:-}" partition="${PARTITION}"
+  [[ "${stage}" == "eval" ]] && partition="${EVAL_PARTITION}"
   # No --time, no --cpus-per-task, no --mem: all three are site rules. See the
   # note at the top of slurm/benchmark_task.sbatch.
   SBATCH_ARGS=(
-    --partition="${PARTITION}"
+    --partition="${partition}"
     --gres="gpu:${GPUS}"
     --wckey="${WCKEY}"
-    --job-name="$(job_name_for "${task}")"
-    --export="$(exports_for "${task}")"
+    --job-name="$(job_name_for "${task}" "${stage}")"
+    --export="$(exports_for "${task}" "${stage}")"
   )
-  # afterany, not afterok: an extra task is an independent finetune on its own
-  # dataset, so a priority task crashing is no reason to abandon it. The
-  # dependency exists purely to order the QUEUE, not to express a data
-  # dependency. (afterok would leave lift_bottle stuck in DependencyNeverSatisfied
-  # forever if one of the three failed, needing a manual scancel.)
-  [[ -n "${dep}" ]] && SBATCH_ARGS+=(--dependency="afterany:${dep}")
+  [[ -n "${dep}" ]] && SBATCH_ARGS+=(--dependency="${dep}")
 }
 
 case "${MODE}" in
@@ -252,56 +296,88 @@ case "${MODE}" in
     ;;
   --print)
     for task in ${ALL_TASKS}; do
-      sbatch_args_for "${task}"
-      echo "sbatch ${SBATCH_ARGS[*]} slurm/benchmark_task.sbatch"
+      for stage in finetune eval; do
+        sbatch_args_for "${task}" "${stage}"
+        echo "sbatch ${SBATCH_ARGS[*]} slurm/benchmark_task.sbatch"
+      done
     done
     ;;
   --test-only)
+    # The dependency is left off here on purpose: --test-only would reject an
+    # afterok on a job id that does not exist yet. It tests the submit filter,
+    # which is what this mode is for.
     for task in ${ALL_TASKS}; do
-      sbatch_args_for "${task}"
-      sbatch --test-only "${SBATCH_ARGS[@]}" "${REPO_ROOT}/slurm/benchmark_task.sbatch"
+      for stage in finetune eval; do
+        sbatch_args_for "${task}" "${stage}"
+        sbatch --test-only "${SBATCH_ARGS[@]}" "${REPO_ROOT}/slurm/benchmark_task.sbatch"
+      done
     done
     ;;
   submit)
     cd "${REPO_ROOT}"
     submitted=() ; failed=0
+
+    # Submit one task: its finetune on PARTITION, then its evaluation on
+    # EVAL_PARTITION held behind that finetune. Sets TRAIN_JOBID for the caller
+    # so the extra tasks can be ordered behind the reported tasks' TRAINING,
+    # which is what actually competes for a GPU on the training partition.
+    submit_task() {
+      local task="$1" train_dep="${2:-}" out jobid
+      TRAIN_JOBID=""
+
+      sbatch_args_for "${task}" finetune "${train_dep}"
+      if ! out=$(sbatch --parsable "${SBATCH_ARGS[@]}" slurm/benchmark_task.sbatch); then
+        echo "FAILED to submit finetune for ${task}" >&2
+        failed=1
+        return 1
+      fi
+      jobid="${out%%;*}"
+      TRAIN_JOBID="${jobid}"
+      submitted+=("${jobid} ${task} finetune on ${PARTITION}${train_dep:+ [held: ${train_dep}]}")
+      echo "submitted ${jobid}  ${task}  finetune  (${PARTITION})${train_dep:+  [held: ${train_dep}]}"
+
+      # The eval job is NOT skipped when the finetune fails to submit -- it is
+      # never reached, because we returned above. An eval with no finetune to
+      # wait on would evaluate a checkpoint that will never exist.
+      sbatch_args_for "${task}" eval "afterok:${jobid}"
+      if ! out=$(sbatch --parsable "${SBATCH_ARGS[@]}" slurm/benchmark_task.sbatch); then
+        echo "FAILED to submit eval for ${task} (its finetune ${jobid} is queued)" >&2
+        failed=1
+        return 1
+      fi
+      submitted+=("${out%%;*} ${task} evaluate on ${EVAL_PARTITION} [held: afterok:${jobid}]")
+      echo "submitted ${out%%;*}  ${task}  evaluate  (${EVAL_PARTITION})  [held: afterok:${jobid}]"
+    }
+
     # Phase 1: the reported tasks, unconstrained, so they start as soon as a
     # GPU frees up.
     priority_ids=""
     for task in ${TASKS}; do
-      sbatch_args_for "${task}"
-      if out=$(sbatch --parsable "${SBATCH_ARGS[@]}" slurm/benchmark_task.sbatch); then
-        jobid="${out%%;*}"
-        submitted+=("${jobid} ${task}")
-        priority_ids+="${jobid}:"
-        echo "submitted ${jobid}  ${task}"
-      else
-        echo "FAILED to submit ${task}" >&2
-        failed=1
-      fi
+      # Gate on TRAIN_JOBID, not on submit_task's exit status: the finetune can
+      # queue successfully and its eval still fail to submit, and lift_bottle
+      # must stay ordered behind that finetune either way.
+      submit_task "${task}"
+      [[ -n "${TRAIN_JOBID}" ]] && priority_ids+="${TRAIN_JOBID}:"
     done
-    # Phase 2: the extra tasks, held until every phase-1 job has finished. With
-    # GPUS=1 and one job per task the three run concurrently if the queue
-    # allows; lift_bottle then takes whatever is left.
+    # Phase 2: the extra tasks, held until every phase-1 FINETUNE has finished.
+    # Ordering behind the finetunes rather than the evals is deliberate: the
+    # evals run on a different partition and never compete with training.
     dep="${priority_ids%:}"
     for task in ${EXTRA_TASKS}; do
-      sbatch_args_for "${task}" "${dep}"
-      if out=$(sbatch --parsable "${SBATCH_ARGS[@]}" slurm/benchmark_task.sbatch); then
-        jobid="${out%%;*}"
-        submitted+=("${jobid} ${task} (after ${dep:-nothing})")
-        echo "submitted ${jobid}  ${task}  [held until ${dep:-<no dependency>}]"
-      else
-        echo "FAILED to submit ${task}" >&2
-        failed=1
-      fi
+      submit_task "${task}" "${dep:+afterany:${dep}}"
     done
     if ((${#submitted[@]})); then
       echo
-      echo "Submitted ${#submitted[@]} job(s), one per task (extras held last):"
+      echo "Submitted ${#submitted[@]} job(s) -- two per task, finetune then evaluate"
+      echo "(evaluation on ${EVAL_PARTITION}, extras held last):"
       printf '  %s\n' "${submitted[@]}"
       echo
       echo "Watch them with:"
-      echo "  squeue -u ${USER} -o '%.10i %.60j %.9T %.10M %.20R'"
+      echo "  squeue -u ${USER} -o '%.10i %.20P %.70j %.9T %.10M %.20R'"
+      echo
+      echo "An eval job showing DependencyNeverSatisfied means its finetune failed"
+      echo "or was killed. Resume that finetune, then resubmit its eval alone:"
+      echo "  TASKS=<task> EXTRA_TASKS= bash slurm/submit_benchmark.sh"
       echo "  tail -f logs/univtac-groot-per-task-*.out          # preflight, then stages"
       echo "  tail -f logs/benchmark-<task>-<jobid>/finetune-${VARIANTS%% *}.log"
       echo
@@ -313,7 +389,9 @@ case "${MODE}" in
   *)
     echo "usage: bash slurm/submit_benchmark.sh [--print|--test-only|--dry]" >&2
     echo "  TASKS=\"a b c\"  EXTRA_TASKS=\"d\"  VARIANTS=...  EPISODES=N  GPUS=N" >&2
-    echo "  are all overridable. EXTRA_TASKS run last, gated behind TASKS." >&2
+    echo "  PARTITION=<train>  EVAL_PARTITION=<eval>  are also overridable." >&2
+    echo "  Two jobs per task: finetune on PARTITION, evaluate on EVAL_PARTITION." >&2
+    echo "  EXTRA_TASKS run last, gated behind the reported tasks' finetunes." >&2
     exit 2
     ;;
 esac

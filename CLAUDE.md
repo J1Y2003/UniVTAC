@@ -159,6 +159,16 @@ pending with `PartitionTimeLimit`; every other partition allows 2 days.
 `PriorityTier` is a strict ordering (`background` 1 < `sjw_alinlab` 2 <
 `sjw_alinlab_premium` 3), so a single premium job outranks yours permanently.
 
+**Evaluation may not run on `sjw_alinlab`** -- it goes on `background`, while
+training stays on `sjw_alinlab`. This is lab policy, not something the submit
+filter enforces, so nothing will stop you getting it wrong. A job holds one
+allocation on one partition, which is why finetune and evaluate are **two jobs
+per task**; see "How to run things" below. Note `background` is `PriorityTier`
+1, the *lowest* tier: it wins no contest for a busy node, it is simply a
+shorter queue when its own nodes are idle. Check whether it preempts
+(`scontrol show partition background`) before trusting a long eval to it --
+`scripts/run_eval.py` has no resume and would restart from the first seed.
+
 `logs/` must exist **before** submitting: SLURM opens `--output` before the
 script runs, so a missing directory kills the job with no log at all.
 
@@ -171,7 +181,7 @@ retrain it.
 
 ```bash
 bash slurm/submit_benchmark.sh --dry    # full preflight, no GPU time, no submit
-bash slurm/submit_benchmark.sh          # the real run (one job per task)
+bash slurm/submit_benchmark.sh          # the real run (two jobs per task)
 bash slurm/smoke_test.sh                # 20 steps + 1 eval episode, isolated
 bash slurm/preserve_outputs.sh          # rescue checkpoints from retention
 ```
@@ -179,10 +189,23 @@ bash slurm/preserve_outputs.sh          # rescue checkpoints from retention
 Everything is an overridable env var (`GPUS`, `MAX_STEPS`, `TASK`, `PARTITION`,
 ...). Prefer adding a variable over editing a command line.
 
-`submit_benchmark.sh` submits **one job per task**, in two tiers: `TASKS`
-(the three reported tasks) go first and unconstrained, then `EXTRA_TASKS`
-(`lift_bottle`) is submitted with `--dependency=afterany` on all of them so
-it cannot take a GPU a reported task still wants. `lift_bottle` is separate
+`submit_benchmark.sh` submits **two jobs per task**: a finetune on
+`PARTITION` (`sjw_alinlab`), then an evaluation on `EVAL_PARTITION`
+(`background`) held behind it with `--dependency=afterok`. They are separate
+jobs because evaluation is not allowed on the training partition. Both run
+`benchmark_task.sbatch`, which takes `STAGES` (`finetune` or `eval:compare`);
+colons, not spaces or commas, because `--export` is itself a comma list.
+
+An eval job stuck in `DependencyNeverSatisfied` means its finetune failed or
+was killed -- `afterok` is deliberate, since there is nothing to evaluate
+otherwise. Resume the finetune, `scancel` the orphaned eval, and resubmit that
+task alone: `TASKS=<task> EXTRA_TASKS= bash slurm/submit_benchmark.sh`.
+
+Tasks go in two tiers: `TASKS` (the three reported tasks) first and
+unconstrained, then `EXTRA_TASKS` (`lift_bottle`) with `--dependency=afterany`
+on the reported tasks' **finetunes**, so it cannot take a GPU a reported task
+still wants. (Ordering behind the finetunes, not the evals: the evals are on
+another partition and never compete with training.) `lift_bottle` is separate
 because it is the only task a hyperparameter sweep may touch without
 fitting the reported numbers.
 
