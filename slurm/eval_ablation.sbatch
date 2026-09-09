@@ -8,13 +8,13 @@
 # (policy/smolvla/smolvla_server.py). See docs/SETUP.md.
 #
 # Submit one job per (variant, task). To sweep, use the array form below or the
-# helper: slurm/submit_ablation.sh
+# helper: slurm/eval_checkpoint.sh
 #
 #   env VARIANT=baseline TASK=insert_hole UNIVTAC_JOB_CONFIG=1 bundle-sbatch #     --job-kind eval --checkpoint /physical/path/to/checkpoint-10000 #     --code-git-root "$REPO_ROOT" -- #     --job-name=univtac-groot-evaluate-one-ablation-variant-on-one-univtac-benchmark-task #     --wckey=project-short-name:sub_4dpdata --partition=background -- #     slurm/eval_ablation.sbatch
 #
 # --checkpoint must be a PHYSICAL directory: the launcher rejects symlinks, so
 # the `final` symlink a finetune leaves behind has to be resolved first
-# (readlink -f). slurm/submit_ablation.sh does that for you.
+# (readlink -f). slurm/eval_checkpoint.sh does that for you.
 #
 # SITE RULES (see CLAUDE.md, "Cluster rules"). Enforced here; do not "helpfully"
 # reintroduce any of them:
@@ -37,8 +37,7 @@
 #SBATCH --gres=gpu:1
 # Evaluation is not allowed on sjw_alinlab. This header is the floor, not the
 # guarantee: --partition on the command line and SBATCH_PARTITION in the shell
-# both outrank it, which is why slurm/submit_ablation.sh and
-# slurm/submit_benchmark.sh also pass it explicitly.
+# both outrank it, which is why slurm/eval_checkpoint.sh passes it explicitly.
 
 set -euo pipefail
 
@@ -166,12 +165,80 @@ fi
 # A per-job port keeps concurrent array tasks on one node from colliding.
 PORT="${PORT:-$((20000 + (${SLURM_JOB_ID:-$$} % 20000)))}"
 RESULTS_DIR="${RESULTS_DIR:-${REPO_ROOT}/eval_result}"
-# Overridable, and it matters: without a distinct tag every non-array eval
-# writes seed<offset>-0.jsonl, so two runs into the same RESULTS_DIR silently
-# overwrite each other. slurm/sweep_checkpoints.sh sets RUN_TAG=ckpt<N>.
+# Overridable, and it matters twice over: without a distinct tag every non-array
+# eval writes seed<offset>-0.jsonl, so two runs into one RESULTS_DIR overwrite
+# each other -- and the tag is what makes the path STABLE across a requeue,
+# which is what lets the resume below find the work already done.
+# slurm/eval_checkpoint.sh sets RUN_TAG=ckpt<N>.
 RUN_TAG="${RUN_TAG:-${SLURM_ARRAY_TASK_ID:-0}}"
 OUTPUT="${RESULTS_DIR}/${VARIANT}/${TASK}/seed${SEED_OFFSET}-${RUN_TAG}.jsonl"
 SERVER_LOG="${RESULTS_DIR}/${VARIANT}/${TASK}/server-${RUN_TAG}.log"
+
+# --------------------------------------------------------------------------- #
+# Resume, because `background` preempts with REQUEUE
+# --------------------------------------------------------------------------- #
+# A requeued job re-runs THIS SCRIPT FROM THE TOP with the same job id and the
+# same OUTPUT path. ResultWriter opens that file in append mode, so without the
+# arithmetic below a preemption would append a second pass starting from the
+# first seed -- duplicate seeds, an inflated episode count and a success rate
+# averaged over episodes counted twice.
+#
+# So: read what is already recorded and continue past it. The file is truthful
+# even after a SIGKILL, since every episode is flushed as it completes and each
+# line carries its seed. Errored and skipped episodes consumed a seed but not
+# the episode budget, which is why the two are counted separately -- the resumed
+# run targets the same number of SCORED episodes a clean run would produce.
+EPISODES_TARGET="${EPISODES}"
+EVAL_COMPLETE=0
+BASE_SEED=$(( 1000000 * (1 + SEED_OFFSET) ))
+if [[ -s "${OUTPUT}" ]]; then
+  RESUME_RAW=$("${UNIVTAC_PYTHON}" - "${OUTPUT}" "${BASE_SEED}" <<'PYRESUME' 2>/dev/null || true
+import json, sys
+path, base = sys.argv[1], int(sys.argv[2])
+max_seed, scored = base - 1, 0
+seen = set()
+with open(path, encoding="utf-8") as fh:
+    for line in fh:
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            row = json.loads(line)
+        except json.JSONDecodeError:
+            continue          # a kill mid-write leaves one truncated line
+        seed = row.get("seed")
+        if isinstance(seed, int):
+            max_seed = max(max_seed, seed)
+            if seed in seen:
+                continue      # an earlier pass already counted this seed
+            seen.add(seed)
+        if not row.get("error") and not row.get("skipped"):
+            scored += 1
+print(f"{max_seed + 1} {scored}")
+PYRESUME
+)
+  RESUME_RAW=$(printf '%s' "${RESUME_RAW}" | tr -d '
+')
+  if [[ "${RESUME_RAW}" =~ ^([0-9]+)[[:space:]]+([0-9]+)$ ]]; then
+    RESUME_SEED="${BASH_REMATCH[1]}"
+    RESUME_SCORED="${BASH_REMATCH[2]}"
+    if (( RESUME_SCORED >= EPISODES_TARGET )); then
+      echo "[job] ${OUTPUT} already holds ${RESUME_SCORED}/${EPISODES_TARGET}"
+      echo "[job] scored episodes -- nothing left to run."
+      EVAL_COMPLETE=1
+    else
+      START_SEED="${START_SEED:-${RESUME_SEED}}"
+      EPISODES=$(( EPISODES_TARGET - RESUME_SCORED ))
+      echo "[job] RESUMING: ${RESUME_SCORED}/${EPISODES_TARGET} already scored;"
+      echo "[job] running ${EPISODES} more from seed ${START_SEED}."
+    fi
+  else
+    # Refusing to guess: appending a fresh pass would corrupt the tally.
+    echo "error: ${OUTPUT} exists but its resume state is unreadable." >&2
+    echo "       Move it aside to start this checkpoint over." >&2
+    exit 2
+  fi
+fi
 
 mkdir -p logs "$(dirname "${OUTPUT}")"
 
@@ -224,6 +291,103 @@ export MKL_NUM_THREADS="${MKL_NUM_THREADS:-4}"
 export PYTHONUNBUFFERED=1
 # Offscreen rendering only. No GUI, no livestream: this must survive sbatch.
 export DISPLAY=""
+
+# --------------------------------------------------------------------------- #
+# 3. The results-library entry, when one was asked for
+# --------------------------------------------------------------------------- #
+# EVAL_JSON is one self-describing file per (task, checkpoint, seed block), so a
+# directory of them is a queryable record of every evaluation ever run. It is
+# recomputed from the JSONL rather than copied from the run's own summary,
+# because after a resume the in-memory summary covers only the final leg while
+# the JSONL holds every episode.
+emit_library_json() {
+  [[ -n "${EVAL_JSON:-}" ]] || return 0
+  mkdir -p "$(dirname "${EVAL_JSON}")"
+  if "${UNIVTAC_PYTHON}" - <<PYJSON
+import json, os, socket, subprocess, sys, time
+sys.path.insert(0, "${REPO_ROOT}")
+from univtac_groot.metrics import read_jsonl, summarize, wilson_interval
+
+jsonl = "${OUTPUT}"
+if not os.path.exists(jsonl):
+    print("no JSONL to summarise: " + jsonl, file=sys.stderr)
+    raise SystemExit(1)
+
+def git_raw(*args):
+    """(succeeded, stdout). Distinguishing the two matters: an empty result from
+    `git status --porcelain` means a CLEAN tree, while a failed call means we do
+    not know -- and recording "clean" for the second would be a lie."""
+    try:
+        proc = subprocess.run(("git", "-C", "${REPO_ROOT}") + args,
+                              capture_output=True, text=True, timeout=10)
+        return proc.returncode == 0, proc.stdout
+    except Exception:
+        return False, ""
+
+def git(*args):
+    ok, out = git_raw(*args)
+    return out.strip() if ok and out.strip() else None
+
+_dirty_ok, _dirty_out = git_raw("status", "--porcelain")
+
+ckpt = "${GROOT_MODEL}"
+step = os.path.basename(ckpt.rstrip("/"))
+step = int(step.split("-")[-1]) if step.startswith("checkpoint-") and step.split("-")[-1].isdigit() else None
+
+# Dedupe by seed, last write wins -- the same rule compare_ablation.py uses.
+# A rerun that re-evaluated a seed would otherwise be counted twice.
+rows = {r.seed: r for r in read_jsonl(jsonl)}
+summary = summarize(rows.values())
+lo, hi = wilson_interval(int(summary.get("successes", 0)),
+                         int(summary.get("episodes_scored", 0)))
+summary["success_rate_ci95"] = [round(lo, 6), round(hi, 6)]
+summary["success_rate_ci95_pct"] = [round(lo * 100, 2), round(hi * 100, 2)]
+
+record = {
+    "task": "${TASK}",
+    "task_config": "${TASK_CONFIG}",
+    "variant": "${VARIANT}",
+    "checkpoint": ckpt,
+    "checkpoint_step": step,
+    "seed_offset": int("${SEED_OFFSET}"),
+    "first_seed": 1_000_000 * (1 + int("${SEED_OFFSET}")),
+    "episodes_requested": int("${EPISODES_TARGET}"),
+    "execution_horizon": int("${EXECUTION_HORIZON}"),
+    "metrics": summary,
+    "provenance": {
+        "jsonl": jsonl,
+        "server_log": "${SERVER_LOG}",
+        "slurm_job_id": os.environ.get("SLURM_JOB_ID"),
+        "bundle": os.environ.get("JOB_OUTPUT_BUNDLE_DIR"),
+        "host": socket.gethostname(),
+        "git_commit": git("rev-parse", "HEAD"),
+        "git_dirty": bool(_dirty_out.strip()) if _dirty_ok else None,
+        "evaluator_exit": ${STATUS:-0},
+        "written_at": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
+    },
+}
+with open("${EVAL_JSON}", "w", encoding="utf-8") as fh:
+    json.dump(record, fh, indent=2, ensure_ascii=False)
+    fh.write("\\n")
+print("SR={0}% ({1}/{2} scored), CI95 {3}".format(
+    summary.get("success_rate_pct"), summary.get("successes"),
+    summary.get("episodes_scored"), summary["success_rate_ci95_pct"]))
+PYJSON
+  then
+    echo "[job] library entry: ${EVAL_JSON}"
+  else
+    echo "[job] WARNING: could not write ${EVAL_JSON}; the JSONL above is intact" >&2
+  fi
+}
+
+# A requeue after the last episode has nothing left to run, but still owes the
+# library its entry: the attempt that finished the episodes was killed before it
+# could write one.
+if (( EVAL_COMPLETE )); then
+  emit_library_json
+  echo "[job] nothing to evaluate; the library entry is up to date."
+  exit 0
+fi
 
 # --------------------------------------------------------------------------- #
 # 1. GR00T inference server
@@ -309,7 +473,7 @@ EVAL_CMD=(
 )
 # START_SEED resumes a preempted run: run_eval.py starts at an absolute seed
 # rather than deriving one from SEED_OFFSET, and ResultWriter appends to the
-# existing JSONL. slurm/sweep_checkpoints.sh computes it from what is already
+# existing JSONL. The resume block above computes it from what is already
 # recorded there. Unset means "start at 1_000_000 * (1 + SEED_OFFSET)".
 if [[ -n "${START_SEED:-}" ]]; then
   EVAL_CMD+=(--start-seed "${START_SEED}")
@@ -330,6 +494,9 @@ set -e
 echo "[job] evaluator exited ${STATUS}"
 echo "[job] results:    ${OUTPUT}"
 echo "[job] server log: ${SERVER_LOG}"
+
+emit_library_json
+
 if [[ ${STATUS} -ne 0 ]]; then
   echo "[job] non-zero exit: read the SERVER log first -- a checkpoint that fails"
   echo "[job] to load shows up here only as a wait_until_ready timeout."

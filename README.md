@@ -101,7 +101,7 @@ bash slurm/submit_benchmark.sh --dry
 bash slurm/submit_benchmark.sh
 
 # Re-evaluate an existing checkpoint without retraining
-BASELINE_FT_MODEL=/ckpt/univtac-insert_hole/final bash slurm/submit_ablation.sh
+bash slurm/eval_checkpoint.sh --task insert_hole --seed-offset 1     --checkpoint /ckpt/univtac-insert_hole-baseline_finetuned/checkpoint-10000
 
 # Aggregate (safe on a login node: reads scalars only)
 python scripts/compare_ablation.py --results-dir eval_result --json ablation.json
@@ -164,7 +164,7 @@ scripts/
 slurm/
   submit_benchmark.sh     THE ENTRY POINT: finetune + evaluate, one job per task
   benchmark_task.sbatch   What it submits; resumable, recipe-pinned
-  submit_ablation.sh      Eval-only sweep over checkpoints that already exist
+  eval_checkpoint.sh      Evaluate ONE checkpoint; files a JSON in the results library
   eval_ablation.sbatch    Server + evaluator in one GPU job
   download_data.sbatch    Fetch released demonstrations (CPU-only)
   convert.sbatch          Dataset conversion (CPU-only, array-capable)

@@ -124,9 +124,8 @@ Four consequences that changed how the work is run, none of them optional:
   job must declare `--checkpoint <existing physical directory>`, which does not
   exist until training has finished, and `--parsable` is the launcher's so
   there is no job id to hang a `--dependency=afterok` on. `submit_benchmark.sh`
-  submits the finetunes; `submit_benchmark.sh --evals` submits an evaluation
-  for every checkpoint that now exists, skipping the rest. Run it again later
-  for the stragglers.
+  submits the finetunes; `slurm/eval_checkpoint.sh` evaluates ONE checkpoint
+  per invocation and files the result in the results library.
 - **A checkpoint path must be physical.** The launcher rejects symlinks, so the
   `final` symlink a finetune leaves behind is resolved with `readlink -f`
   before it is declared.
@@ -243,7 +242,7 @@ resume it.
 ```bash
 bash slurm/submit_benchmark.sh --dry    # full preflight, no GPU time, no submit
 bash slurm/submit_benchmark.sh          # submit the finetunes
-bash slurm/submit_benchmark.sh --evals  # then, later: evaluate what finished
+bash slurm/eval_checkpoint.sh --task T --checkpoint DIR --seed-offset 1
 bash slurm/smoke_test.sh                # 20 steps + 1 eval episode, isolated
 BUNDLE_DIR=<bundle> bash slurm/preserve_outputs.sh   # rescue checkpoints
 ```
@@ -252,17 +251,26 @@ Everything is an overridable env var (`GPUS`, `MAX_STEPS`, `TASK`, `PARTITION`,
 ...). Prefer adding a variable over editing a command line.
 
 `submit_benchmark.sh` submits **one finetune per task** on `PARTITION`
-(`sjw_alinlab`); `--evals` later submits **one evaluation per finished
-checkpoint** on `EVAL_PARTITION` (`background`), because evaluation is not
-allowed on the training partition and, under bundle-sbatch, cannot be queued
-before its checkpoint exists. Both run `benchmark_task.sbatch`, which takes
-`STAGES` (`finetune` or `eval:compare`) -- colon-separated, since a value with
-spaces is awkward to carry through the submitters' `env` list.
+(`sjw_alinlab`). Evaluation is separate, on `background`, and is
+**one checkpoint per invocation**:
 
-`--evals` skips any task whose checkpoint is not there yet and says so, so it
-is safe to run early and repeatedly. It finds checkpoints by searching
-`CKPT_SEARCH_ROOT` for `*/code-output/<task>-<variant>/final`; point that at
-the launcher's per-user output root if the default guess is wrong.
+```bash
+bash slurm/eval_checkpoint.sh --task insert_hole --seed-offset 1     --checkpoint <output_dir>/checkpoint-10000
+```
+
+Each run writes `<result-dir>/<task>-<variant>/<task>-ckpt<N>-seed<offset>.json`
+-- success rate with a Wilson 95% interval, error/skip/truncation counts, mean
+steps, inference timings, and the checkpoint, seed block, git commit and job id
+that produced it. A directory of those files is the record of every evaluation
+ever run; the per-episode JSONL sits beside them so anything can be recomputed.
+
+**It is requeue-safe, which `background` requires.** That partition preempts
+with `PreemptMode=REQUEUE`, so the job script re-runs from the top with the same
+output path -- and `ResultWriter` appends. So the job reads what is already
+recorded, continues from `max(seed)+1` for only the episodes still unscored, and
+exits immediately if the file is already complete. Without that, every
+preemption would append a fresh pass from the first seed and inflate the tally.
+Results are deduplicated by seed on the way into the JSON regardless.
 
 The queue-ordering dependency between tasks is **gone** with `--parsable`:
 `EXTRA_TASKS` (`lift_bottle`) is simply submitted last. It is separate because

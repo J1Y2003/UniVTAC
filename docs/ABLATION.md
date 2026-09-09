@@ -71,7 +71,7 @@ VARIANTS="tactile baseline_finetuned" TASKS=insert_hole EXTRA_TASKS="" \
 
 # Then, once those have finished, evaluate what they produced
 VARIANTS="tactile baseline_finetuned" TASKS=insert_hole EXTRA_TASKS="" \
-  bash slurm/submit_benchmark.sh --evals
+  bash slurm/eval_checkpoint.sh --task insert_hole --seed-offset 1     --checkpoint <output_dir>/checkpoint-10000
 
 # Table
 python scripts/compare_ablation.py --baseline-variant baseline_finetuned --tactile-variant tactile
@@ -80,7 +80,7 @@ python scripts/compare_ablation.py --baseline-variant baseline_finetuned --tacti
 `benchmark_task.sbatch` pins the recipe (GPU count, `MAX_STEPS`, lr, weight
 decay) on its first run for a task and refuses a mismatch afterwards, which is
 what keeps the two variants comparable. Add the zero-shot `baseline` row with
-`VARIANTS=baseline bash slurm/submit_ablation.sh` -- it needs no finetune, and
+`--variant baseline` on `slurm/eval_checkpoint.sh` -- it needs no finetune, and
 it is not a fair comparator to a finetuned model.
 
 ## How tactile enters the observation

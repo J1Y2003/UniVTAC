@@ -8,7 +8,9 @@
 #
 #   bash slurm/submit_benchmark.sh                 # submit
 #   bash slurm/submit_benchmark.sh --print         # show the sbatch command only
-#   bash slurm/submit_benchmark.sh --evals         # submit evals for finished checkpoints
+#
+# It submits FINETUNES only. Evaluation is one checkpoint at a time, through
+# slurm/eval_checkpoint.sh, which files each result in the results library.
 #   bash slurm/submit_benchmark.sh --dry           # DRY_RUN=1 locally, no sbatch at all
 #
 # Everything below is an overridable default, so a changed path is one variable
@@ -54,10 +56,6 @@ HF_HOME="${HF_HOME:-${HOME}/jaewon/hf_cache}"
 # and the guide is explicit that we must not supply it. The old
 # /rlwrld-unified-checkpoints path went with it.
 #
-# Which means finished checkpoints are scattered one-bundle-per-submission, so
-# --evals has to go looking for them. Point this at the launcher's per-user
-# output root (the OUTPUT_DIR it exports) if the default guess is wrong.
-CKPT_SEARCH_ROOT="${CKPT_SEARCH_ROOT:-${OUTPUT_DIR:-${HOME}/rlwrld-outputs}}"
 # A --dry run has no bundle and therefore no injected MODEL_OUTPUT_DIR, but
 # benchmark_task.sbatch requires one. Hand it a throwaway; nothing is written.
 DRY_RUN_OUTPUT_DIR="${DRY_RUN_OUTPUT_DIR:-${TMPDIR:-/tmp}/univtac-dry-run}"
@@ -156,7 +154,6 @@ printf '  %-16s %s\n' \
   UNIVTAC_PYTHON "${UNIVTAC_PYTHON}" \
   DATA_ROOT "${DATA_ROOT}" \
   HF_HOME "${HF_HOME}" \
-  CKPT_SEARCH_ROOT "${CKPT_SEARCH_ROOT} (where --evals looks)" \
   partition "${PARTITION} (finetune)" \
   time_limit "${TIME_LIMIT:-<none: partition maximum>}" \
   eval_time_limit "${EVAL_TIME_LIMIT:-<none: partition maximum>}" \
@@ -177,10 +174,6 @@ check_dir  UNIVTAC_ROOT   "${UNIVTAC_ROOT}"
 check_dir  GROOT_ROOT     "${GROOT_ROOT}"
 check_exec GROOT_PYTHON   "${GROOT_PYTHON}"
 check_exec UNIVTAC_PYTHON "${UNIVTAC_PYTHON}"
-# Evaluation reads no training data -- it talks to the policy server and Isaac
-# Sim -- so --evals must not be blocked by a dataset that was never converted or
-# has since been cleaned up.
-if [[ "${MODE}" != "--evals" ]]; then
 check_dir  DATA_ROOT      "${DATA_ROOT}"
 # Only the variants actually being trained -- demanding a tactile dataset we
 # deliberately are not training would block the submit for no reason.
@@ -218,7 +211,6 @@ for task in ${ALL_TASKS}; do
 done
 # Only the extra tasks that actually have data.
 EXTRA_TASKS="${EXTRA_TASKS_OK% }"
-fi   # end of the dataset checks skipped by --evals
 ALL_TASKS="${TASKS} ${EXTRA_TASKS}"
 # The launcher owns the Slurm logs now (they land in the bundle), but
 # benchmark_task.sbatch still writes its per-stage logs under REPO_ROOT/logs.
@@ -306,21 +298,6 @@ slurm_args_for() {
   return 0
 }
 
-# The physical checkpoint an eval job must declare. bundle-sbatch rejects a
-# symlink, so the `final` symlink the finetune leaves is resolved to the
-# checkpoint-N directory it points at. Prints nothing when there is none yet,
-# which is what makes `--evals` refuse to submit for that task.
-checkpoint_for() {
-  local task="$1" variant="$2" dir
-  for dir in "${CKPT_SEARCH_ROOT}"/*/code-output/"${task}-${variant}"              "${CKPT_SEARCH_ROOT}/${task}-${variant}"; do
-    [[ -e "${dir}/final" ]] || continue
-    local resolved
-    resolved=$(readlink -f "${dir}/final" 2>/dev/null) || continue
-    [[ -d "${resolved}" ]] && { printf '%s' "${resolved}"; return 0; }
-  done
-  return 1
-}
-
 submit_stage() {
   # One submission. BUNDLE_ENV is the job's configuration: --export belongs to
   # the launcher, so the job inherits its environment instead of being handed a
@@ -374,7 +351,7 @@ case "${MODE}" in
       echo
     done
     echo "# evaluation is submitted separately, once checkpoints exist:"
-    echo "#   bash slurm/submit_benchmark.sh --evals"
+    echo "#   bash slurm/eval_checkpoint.sh --task <task> --checkpoint <dir>"
     ;;
   submit)
     cd "${REPO_ROOT}"
@@ -396,45 +373,16 @@ case "${MODE}" in
       echo "Watch them with:"
       echo "  squeue -u ${WHOAMI} -o '%.10i %.20P %.70j %.9T %.10M %.20R'"
       echo
-      echo "THEN, once a finetune has finished, submit its evaluation:"
-      echo "  bash slurm/submit_benchmark.sh --evals"
-      echo "It skips any task whose checkpoint does not exist yet, so running it"
-      echo "early is safe and running it repeatedly is how the evals trickle out."
+      echo "THEN, once a finetune has finished, evaluate its checkpoints --"
+      echo "one invocation per checkpoint, each filed in the results library:"
+      echo "  bash slurm/eval_checkpoint.sh --task <task> --seed-offset 1 \\"
+      echo "      --checkpoint <output_dir>/checkpoint-<N>"
     fi
-    exit ${failed}
-    ;;
-  --evals)
-    cd "${REPO_ROOT}"
-    bundle_require || exit 2
-    submitted=() ; failed=0
-    skipped=0
-    for task in ${TASKS} ${EXTRA_TASKS}; do
-      for variant in ${VARIANTS}; do
-        ckpt=$(checkpoint_for "${task}" "${variant}") || ckpt=""
-        if [[ -z "${ckpt}" ]]; then
-          echo "  skip ${task}/${variant}: no finished checkpoint under ${CKPT_SEARCH_ROOT}" >&2
-          skipped=$((skipped + 1))
-          continue
-        fi
-        submit_stage "${task}" eval "${ckpt}" \
-          "${task}/${variant} evaluate on ${EVAL_PARTITION}  ckpt=${ckpt}"
-      done
-    done
-    if ((${#submitted[@]})); then
-      echo
-      echo "Submitted ${#submitted[@]} evaluation(s):"
-      printf '  %s\n' "${submitted[@]}"
-      echo
-      echo "Aggregate when they finish:"
-      echo "  python scripts/compare_ablation.py --results-dir eval_result"
-    fi
-    ((skipped)) && echo "${skipped} task/variant pair(s) had no checkpoint yet; re-run later."
     exit ${failed}
     ;;
   *)
-    echo "usage: bash slurm/submit_benchmark.sh [--print|--dry|--evals]" >&2
+    echo "usage: bash slurm/submit_benchmark.sh [--print|--dry]" >&2
     echo "  (no argument)  submit one FINETUNE per task" >&2
-    echo "  --evals        submit an EVALUATION per finished checkpoint" >&2
     echo "  --dry          local preflight only, submits nothing" >&2
     echo "  --print        show the bundle-sbatch command lines" >&2
     echo >&2
@@ -442,7 +390,7 @@ case "${MODE}" in
     echo "  PARTITION=<train>  EVAL_PARTITION=<eval>  are also overridable." >&2
     echo "  TIME_LIMIT=10:00:00 (training) and EVAL_TIME_LIMIT= (unset) set --time;" >&2
     echo "  empty means no --time, i.e. the partition maximum." >&2
-    echo "  CKPT_SEARCH_ROOT=<dir> is where --evals looks for finished bundles." >&2
+    echo "  Evaluation lives in slurm/eval_checkpoint.sh, one checkpoint each." >&2
     echo >&2
     echo "  There is no --test-only: that flag belongs to the launcher." >&2
     exit 2

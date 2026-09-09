@@ -276,8 +276,11 @@ To evaluate a checkpoint that already exists without retraining, or to add the
 zero-shot `baseline` row:
 
 ```bash
-BASELINE_FT_MODEL=/ckpt/univtac-insert_hole/final bash slurm/submit_ablation.sh
-VARIANTS=baseline bash slurm/submit_ablation.sh
+bash slurm/eval_checkpoint.sh --task insert_hole --seed-offset 1     --checkpoint /ckpt/univtac-insert_hole-baseline_finetuned/checkpoint-10000
+
+# the zero-shot baseline: point --checkpoint at the downloaded HF snapshot
+# directory, since bundle-sbatch declares a physical checkpoint, not a hub id
+bash slurm/eval_checkpoint.sh --task insert_hole --variant baseline     --checkpoint $HF_HOME/hub/models--nvidia--GR00T-N1.7-3B/snapshots/<rev>
 ```
 
 Both default to `background` too. `eval_ablation.sbatch` runs the server *and*
@@ -333,7 +336,7 @@ VARIANTS="tactile baseline_finetuned" TASKS=insert_hole EXTRA_TASKS="" \
 #     submission: an eval job must declare an existing physical checkpoint, and
 #     there is no job id to hang a dependency on.
 VARIANTS="tactile baseline_finetuned" TASKS=insert_hole EXTRA_TASKS="" \
-    bash slurm/submit_benchmark.sh --evals
+    bash slurm/eval_checkpoint.sh --task insert_hole --seed-offset 1         --checkpoint <output_dir>/checkpoint-10000
 
 # 10. Compare them against each other.
 python scripts/compare_ablation.py --baseline-variant baseline_finetuned --tactile-variant tactile

@@ -16,12 +16,20 @@ The shape is now **finetune first, evaluate later**, not two jobs chained:
 
 ```bash
 bash slurm/submit_benchmark.sh          # one finetune per task, sjw_alinlab
-bash slurm/submit_benchmark.sh --evals  # later: one eval per finished ckpt, background
+
+# then, per checkpoint, on background:
+bash slurm/eval_checkpoint.sh --task insert_hole --seed-offset 1     --checkpoint <output_dir>/checkpoint-10000
 ```
 
-`--evals` cannot be queued in advance -- an eval job has to declare an existing
-physical checkpoint directory, and `--parsable` belongs to the launcher so
-there is no job id for a `--dependency`.
+Evaluation cannot be queued in advance -- an eval job has to declare an existing
+physical checkpoint directory, and `--parsable` belongs to the launcher so there
+is no job id for a `--dependency`. Each eval writes one self-describing JSON to
+`~/jaewon/workspace/eval_results/<task>-<variant>/`, building a library indexed
+by task, checkpoint and seed block.
+
+`background` preempts with `PreemptMode=REQUEUE`, so an eval job re-runs its
+script from the top. It resumes from the JSONL rather than appending a second
+pass from the first seed; results are deduplicated by seed either way.
 
 **Not yet verified against the real launcher** (this conversion was written and
 tested against a stub, since Claude does not touch the cluster):
@@ -34,8 +42,9 @@ tested against a stub, since Claude does not touch the cluster):
   a Windows checkout, which cannot create symlinks.
 * whether `bundle-sbatch` prints a job id this repo can parse. If it does not,
   submissions still work -- the id is only used for display.
-* `CKPT_SEARCH_ROOT`, the directory `--evals` searches for finished bundles.
-  The default is a guess at the launcher's per-user output root.
+* the resume-after-requeue arithmetic against a real preemption. It is tested
+  against synthesised partial, duplicated and truncated result files, but not
+  yet against Slurm actually requeueing a job.
 
 ## Verified
 

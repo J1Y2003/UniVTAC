@@ -228,5 +228,6 @@ cd "${GROOT_ROOT}"
 
 echo "[job] finetune finished; checkpoints under ${OUTPUT_DIR}"
 echo "[job] evaluate with:"
-echo "  VARIANTS=${VARIANT} TASKS=<task> bash ${REPO_ROOT}/slurm/submit_ablation.sh"
+echo "  bash ${REPO_ROOT}/slurm/eval_checkpoint.sh --task <task> \\"
+echo "      --checkpoint ${OUTPUT_DIR}/checkpoint-<N> --seed-offset 1"
 echo "  (it resolves the physical checkpoint path bundle-sbatch --checkpoint needs)"

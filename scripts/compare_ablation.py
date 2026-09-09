@@ -150,7 +150,7 @@ def no_results_message(results_dir: Path, args, *, exists: bool) -> str:
         "",
         "Nothing to compare yet -- run at least one evaluation first:",
         "",
-        "  VARIANTS=baseline_finetuned bash slurm/submit_benchmark.sh --evals",
+        "  bash slurm/eval_checkpoint.sh --task <task> --checkpoint <dir>",
         "",
         "That needs UNIVTAC_ROOT, UNIVTAC_PYTHON and GROOT_PYTHON exported; see",
         "docs/SETUP.md. Evaluation is GPU work, so it must go to a compute node.",
