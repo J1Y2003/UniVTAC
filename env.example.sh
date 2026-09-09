@@ -77,19 +77,28 @@ export SBATCH_WCKEY="project-short-name:sub_4dpdata"
 #   sinfo -o "%20P %10l %10L %6D %25G"
 # export SBATCH_PARTITION="gpu"
 
-# This cluster's submit filter REJECTS any job without MODEL_OUTPUT_DIR set to a
-# path under /rlwrld-unified-checkpoints. The rejection happens at `sbatch` time,
-# so the job never starts and no log is written -- the only clue is
-# "MODEL_OUTPUT_DIR가 없습니다" on stderr. It is also the right place for
-# checkpoints: the shared home mount is far more contended.
-# The shape matters: {NFS}/{user}/checkpoints/{job}. This example previously
-# omitted the `checkpoints/` level, which disagreed with both the policy and
-# slurm/submit_benchmark.sh's own default.
-export MODEL_OUTPUT_DIR="/rlwrld-unified-checkpoints/$USER/checkpoints/univtac-groot"
+# DO NOT export MODEL_OUTPUT_DIR (or OUTPUT_DIR, CODE_OUTPUT_DIR,
+# JOB_OUTPUT_BUNDLE_DIR, CHECKPOINT_DIR). bundle-sbatch owns all five: it
+# creates one output bundle per submission and injects them, and it REFUSES to
+# run if it finds them already set:
+#
+#   error: inherited bundle path environment is unsupported
+#
+# An older version of this file exported MODEL_OUTPUT_DIR because the previous
+# storage policy demanded it. If your env.sh still does, delete that line --
+# env.sh is gitignored, so fixing this template does not fix your copy.
+#
+# Nothing here needs to point at a checkpoint directory any more -- the
+# launcher chooses it. Our area under the managed root is
+# /rlwrld-unified-checkpoints/jimin/jaewon; that is what a checkpoint path
+# should look like when you hand one to slurm/eval_checkpoint.sh, and it is
+# where bundle-sbatch will accept a --checkpoint from without Hugging Face
+# download metadata.
 
-# Where finetuned checkpoints go. Defaults to MODEL_OUTPUT_DIR inside the job
-# scripts, which keeps tens of GB per variant off the home filesystem.
-export CKPT_ROOT="${MODEL_OUTPUT_DIR}"
+# CKPT_ROOT is only for redirecting checkpoints AWAY from the bundle, which the
+# smoke test does to keep its output separate. Leave it unset otherwise, so the
+# job writes to the bundle the launcher gave it.
+# export CKPT_ROOT="$HOME/jaewon/workspace/groot-smoke"
 
 # Where converted datasets go. Must be on SHARED storage: the convert job and
 # the training job land on different nodes, and a /tmp default would put the

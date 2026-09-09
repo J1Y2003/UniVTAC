@@ -7,8 +7,12 @@
 # `background` -- and one job holds one allocation on one partition. So
 # slurm/submit_benchmark.sh submits this script TWICE per task:
 #
-#   STAGES=finetune        on the training partition
-#   STAGES="eval compare"  on `background`, --dependency=afterok on the above
+#   STAGES=finetune        on the training partition, by submit_benchmark.sh
+#   STAGES="eval compare"  on `background` -- but nothing submits this any
+#                          more: evaluation is slurm/eval_checkpoint.sh, one
+#                          checkpoint per job, because bundle-sbatch needs
+#                          --checkpoint to exist at submit time and --parsable
+#                          is the launcher's, so there is no id to depend on.
 #
 # STAGES defaults to all three, so a single-partition run still works for a
 # smoke test or a local `bash` invocation.
@@ -64,8 +68,9 @@
 #   * ALWAYS pass --wckey=project-short-name:sub_4dpdata.
 #   * MODEL_OUTPUT_DIR is INJECTED BY THE LAUNCHER and equals CODE_OUTPUT_DIR,
 #     i.e. <bundle>/code-output. Do not set it, do not pass it, and do not
-#     expect the old /rlwrld-unified-checkpoints layout -- bundle storage is
-#     managed storage with its own retention.
+#     expect to choose a path under /rlwrld-unified-checkpoints/jimin/jaewon.
+#     Bundle storage is managed storage with its own retention, and nothing
+#     here copies checkpoints out of it.
 #
 # Everything the launcher owns has been removed from the directives below:
 # --job-name, --output, --error, --export, --wckey, --partition and --time all
@@ -206,32 +211,46 @@ stage_enabled() {
   return 1
 }
 
-# GR00T's own defaults: --max-steps 10000, --save-steps 1000. Hyperparameters
-# are GR00T's business -- the benchmark fixes the data, the observation space
-# and the evaluation protocol, not the recipe. See docs/ABLATION.md.
+# The training recipe: 30,000 steps at batch 64, retaining the 10k, 20k and 30k
+# checkpoints and nothing else.
 #
-# One thing to watch rather than pre-empt: 10000 steps at batch 64 over the
-# full 100 released episodes (~28.9k samples) is ~22 epochs. Read the loss
-# curve; if it overfits, pick a step count on a task you are NOT reporting
-# (lift_bottle) and freeze it before evaluating.
+# 30,000 is a DELIBERATE DEPARTURE from GR00T's own --max-steps 10000 default
+# and has to be disclosed alongside the numbers -- docs/ABLATION.md's recipe
+# table marks it as such. The reason: 10,000 steps over the full 100 released
+# episodes (~28.9k samples, 452 steps/epoch) is only ~22 epochs, and nothing in
+# this setup can tell us whether that is enough. There is no validation split
+# and launch_finetune.py exposes no eval metric, so the ONLY instrument is
+# success rate as a function of step count. 30,000 (~66 epochs) is far enough
+# out that the curve either turns or plainly does not.
 #
-# SAVE_TOTAL_LIMIT is 3 rather than GR00T's 5 for I/O, not for science and not
-# for space: /rlwrld-unified-checkpoints measured 54T used at 1% -- an earlier
-# comment here claimed 91% full, which was wrong. The real cost is wall-clock.
-# A 3B checkpoint carries optimizer + scheduler + RNG state and lands around
-# 40 GB, and writing that to NFS stalls the step it lands on -- the smoke test
-# showed 9.82 s/it against a 1.89 s/it steady state. Fewer, larger gaps between
-# saves is the cheap setting; SAVE_TOTAL_LIMIT=1 is defensible too, since there
-# is no best-checkpoint selection and only the last one is the final model.
+# SAVE_STEPS=10000 makes the saves land exactly on 10000, 20000 and 30000 --
+# the three points of that curve, nothing else. Chosen, not incidental:
+#   * at SAVE_STEPS=1000 a limit of 3 deletes every early checkpoint long
+#     before training ends, which is what forced the hand-copying of
+#     checkpoints on the first insert_hole run;
+#   * a 3B checkpoint carries optimizer + scheduler + RNG state and measured
+#     ~26 GB (an earlier comment here estimated ~40 GB, which was high), so
+#     three of them is ~77 GB per variant and fits a bundle comfortably;
+#   * writing one stalls the step it lands on -- 9.82 s against a sub-second
+#     steady state -- so three writes rather than thirty is also the cheap
+#     setting.
+# SAVE_TOTAL_LIMIT is a ceiling, not a target: 4 leaves one slot spare so that
+# an extra end-of-training save could never evict checkpoint-10000, while only
+# three checkpoints are ever actually written.
 #
-# There is no metric-based "best checkpoint" to select: launch_finetune.py
-# exposes no eval metric or load-best-at-end option, so the last checkpoint is
-# the final model by definition. This script points a stable
-# `<output_dir>/final` symlink at the highest-numbered checkpoint after
-# training, which is what evaluation uses.
-MAX_STEPS="${MAX_STEPS:-10000}"
-SAVE_STEPS="${SAVE_STEPS:-1000}"
-SAVE_TOTAL_LIMIT="${SAVE_TOTAL_LIMIT:-3}"
+# The cost of sparse saves is resume granularity. A walltime kill or node
+# failure now rolls back to the last 10k boundary -- up to ~1.9 h of redone
+# work at the measured 0.70 s/it. That is the trade being made knowingly.
+#
+# There is still no metric-based "best checkpoint" to select automatically:
+# launch_finetune.py exposes no eval metric or load-best-at-end option, so the
+# last checkpoint is the final model by definition, and this script points a
+# stable `<output_dir>/final` symlink at the highest-numbered one. Preferring
+# 10k or 20k over 30k is therefore an explicit act performed at EVALUATION
+# time, on a dev seed block -- see docs/ABLATION.md, "Choosing the step count".
+MAX_STEPS="${MAX_STEPS:-30000}"
+SAVE_STEPS="${SAVE_STEPS:-10000}"
+SAVE_TOTAL_LIMIT="${SAVE_TOTAL_LIMIT:-4}"
 
 # Left unset, so launch_finetune.py's own defaults apply. Set them only for a
 # deliberate sweep; the pinned recipe below records whatever was used so a
@@ -254,8 +273,10 @@ DATA_ROOT="${DATA_ROOT:-${HOME}/jaewon/workspace/groot-data}"
 #  * A resubmission does not see the previous run's checkpoints. Resuming is no
 #    longer automatic -- pass the previous physical checkpoint directory as
 #    `bundle-sbatch --checkpoint`, which arrives here as CHECKPOINT_DIR.
-#  * Bundle storage is managed storage with its own retention. Anything worth
-#    keeping still has to be copied out; slurm/preserve_outputs.sh does that.
+#  * Bundle storage is managed storage with its own retention, and we do NOT
+#    copy checkpoints out of it. If a bundle ages out, that finetune is gone
+#    and gets resubmitted -- at ~6.2 h per task that is cheaper than keeping a
+#    private duplicate of every checkpoint on NFS. Evaluate while it is live.
 : "${MODEL_OUTPUT_DIR:?MODEL_OUTPUT_DIR is injected by bundle-sbatch. Submit through slurm/submit_benchmark.sh, not with plain sbatch}"
 CKPT_ROOT="${CKPT_ROOT:-${MODEL_OUTPUT_DIR}}"
 RESULTS_DIR="${RESULTS_DIR:-${REPO_ROOT}/eval_result}"
@@ -456,8 +477,14 @@ fi
 df -h "${CKPT_ROOT}" 2>/dev/null || true
 # shellcheck disable=SC2086 - word splitting is the point here
 N_VARIANTS=$(set -- ${VARIANTS}; echo $#)
-echo " the space above must hold roughly $((N_VARIANTS * SAVE_TOTAL_LIMIT * 40)) GB"
-echo " (${N_VARIANTS} variants x ${SAVE_TOTAL_LIMIT} retained checkpoints x ~40 GB each)"
+# How many checkpoints actually survive: one per SAVE_STEPS, capped by the
+# retention ceiling. ~26 GB each, measured on the insert_hole checkpoints
+# (25,547,974,206 bytes); the ~40 GB this used to assume was high.
+N_CKPT=$(( SAVE_STEPS > 0 ? MAX_STEPS / SAVE_STEPS : 1 ))
+(( N_CKPT < 1 )) && N_CKPT=1
+(( N_CKPT > SAVE_TOTAL_LIMIT )) && N_CKPT="${SAVE_TOTAL_LIMIT}"
+echo " the space above must hold roughly $((N_VARIANTS * N_CKPT * 26)) GB"
+echo " (${N_VARIANTS} variants x ${N_CKPT} retained checkpoints x ~26 GB each)"
 
 if [[ "${FATAL}" -ne 0 ]]; then
   echo

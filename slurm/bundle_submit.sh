@@ -26,6 +26,44 @@
 #
 # An array goes through the wrapper's own `--array SPEC` (separate tokens, once,
 # before the first `--`). We submit no arrays today.
+#
+# The launcher also owns five ENVIRONMENT variables, and refuses to run if it
+# finds any of them already set in the shell that invokes it:
+#
+#   error: inherited bundle path environment is unsupported
+#
+# That is easy to trip: the previous storage policy required exporting
+# MODEL_OUTPUT_DIR, so any env.sh written for it breaks every submission. env.sh
+# is gitignored, so the repo cannot fix anyone's copy -- instead every
+# submission here runs the launcher with all five scrubbed.
+BUNDLE_OWNED_ENV=(
+  OUTPUT_DIR
+  JOB_OUTPUT_BUNDLE_DIR
+  CODE_OUTPUT_DIR
+  MODEL_OUTPUT_DIR
+  CHECKPOINT_DIR
+)
+
+# bundle_scrub_args -- `env -u` flags for the variables the launcher owns.
+bundle_scrub_args() {
+  local var
+  BUNDLE_SCRUB=()
+  for var in "${BUNDLE_OWNED_ENV[@]}"; do
+    BUNDLE_SCRUB+=(-u "${var}")
+  done
+}
+
+# bundle_warn_inherited -- say so once, so a stale env.sh gets fixed rather than
+# silently worked around on every future run.
+bundle_warn_inherited() {
+  local var found=()
+  for var in "${BUNDLE_OWNED_ENV[@]}"; do
+    [[ -n "${!var:-}" ]] && found+=("${var}")
+  done
+  ((${#found[@]})) || return 0
+  echo "note: ${found[*]} set in this shell; scrubbing for the launcher," >&2
+  echo "      which injects them itself. Remove them from env.sh." >&2
+}
 
 # --------------------------------------------------------------------------- #
 # bundle_build <script> [script args...]
@@ -144,11 +182,9 @@ bundle_submit() {
   # the launcher process alone, so one submitter can send different values per
   # submission without leaking them into its own environment.
   local out status
-  if [[ ${#BUNDLE_ENV[@]} -gt 0 ]]; then
-    out=$(env "${BUNDLE_ENV[@]}" "${BUNDLE_CMD[@]}" 2>&1)
-  else
-    out=$("${BUNDLE_CMD[@]}" 2>&1)
-  fi
+  bundle_warn_inherited
+  bundle_scrub_args
+  out=$(env "${BUNDLE_SCRUB[@]}" "${BUNDLE_ENV[@]}" "${BUNDLE_CMD[@]}" 2>&1)
   status=$?
   printf '%s\n' "${out}"
   [[ ${status} -ne 0 ]] && return ${status}
@@ -168,10 +204,10 @@ bundle_print() {
   bundle_build "$@" || return 2
   # printf reuses its format for every argument, so `env` is printed once and
   # the pairs after it -- not `env X env Y`.
-  if [[ ${#BUNDLE_ENV[@]} -gt 0 ]]; then
-    printf 'env '
-    printf '%q ' "${BUNDLE_ENV[@]}"
-  fi
+  bundle_scrub_args
+  printf 'env '
+  printf '%s ' "${BUNDLE_SCRUB[@]}"
+  [[ ${#BUNDLE_ENV[@]} -gt 0 ]] && printf '%q ' "${BUNDLE_ENV[@]}"
   printf '%q ' "${BUNDLE_CMD[@]}"
   printf '\n'
 }

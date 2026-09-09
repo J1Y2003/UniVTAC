@@ -260,18 +260,31 @@ squeue -u $USER -o '%.8i %.20P %.70j %.9T %.10M %.20R'
 
 That covers the three reported tasks plus `lift_bottle`, gated behind them.
 
-The finetune carries `--time` (`TIME_LIMIT`, default `10:00:00` against a
-measured ~5.3 h) so backfill can start it in a gap shorter than the partition's
-two days; the evaluation carries none, because `run_eval.py` cannot resume and
-a walltime kill would lose the run rather than pause it. Set `EVAL_TIME_LIMIT`
-once you have timed a real eval.
+That submits **finetunes only**: 30,000 steps each, retaining
+`checkpoint-10000`, `checkpoint-20000` and `checkpoint-30000`.
 
-The split exists because **evaluation is not allowed on `sjw_alinlab`** and one
-job holds one allocation on one partition. Override either side with
-`PARTITION=` (training) and `EVAL_PARTITION=` (evaluation). An eval job showing
-`DependencyNeverSatisfied` means its finetune failed or was killed: resume the
-finetune, `scancel` the orphaned eval, then resubmit that task with
-`TASKS=<task> EXTRA_TASKS= bash slurm/submit_benchmark.sh`.
+The finetune carries `--time` (`TIME_LIMIT`, default `9:00:00` against a
+measured ~6.2 h -- `insert_hole` did 10,000 steps in 117 minutes, i.e.
+0.70 s/it) so backfill can start it in a gap far shorter than the partition's
+two days. A limit that turns out short costs a resubmission, not the run, but
+resume granularity is now 10,000 steps: a kill at 19,999 restarts from 10,000
+and redoes ~1.9 h. That is the price of retaining only three checkpoints.
+
+Evaluation carries no `--time` by default -- `EVAL_TIME_LIMIT` in
+`slurm/eval_checkpoint.sh`. Not because it cannot resume: it can, and must,
+since `background` preempts with `PreemptMode=REQUEUE`. It is unset because the
+cost of 100 rollouts has still never been measured. Set it once you have timed
+a real eval.
+
+Evaluation is separate because **it is not allowed on `sjw_alinlab`** and one
+job holds one allocation on one partition, and because bundle-sbatch needs
+`--checkpoint` to be a physical directory that does not exist until training
+finishes. Override either side with `PARTITION=` (training, in
+`submit_benchmark.sh`) and `EVAL_PARTITION=` (evaluation, in
+`eval_checkpoint.sh`). There is no `--dependency` chain any more, so there is
+no `DependencyNeverSatisfied` to interpret: if a finetune fails, resubmit that
+task with `TASKS=<task> EXTRA_TASKS= bash slurm/submit_benchmark.sh` and submit
+its evaluations by hand afterwards.
 To evaluate a checkpoint that already exists without retraining, or to add the
 zero-shot `baseline` row:
 

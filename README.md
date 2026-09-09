@@ -170,7 +170,6 @@ slurm/
   convert.sbatch          Dataset conversion (CPU-only, array-capable)
   finetune.sbatch         GR00T finetune for one variant
   smoke_test.sh           20 steps + 1 eval episode, isolated from real runs
-  preserve_outputs.sh     Rescue checkpoints from NFS retention
   install_univtac.sbatch  Batch-safe wrapper for UniVTAC's install.sh
 docs/RUNBOOK.md         Ordered: nothing -> an evaluation number  <- start here
 docs/SETUP.md           Prerequisites, environments, common failures

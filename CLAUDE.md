@@ -184,11 +184,14 @@ unhelpful "Unspecified error":
   in a 2-day gap -- a realistic limit makes it eligible for many more gaps and
   it starts sooner. Two ways to get it wrong: over-requesting past the
   partition maximum leaves it pending forever with `REASON=PartitionTimeLimit`,
-  and under-requesting cuts the run short. Set it generously on resumable work
-  (`benchmark_task.sbatch` finetunes resume from the last checkpoint) and leave
-  it unset on work that is not resumable, which today means evaluation --
-  `scripts/run_eval.py` restarts from the first seed. `TIME_LIMIT` and
-  `EVAL_TIME_LIMIT` in the submitters are the knobs
+  and under-requesting cuts the run short. Both jobs here are resumable, so a
+  short limit costs a resubmission rather than a run: finetunes resume from the
+  last retained checkpoint (granularity `SAVE_STEPS`, so 10,000 steps -- about
+  1.9 h of redone work), and evaluation resumes from `max(seed)+1` for the
+  episodes still unscored, which `background`'s `PreemptMode=REQUEUE` forced.
+  `TIME_LIMIT` in `submit_benchmark.sh` defaults to `9:00:00` against a
+  measured ~6.2 h; `EVAL_TIME_LIMIT` in `eval_checkpoint.sh` is unset, not
+  because eval cannot resume but because 100 rollouts have never been timed
 - **`--partition=cpu` for any job that does not request a GPU.** The GPU
   partitions refuse it with
   `GPU 파티션에는 GPU를 요청한 잡만 제출할 수 있습니다` /
@@ -219,23 +222,27 @@ pending with `PartitionTimeLimit`; every other partition allows 2 days.
 **Evaluation may not run on `sjw_alinlab`** -- it goes on `background`, while
 training stays on `sjw_alinlab`. This is lab policy, not something the submit
 filter enforces, so nothing will stop you getting it wrong. A job holds one
-allocation on one partition, which is why finetune and evaluate are **two jobs
-per task**; see "How to run things" below. Note `background` is `PriorityTier`
-1, the *lowest* tier: it wins no contest for a busy node, it is simply a
-shorter queue when its own nodes are idle. Check whether it preempts
-(`scontrol show partition background`) before trusting a long eval to it --
-`scripts/run_eval.py` has no resume and would restart from the first seed.
+allocation on one partition, which is why finetune and evaluate are separate
+jobs -- and with 10k/20k/30k retained, **four jobs per task**: one finetune and
+three evaluations. See "How to run things" below. Note `background` is
+`PriorityTier` 1, the *lowest* tier: it wins no contest for a busy node, it is
+simply a shorter queue when its own nodes are idle. It **does** preempt, with
+`PreemptMode=REQUEUE`, which is why `eval_ablation.sbatch` reads what is
+already recorded and continues from `max(seed)+1` for only the episodes still
+unscored. Without that, every preemption would append a fresh pass from the
+first seed and inflate the tally.
 
 `logs/` still has to exist before submitting, though the Slurm logs themselves
 now land in the bundle: `benchmark_task.sbatch` writes its per-stage logs under
 `REPO_ROOT/logs`.
 
 Bundle storage is **managed, not permanent**: retention migrates and later
-deletes aged outputs. The bundle window is undocumented, so assume the old
-unified-folder one (4 days untouched, deleted 90 days later) and run
-`BUNDLE_DIR=<bundle> bash slurm/preserve_outputs.sh` as soon as a finetune
-finishes -- or you will retrain it, and you will also have lost the only way to
-resume it.
+deletes aged outputs, and the bundle window is undocumented. We do not fight
+that any more -- there is no rescue script and nothing copies checkpoints out
+of a bundle. If a checkpoint ages out, it is gone, and the answer is to
+resubmit the finetune, not to keep a private shadow copy on NFS. Read a
+checkpoint's path from the launcher's bundle and evaluate it while it is
+there.
 
 ## How to run things
 
@@ -244,18 +251,41 @@ bash slurm/submit_benchmark.sh --dry    # full preflight, no GPU time, no submit
 bash slurm/submit_benchmark.sh          # submit the finetunes
 bash slurm/eval_checkpoint.sh --task T --checkpoint DIR --seed-offset 1
 bash slurm/smoke_test.sh                # 20 steps + 1 eval episode, isolated
-BUNDLE_DIR=<bundle> bash slurm/preserve_outputs.sh   # rescue checkpoints
 ```
 
 Everything is an overridable env var (`GPUS`, `MAX_STEPS`, `TASK`, `PARTITION`,
 ...). Prefer adding a variable over editing a command line.
+
+**The recipe: 30,000 steps, three checkpoints.** `MAX_STEPS=30000`,
+`SAVE_STEPS=10000`, `SAVE_TOTAL_LIMIT=4` (a ceiling, so exactly three are
+written) retains `checkpoint-10000`, `checkpoint-20000` and `checkpoint-30000`
+and nothing else. Measured cost: **0.70 s/it** -- `insert_hole` did 10,000
+steps in 117 minutes -- so ~6.2 h per task, ~26 GB per checkpoint.
+
+30,000 is the one recipe number **we** chose rather than inherited from GR00T
+(its default is 10,000), so it is a deliberate difference that gets disclosed
+with the numbers. It exists because there is no validation split and no eval
+metric in `launch_finetune.py`: success rate against step count is the only
+instrument for whether 22 epochs was enough, and three retained checkpoints are
+its three points. Which one becomes the reported model is decided on a
+**disjoint seed block** (`--seed-offset 1`), frozen, and applied uniformly to
+every task -- never a per-task argmax, which is both an asymmetric advantage
+over ACT's uniform 4,000 steps and a winner's curse at +/-10 points of noise.
+See docs/ABLATION.md, "Choosing the step count".
+
+Do not size a walltime off the **1.89 s/it** in `docs/SETUP.md` and the cuDNN
+comments. That was a 20-step smoke test, two of whose steps wrote a checkpoint
+at ~9.82 s; it is a valid measurement of that run and the correct baseline for
+the cuDNN penalty ratio, but it is 2.7x the production rate.
 
 `submit_benchmark.sh` submits **one finetune per task** on `PARTITION`
 (`sjw_alinlab`). Evaluation is separate, on `background`, and is
 **one checkpoint per invocation**:
 
 ```bash
-bash slurm/eval_checkpoint.sh --task insert_hole --seed-offset 1     --checkpoint <output_dir>/checkpoint-10000
+for N in 10000 20000 30000; do
+  bash slurm/eval_checkpoint.sh --task insert_hole --seed-offset 1       --checkpoint <output_dir>/checkpoint-$N
+done
 ```
 
 Each run writes `<result-dir>/<task>-<variant>/<task>-ckpt<N>-seed<offset>.json`

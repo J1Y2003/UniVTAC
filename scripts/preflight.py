@@ -514,7 +514,7 @@ def check_bundle_sbatch(report: Report) -> None:
         report.add(
             WARN, "MODEL_OUTPUT_DIR", f"{raw} is set, but bundle-sbatch injects it",
             "  unset MODEL_OUTPUT_DIR   # and drop it from env.sh\n"
-            "  It pointed at the retired /rlwrld-unified-checkpoints layout.",
+            "  Choosing a checkpoint path is the launcher's job now.",
         )
 
 

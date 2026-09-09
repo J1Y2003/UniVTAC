@@ -2,12 +2,12 @@
 # Evaluate ONE checkpoint and file the result in the results library.
 #
 #   bash slurm/eval_checkpoint.sh \
-#       --checkpoint /rlwrld-unified-checkpoints/$USER/checkpoints/univtac-groot/insert_hole-baseline_finetuned/checkpoint-10000 \
+#       --checkpoint /rlwrld-unified-checkpoints/jimin/jaewon/insert_hole-baseline_finetuned/checkpoint-10000 \
 #       --task insert_hole --seed-offset 1
 #
 # One invocation, one checkpoint, one job, one JSON file. Run it once per
-# (task, checkpoint) pair -- 5 checkpoints x 4 tasks is 20 invocations -- and
-# the library builds up as:
+# (task, checkpoint) pair -- the recipe retains 10k/20k/30k, so 3 checkpoints x
+# 4 tasks is 12 invocations per seed block -- and the library builds up as:
 #
 #   <result-dir>/<task>-<variant>/<task>-ckpt<N>-seed<offset>.json
 #
@@ -52,6 +52,13 @@ RESULT_DIR="${RESULT_DIR:-${HOME}/jaewon/workspace/eval_results}"
 TASK_CONFIG="${TASK_CONFIG:-clean}"
 EXECUTION_HORIZON="${EXECUTION_HORIZON:-16}"
 PARTITION="${EVAL_PARTITION:-background}"
+# Unset, i.e. the partition maximum. NOT because a walltime kill would lose the
+# run -- eval_ablation.sbatch resumes from max(seed)+1 for exactly the episodes
+# still unscored, which `background`'s PreemptMode=REQUEUE already forced us to
+# build. It is unset because the cost of 100 rollouts has still never been
+# measured (docs/STATUS.md, "Open"), so any number here would be invented. Set
+# it once a finished eval log gives a real figure: a realistic --time is worth
+# real queue position on a contended partition.
 TIME_LIMIT="${EVAL_TIME_LIMIT:-}"
 WCKEY="${WCKEY:-project-short-name:sub_4dpdata}"
 GPUS="${GPUS:-1}"
@@ -121,6 +128,33 @@ if [[ ! -d "${RESOLVED}" ]]; then
   [[ "${RESOLVED}" != "${CHECKPOINT}" ]] && echo "       (resolved to ${RESOLVED})" >&2
   exit 2
 fi
+
+# The launcher accepts a checkpoint inside the MANAGED USER ROOT as-is; one
+# outside it must carry consistent Hugging Face download metadata under
+# .cache/huggingface/download/, which a trainer-written checkpoint has none of:
+#
+#   error: checkpoint outside managed user root requires consistent Hugging Face
+#          local-download metadata
+#
+# So a checkpoint copied to home storage cannot be evaluated from there, which
+# is one of several reasons nothing is copied out of a bundle any more. Warn
+# here, with the cause, rather than after a launcher round-trip. This is a WARNING
+# and not a hard failure because the root is inferred, and the launcher is the
+# authority on it -- override MANAGED_ROOT if the default guess is wrong.
+MANAGED_ROOT="${MANAGED_ROOT:-/rlwrld-unified-checkpoints/${WHOAMI}/jaewon}"
+case "${RESOLVED}" in
+  "${MANAGED_ROOT}"/*) ;;
+  *)
+    if [[ ! -d "${RESOLVED}/.cache/huggingface/download" ]]; then
+      echo "WARNING: ${RESOLVED}" >&2
+      echo "         is outside the managed user root (${MANAGED_ROOT}) and has" >&2
+      echo "         no .cache/huggingface/download/, so the launcher will" >&2
+      echo "         refuse it. Copy it under the managed root and evaluate" >&2
+      echo "         that copy -- do not fabricate the metadata, it is evidence." >&2
+      echo >&2
+    fi
+    ;;
+esac
 
 CKPT_BASE="$(basename "${RESOLVED}")"
 if [[ "${CKPT_BASE}" =~ ^checkpoint-([0-9]+)$ ]]; then

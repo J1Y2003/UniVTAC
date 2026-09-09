@@ -63,8 +63,18 @@ tested against a stub, since Claude does not touch the cluster):
   `NEW_EMBODIMENT`, both the 17-D and 113-D states are accepted, dataset stats
   generate, checkpoints are written and a `final` symlink created. Trainable
   1.62 B of 3.14 B params.
-* **Throughput: 1.89 s/it** -- 1 GPU, `--global-batch-size 64`, cuDNN live. At
-  `MAX_STEPS=10000` that is ~5.3 h of training per task.
+* **Throughput: 0.70 s/it** -- 1 GPU, `--global-batch-size 64`, cuDNN live,
+  measured on the first real finetune: `insert_hole` did **10,000 steps in 117
+  minutes**. At `MAX_STEPS=30000` that is **~5.9 h** of stepping per task,
+  ~6.2 h with model load, dataset statistics and three checkpoint writes.
+
+  The **1.89 s/it** figure this file used to carry, and which the cuDNN
+  comments still quote, came from the 20-step smoke test. Two of those 20 steps
+  wrote a checkpoint at ~9.82 s, which alone accounts for 19.6 s of the 37.8 s
+  total and puts the rest at ~1.0 s/it before warm-up -- so the two numbers are
+  not in conflict, but **1.89 is not the production rate and must not be used
+  to size a walltime.** The cuDNN penalty ratio (1.89 s vs 170 s) is a separate
+  measurement on that same smoke test and stands.
 * **Evaluation loads a finetuned checkpoint** and answers `get_action` for a
   full episode: `Gr00tPolicy`, the ZeroMQ client and the receding-horizon loop
   work end to end.
@@ -76,9 +86,10 @@ tested against a stub, since Claude does not touch the cluster):
   the dominant cost, not training. Budget it from a real
   `logs/benchmark-<task>-<jobid>/eval-*.log` before assuming the partition's
   2-day maximum is comfortable.
-* **Checkpoint-write cost on NFS.** One step read 9.82 s against a 1.89 s
-  steady state, most likely the step that wrote a checkpoint. At
-  `SAVE_STEPS=1000` that happens 10 times per task.
+* **Checkpoint-write cost on NFS.** One step read 9.82 s against a
+  sub-second steady state, most likely the step that wrote a checkpoint. Now
+  largely moot: `SAVE_STEPS=10000` writes **three** checkpoints per task rather
+  than ten, so even at 10 s each the total is ~30 s of a ~6 h run.
 * **Which camera set UniVTAC's published ACT numbers used.** Their paper
   specifies per-task cameras; confirming it against their released configs
   closes the last gap in the comparison. Ask the senior.
@@ -88,9 +99,21 @@ tested against a stub, since Claude does not touch the cluster):
 **Benchmark, not controlled ablation.** Hold the observation space (per-task
 cameras) and the evaluation protocol (100 rollouts, their
 `1_000_000 * (1 + seed)` convention) fixed; run GR00T N1.7 on **its own
-defaults** for everything else -- `MAX_STEPS=10000`, batch 64,
-`ACTION_HORIZON=40`, `EXECUTION_HORIZON=16`, GR00T's learning rate and weight
-decay. Matching ACT's optimiser would answer a different question.
+defaults** for everything else -- batch 64, `ACTION_HORIZON=40`,
+`EXECUTION_HORIZON=16`, GR00T's learning rate and weight decay. Matching ACT's
+optimiser would answer a different question.
+
+**Step count: 30,000, and it is the one recipe number we chose.**
+`MAX_STEPS=30000` is 3x GR00T's own 10000 default, so unlike everything above
+it is **not** a GR00T default and has to be disclosed with the numbers. The
+reason it had to be chosen at all: 10,000 steps over the full 100 released
+episodes is only ~22 epochs, and with no validation split and no eval metric in
+`launch_finetune.py` there is nothing that could tell us whether that is
+enough. `SAVE_STEPS=10000` retains exactly `checkpoint-10000`,
+`checkpoint-20000` and `checkpoint-30000` -- three points of success rate
+against step count, which is the only instrument available. Which of the three
+becomes the reported model is decided on a dev seed block; see
+docs/ABLATION.md, "Choosing the step count".
 
 **Per-task, not multi-task.** One finetune per task, matching UniVTAC's ACT,
 which trains one policy per task. Multi-dataset training would be cheaper and
@@ -166,4 +189,13 @@ the ACT row without retraining. Confirm their episode count and seeds first --
 ## Cost
 
 ~24 GB raw per task (~190 GB for all eight); converted datasets are negligible
-(~31 MB); ~40 GB per retained checkpoint at `SAVE_TOTAL_LIMIT=3`.
+(~31 MB); **~26 GB per retained checkpoint** (measured: 25,547,974,206 bytes on
+the `insert_hole` checkpoints -- the ~40 GB previously recorded here was an
+estimate and was high). Three retained per variant is ~77 GB.
+
+Nothing is copied out of a bundle: there is no rescue step any more. A
+checkpoint that ages out of managed storage is retrained, which at ~6.2 h is
+cheaper than a private duplicate of every checkpoint on NFS.
+
+Training: ~6.2 h per task at 30,000 steps, so ~25 GPU-hours for four tasks.
+Evaluation is still unmeasured and is the open budget question.

@@ -200,7 +200,7 @@ model that is not ACT.
 | training episodes | 50 per task | **100 per task** (the full release) | **deliberate difference -- disclose** |
 | cameras | per-task, see below | per-task, matched | **held fixed** |
 | evaluation rollouts | **100** | **100**, their seed sequence | **held fixed** |
-| optimization steps | 4,000 | `MAX_STEPS=10000` (N1.7 default) | GR00T's own |
+| optimization steps | 4,000 | `MAX_STEPS=30000`, reported step chosen from {10k, 20k, 30k} | **deliberate difference -- disclose** |
 | batch size | 64 | 64 (N1.7 default -- coincides) | GR00T's own |
 | learning rate | 1e-5 (encoders) | N1.7 default | GR00T's own |
 | weight decay | 1e-4 | N1.7 default | GR00T's own |
@@ -214,10 +214,51 @@ benchmark result into an upper bound fitted to the test set. That is the only
 thing here that would genuinely invalidate the comparison, and it is far easier
 to do by accident than any hyperparameter mismatch.
 
-**Clean way out:** tune on a task you do not report. Sweep on `lift_bottle`
-(same pipeline, 50 episodes, not one of the three reported tasks), then apply
-the chosen recipe unchanged to `insert_hole`, `insert_tube` and `pull_out_key`.
-Genuinely tuned, zero contamination, and it states in one sentence.
+**Clean way out:** select on data you do not report. Two forms of that, and
+the step count now uses the first -- see "Choosing the step count" below.
+
+### Choosing the step count
+
+Training runs to 30,000 steps and retains `checkpoint-10000`,
+`checkpoint-20000` and `checkpoint-30000`. Picking one of the three IS
+selection, so it has to happen somewhere that is not the reported number.
+
+**The mechanism: a disjoint seed block.** `--seed-offset N` starts the episode
+seeds at `1_000_000 * (1 + N)`, so offset 0 is the reported protocol (seeds
+from 1,000,000, matching UniVTAC) and offset 1 is a completely disjoint set
+(from 2,000,000) drawn from the same distribution. Evaluate all three
+checkpoints at **offset 1**, freeze the step count, then run the reported
+number once at **offset 0**. Four evaluations per task, only the last of which
+is reported, and nothing that touches the reported seeds influenced the choice.
+
+The alternative -- sweep on `lift_bottle` and apply the result to the three
+reported tasks -- is cheaper but weaker *for a step count specifically*: steps
+are not a transferable unit unless the dataset sizes match, since steps/epoch
+scales with the number of episodes. Check `lift_bottle`'s episode count before
+using it that way; this file has said 50 in one place and the release ships 100
+per task.
+
+**One uniform step count for all four tasks, not a per-task argmax.** Two
+independent reasons:
+
+* ACT was trained at a single uniform 4,000 steps for every task. Picking the
+  best step count per task and comparing that against one uniform baseline is
+  an asymmetric advantage regardless of which seeds it was chosen on.
+* At 100 episodes the Wilson 95 % interval is roughly +/-10 points. The argmax
+  of three points each carrying that much noise is frequently just noise --
+  the winner's curse, in the specific form where the selected value's
+  advantage does not reproduce.
+
+**So read the trend, not the peak.** Three points at +/-10 cannot resolve a
+maximum, but they can distinguish still-climbing from flat from clearly
+falling. Still climbing at 30k: use 30k and note the budget was the binding
+constraint, not convergence. Flat: prefer the smallest, since there is no
+evidence the extra compute bought anything. Clearly falling after some point:
+that is the overfitting signal, and the step before it is the answer.
+
+**Then disclose it in one sentence,** e.g. "step count 30,000, selected from
+{10,000, 20,000, 30,000} on a disjoint seed block and applied uniformly to all
+tasks; ACT numbers as published at 4,000 steps."
 
 **Caveat to report either way:** a tuned GR00T against an untuned published ACT
 is partly a tuning-effort comparison. True of nearly every benchmark table; the
@@ -382,8 +423,9 @@ than a private collection, and there is no way to verify *which* 50 the paper
 used anyway. But state it plainly — e.g. "GR00T N1.7, 100 released
 demonstrations per task; ACT numbers as published, 50 demonstrations."
 
-At 10,000 steps x batch 64 that is 640,000 samples over ~28,932, so ~22
-epochs.
+At 30,000 steps x batch 64 that is 1,920,000 samples over ~28,932, so ~66
+epochs (452 steps/epoch). GR00T's own 10,000-step default would be ~22, and
+ACT's 4,000 steps over its 50 episodes was ~17.
 
 **5. Evaluation episodes: 100.** Settled by the paper — *"evaluated over 100
 test rollouts."* `EPISODES` now defaults to 100 everywhere; it was 50, which

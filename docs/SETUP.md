@@ -100,6 +100,10 @@ without cuDNN costs ~86x and is the reason a training step once took 170 s
 instead of 1.89 s. Because the penalty is silent -- no error, just a job that
 never finishes -- an available switch is worse than no switch.
 
+(Both numbers come from the 20-step smoke test and the ratio between them is
+what matters here. Do not plan a walltime off the 1.89: production is
+**0.70 s/it** -- see docs/STATUS.md.)
+
 What replaces it: **`scripts/check_cudnn.py` runs automatically in every GPU
 job**, from `finetune.sbatch` and `eval_ablation.sbatch`, before any weights
 load. It asks the loaded library its own version, compares it against torch's
@@ -130,7 +134,7 @@ Measured on an A100 (sm_80), vision-tower forward+backward at 32 images:
 
 Scaled to the real 128-image batch that is ~185 s against an observed 170 s
 step: with cuDNN off this single conv is essentially the entire training step,
-and a 10,000-step finetune projects to 470 hours.
+and a 30,000-step finetune projects to over 1,400 hours.
 
 **The signature, if you meet it again.** GPU utilisation ~48% but power only
 ~110 W of a 400 W limit, SM clocks pinned at ~1400 MHz, **~0% of time spent
@@ -325,38 +329,36 @@ and the guide is explicit that we must not supply `MODEL_OUTPUT_DIR`
 ourselves. The unified-folder roots below are what the previous policy
 required, kept only so an old path in someone's `env.sh` is recognisable:
 
-| Cluster | NFS root (retired for our jobs) |
+| Cluster | NFS root |
 | --- | --- |
 | Kakao | `/rlwrld-unified-checkpoints` |
 | Naver (MLXP) | `/data/rlwrld-unified-checkpoints` |
 | AWS (SKT) | `/fsx/rlwrld-unified-checkpoints` |
 
-**Retention is the part that bites a multi-week study, and bundles do not
-change that.** Bundle storage is managed storage, not permanent storage: the
-guide says retention may migrate and later delete aged outputs, and tells you
-to move long-lived artifacts to designated user storage yourself. The old
-unified-folder window was 4 days untouched (§5.1 body; its table says 7 -- the
-document contradicts itself) before migration to Object Storage and deletion 90
-days later; the bundle window is not documented, so plan for the same. A
-checkpoint you want to re-evaluate weeks later will not be there, and
-`<output_dir>/final` becomes a dangling symlink.
+Our area under the Kakao root is **`/rlwrld-unified-checkpoints/jimin/jaewon`**
+(`jimin` is the shared account, `jaewon` is ours within it). That is what a
+checkpoint path here should look like, and bundle-sbatch will only accept a
+`--checkpoint` under the managed root anyway -- one outside it needs consistent
+`.cache/huggingface/download/` metadata, which we do not fabricate.
 
-It is worse than it used to be: a rescued checkpoint is now also the only way
-to **resume** that training, since a resubmission gets a fresh bundle and must
-be pointed at its predecessor with `--checkpoint`.
+**Retention still bites a multi-week study, and we now simply live with it.**
+Bundle storage is managed, not permanent: the guide says retention may migrate
+and later delete aged outputs. The old unified-folder window was 4 days
+untouched (§5.1 body; its table says 7 -- the document contradicts itself)
+before migration to Object Storage and deletion 90 days later; the bundle
+window is not documented.
 
-§7 gives the remedy: write to the unified folder first, then move anything
-needing permanent retention into your own user folder. That is what
-`slurm/preserve_outputs.sh` does -- it copies only the *final* checkpoint per
-variant and lets intermediates expire, because each is ~40 GB with optimizer
-state:
+There used to be a `slurm/preserve_outputs.sh` that copied checkpoints out to a
+private directory. **It is gone deliberately.** It duplicated ~26 GB per
+checkpoint onto NFS, which is exactly the sprawl the storage policy exists to
+prevent, and it produced a second copy of the truth that then had to be kept
+consistent with the bundle. Play by the rules instead: evaluate a checkpoint
+while its bundle is live, and if one ages out, resubmit the finetune. At
+~6.2 h per task that is a cheaper answer than a shadow copy of everything.
 
-```bash
-bash slurm/preserve_outputs.sh --check   # what exists, days until archival
-bash slurm/preserve_outputs.sh           # copy finals to KEEP_ROOT
-```
-
-Run it as soon as a finetune finishes, not days later.
+One consequence to keep in mind: resuming a finetune needs its predecessor's
+physical checkpoint directory as `--checkpoint`, so a bundle that has aged out
+cannot be resumed either -- it has to start again.
 
 ## Common failures
 

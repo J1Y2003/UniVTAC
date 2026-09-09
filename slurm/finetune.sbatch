@@ -79,7 +79,7 @@ BASE_MODEL="${BASE_MODEL:-nvidia/GR00T-N1.7-3B}"
 # see the same check in benchmark_task.sbatch.
 OUTPUT_DIR="${OUTPUT_DIR:-${MODEL_OUTPUT_DIR:-}}"
 if [[ -z "${OUTPUT_DIR}" ]]; then
-  echo "error: set OUTPUT_DIR, or MODEL_OUTPUT_DIR=/rlwrld-unified-checkpoints/\$USER/checkpoints/<job>" >&2
+  echo "error: set OUTPUT_DIR, or MODEL_OUTPUT_DIR=/rlwrld-unified-checkpoints/jimin/jaewon/<job>" >&2
   echo "       (training-outputs policy: outputs must live in the unified folder)" >&2
   exit 2
 fi
