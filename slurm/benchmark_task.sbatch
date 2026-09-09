@@ -48,10 +48,12 @@
 # SITE RULES (see CLAUDE.md, "Cluster rules"). Enforced here; do not "helpfully"
 # reintroduce any of them:
 #
-#   * NEVER pass --time. A job gets the maximum the partition allows, or runs
-#     until the script exits, whichever comes first, so a limit can only cut the
-#     run short. Over-requesting also leaves the job pending forever with
-#     REASON=PartitionTimeLimit rather than failing fast.
+#   * --time is OPTIONAL and worth passing. Without it a job is assumed to want
+#     the partition maximum (2 days), so backfill can only start it in a 2-day
+#     gap; a realistic limit makes it eligible for far more gaps and it starts
+#     sooner. Two rules: never exceed the partition maximum, or the job sits
+#     pending forever with REASON=PartitionTimeLimit, and never set one below
+#     what the work needs unless that work is resumable.
 #   * NEVER pass --cpus-per-task or --mem. Jobs take the node's per-GPU
 #     defaults, and the submit filter rejects the job if either is specified.
 #   * ALWAYS pass --wckey=project-short-name:sub_4dpdata.

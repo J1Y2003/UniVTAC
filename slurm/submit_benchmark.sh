@@ -71,10 +71,26 @@ EVAL_PARTITION="${EVAL_PARTITION:-background}"
 # size rather than just the speed, and whatever you pick is locked in for both
 # variants by the recipe pinning in benchmark_task.sbatch.
 GPUS="${GPUS:-1}"
-# NO TIMELIMIT, deliberately. Site rule: never pass --time. The job gets the
-# maximum the partition allows, or runs until the script exits, whichever comes
-# first -- a limit can only ever cut the run short. A walltime kill is safe
-# anyway, since training resumes from its last checkpoint.
+# Walltime. A job with no --time is assumed to want the partition maximum
+# (2 days), so backfill can only ever start it in a 2-day gap. A realistic limit
+# makes it eligible for far more gaps, which on a contended queue is the
+# difference between starting tonight and starting tomorrow.
+#
+# TRAINING defaults to a limit because it is RESUMABLE: 10,000 steps at the
+# measured 1.89 s/it is ~5.3 h, so 10 h is roughly 2x headroom, and if it is
+# ever wrong the job resumes from its last checkpoint on a resubmit.
+TIME_LIMIT="${TIME_LIMIT:-10:00:00}"
+# EVALUATION defaults to NO limit, deliberately. scripts/run_eval.py has no
+# resume -- a walltime kill restarts it from the first seed, losing the run
+# rather than pausing it -- and the cost of 100 rollouts has never been
+# measured (docs/STATUS.md, "Open"). Set this once a real eval log exists.
+EVAL_TIME_LIMIT="${EVAL_TIME_LIMIT:-}"
+# Both are passed straight to sbatch, so any format sbatch accepts works
+# ("10:00:00", "8:00", "1-12:00:00"). Empty means no --time at all.
+#
+# Neither may exceed the partition maximum or the job pends forever with
+# REASON=PartitionTimeLimit. Check a partition's cap with:
+#   scontrol show partition <name> | grep MaxTime
 # Site rule: every sbatch and srun carries this.
 WCKEY="${WCKEY:-project-short-name:sub_4dpdata}"
 
@@ -129,6 +145,8 @@ printf '  %-16s %s\n' \
   HF_HOME "${HF_HOME}" \
   MODEL_OUTPUT_DIR "${MODEL_OUTPUT_DIR}" \
   partition "${PARTITION} (finetune)" \
+  time_limit "${TIME_LIMIT:-<none: partition maximum>}" \
+  eval_time_limit "${EVAL_TIME_LIMIT:-<none: partition maximum>}" \
   eval_partition "${EVAL_PARTITION} (evaluate)" \
   gpus "${GPUS}" \
   wckey "${WCKEY}" \
@@ -268,9 +286,14 @@ exports_for() {
 # silently put the eval job back on the training partition.
 sbatch_args_for() {
   local task="$1" stage="$2" dep="${3:-}" partition="${PARTITION}"
-  [[ "${stage}" == "eval" ]] && partition="${EVAL_PARTITION}"
-  # No --time, no --cpus-per-task, no --mem: all three are site rules. See the
-  # note at the top of slurm/benchmark_task.sbatch.
+  local time_limit="${TIME_LIMIT}"
+  if [[ "${stage}" == "eval" ]]; then
+    partition="${EVAL_PARTITION}"
+    time_limit="${EVAL_TIME_LIMIT}"
+  fi
+  # No --cpus-per-task and no --mem: both are site rules, and the submit filter
+  # rejects the job outright. --time is optional; see the block where
+  # TIME_LIMIT is set for why training carries one and evaluation does not.
   SBATCH_ARGS=(
     --partition="${partition}"
     --gres="gpu:${GPUS}"
@@ -278,7 +301,9 @@ sbatch_args_for() {
     --job-name="$(job_name_for "${task}" "${stage}")"
     --export="$(exports_for "${task}" "${stage}")"
   )
+  [[ -n "${time_limit}" ]] && SBATCH_ARGS+=(--time="${time_limit}")
   [[ -n "${dep}" ]] && SBATCH_ARGS+=(--dependency="${dep}")
+  return 0
 }
 
 case "${MODE}" in
@@ -390,6 +415,8 @@ case "${MODE}" in
     echo "usage: bash slurm/submit_benchmark.sh [--print|--test-only|--dry]" >&2
     echo "  TASKS=\"a b c\"  EXTRA_TASKS=\"d\"  VARIANTS=...  EPISODES=N  GPUS=N" >&2
     echo "  PARTITION=<train>  EVAL_PARTITION=<eval>  are also overridable." >&2
+    echo "  TIME_LIMIT=10:00:00 (training) and EVAL_TIME_LIMIT= (unset) set --time;" >&2
+    echo "  empty means no --time, i.e. the partition maximum." >&2
     echo "  Two jobs per task: finetune on PARTITION, evaluate on EVAL_PARTITION." >&2
     echo "  EXTRA_TASKS run last, gated behind the reported tasks' finetunes." >&2
     exit 2

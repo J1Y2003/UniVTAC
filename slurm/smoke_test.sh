@@ -62,7 +62,10 @@ EPISODES="${EPISODES:-1}"
 # one job. 20 steps plus one episode fits either partition's limit.
 PARTITION="${PARTITION:-background}"
 GPUS="${GPUS:-1}"
-# No --time: site rule. The job takes the partition maximum automatically.
+# A short --time so backfill can slot this into a small gap -- the whole point
+# of a smoke test is that it schedules and finishes quickly. 20 steps plus one
+# episode is ~an hour; 2 h is the headroom. Empty means no --time.
+TIME_LIMIT="${TIME_LIMIT:-02:00:00}"
 # Site rule: every sbatch and srun carries this.
 WCKEY="${WCKEY:-project-short-name:sub_4dpdata}"
 # Off by default so a throwaway run does not clutter the real project's plots.
@@ -152,19 +155,20 @@ EXPORTS+=",USE_WANDB=${USE_WANDB}"
 # would exit in seconds having proved nothing.
 EXPORTS+=",DRY_RUN=0"
 
-# No --time, no --cpus-per-task, no --mem: all three are site rules.
+# No --cpus-per-task and no --mem: site rules, rejected by the submit filter.
 SBATCH_ARGS=(
   --partition="${PARTITION}"
   --gres="gpu:${GPUS}"
   --wckey="${WCKEY}"
   --export="${EXPORTS}"
 )
+[[ -n "${TIME_LIMIT}" ]] && SBATCH_ARGS+=(--time="${TIME_LIMIT}")
 
 echo "Smoke test: ${MAX_STEPS} training steps, ${EPISODES} eval episode(s)"
 echo "  task       ${TASK}/${TASK_CONFIG}"
 echo "  writes to  ${SMOKE_ROOT}          <- isolated, safe to delete"
 echo "  reads      ${DATA_ROOT}           <- shared, read-only"
-echo "  job        ${GPUS} gpu on ${PARTITION}, wckey=${WCKEY}, no --time"
+echo "  job        ${GPUS} gpu on ${PARTITION}, wckey=${WCKEY}, time=${TIME_LIMIT:-<partition maximum>}"
 echo
 
 if [[ "${MODE}" == "--print" ]]; then

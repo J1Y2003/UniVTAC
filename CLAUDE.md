@@ -130,9 +130,17 @@ unhelpful "Unspecified error":
   `.sbatch`, and `scripts/preflight.py` failing on a wrong `SBATCH_WCKEY`.
 - **no** `--cpus-per-task` and **no** `--mem` — memory and CPUs are not
   specifiable here at all; a job takes the node's per-GPU defaults
-- **no** `--time` — a job gets the partition maximum, or runs until the script
-  exits, so a limit can only cut the run short. Over-requesting also leaves it
-  pending forever with `REASON=PartitionTimeLimit`
+- `--time` is **allowed and usually worth setting** (it was banned here for a
+  while on the assumption it could only hurt; that was wrong). A job without
+  one is assumed to want the partition maximum, so backfill can only start it
+  in a 2-day gap -- a realistic limit makes it eligible for many more gaps and
+  it starts sooner. Two ways to get it wrong: over-requesting past the
+  partition maximum leaves it pending forever with `REASON=PartitionTimeLimit`,
+  and under-requesting cuts the run short. Set it generously on resumable work
+  (`benchmark_task.sbatch` finetunes resume from the last checkpoint) and leave
+  it unset on work that is not resumable, which today means evaluation --
+  `scripts/run_eval.py` restarts from the first seed. `TIME_LIMIT` and
+  `EVAL_TIME_LIMIT` in the submitters are the knobs
 - **`--partition=cpu` for any job that does not request a GPU.** The GPU
   partitions refuse it with
   `GPU 파티션에는 GPU를 요청한 잡만 제출할 수 있습니다` /

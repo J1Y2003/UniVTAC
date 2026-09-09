@@ -256,6 +256,12 @@ squeue -u $USER -o '%.8i %.20P %.70j %.9T %.10M %.20R'
 
 That covers the three reported tasks plus `lift_bottle`, gated behind them.
 
+The finetune carries `--time` (`TIME_LIMIT`, default `10:00:00` against a
+measured ~5.3 h) so backfill can start it in a gap shorter than the partition's
+two days; the evaluation carries none, because `run_eval.py` cannot resume and
+a walltime kill would lose the run rather than pause it. Set `EVAL_TIME_LIMIT`
+once you have timed a real eval.
+
 The split exists because **evaluation is not allowed on `sjw_alinlab`** and one
 job holds one allocation on one partition. Override either side with
 `PARTITION=` (training) and `EVAL_PARTITION=` (evaluation). An eval job showing

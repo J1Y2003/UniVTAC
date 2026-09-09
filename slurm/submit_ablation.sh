@@ -41,6 +41,11 @@ EXECUTION_HORIZON="${EXECUTION_HORIZON:-16}"
 # eval_ablation.sbatch, because a stale SBATCH_PARTITION in the submitting shell
 # outranks the header and would silently put these back on the training queue.
 EVAL_PARTITION="${EVAL_PARTITION:-background}"
+# No --time by default: run_eval.py has no resume, so a walltime kill restarts
+# from the first seed instead of continuing. A limit here would schedule sooner
+# via backfill, so set it once you have measured a real eval -- generously.
+#   EVAL_TIME_LIMIT=06:00:00 bash slurm/submit_ablation.sh
+EVAL_TIME_LIMIT="${EVAL_TIME_LIMIT:-}"
 
 : "${UNIVTAC_ROOT:?set UNIVTAC_ROOT}"
 : "${GROOT_PYTHON:?set GROOT_PYTHON}"
@@ -67,8 +72,10 @@ for variant in ${VARIANTS}; do
     # --cpus-per-task, no --mem; --wckey always. See CLAUDE.md, "Cluster rules".
     jobname="univtac-groot-evaluate-one-variant-on-one-task-${variant}-${task}"
     cmd=(sbatch --job-name="${jobname}" --wckey="${WCKEY:-project-short-name:sub_4dpdata}"
-         --partition="${EVAL_PARTITION:-background}"
+         --partition="${EVAL_PARTITION}"
          --export="${exports}" "${REPO_ROOT}/slurm/eval_ablation.sbatch")
+    [[ -n "${EVAL_TIME_LIMIT}" ]] &&
+      cmd=("${cmd[@]:0:1}" --time="${EVAL_TIME_LIMIT}" "${cmd[@]:1}")
     echo "${cmd[*]}"
     if [[ "${DRY_RUN:-0}" != "1" ]]; then
       "${cmd[@]}"
