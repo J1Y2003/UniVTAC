@@ -176,7 +176,7 @@ def build_arm_spec(args: argparse.Namespace):
             "pool_grid": grid,
             "marker_pool": grid,
         }
-    return build_spec(args.variant, **kwargs)
+    return build_spec(args.variant, task=args.task, **kwargs)
 
 
 def load_instructions(univtac_root: Path, task: str, kind: str = "seen") -> list[str] | None:
