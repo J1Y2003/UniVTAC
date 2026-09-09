@@ -247,10 +247,67 @@ ALL_TASKS="${TASKS} ${EXTRA_TASKS}"
 # where a stored login is read from ($HF_HOME/token), so HF_TOKEN in the
 # environment is the reliable route; the job inherits it from this shell.
 if [[ -z "${HF_TOKEN:-}" && ! -s "${HF_HOME}/token" && ! -s "${HOME}/.cache/huggingface/token" ]]; then
-  echo "WARNING: no HF_TOKEN and no token file under HF_HOME=${HF_HOME}." >&2
-  echo "         The job will fail loading nvidia/Cosmos-Reason2-2B (401)." >&2
-  echo "         Fix: export HF_TOKEN=hf_...   then re-run this." >&2
+  echo "  FAIL  no HF_TOKEN and no token file under HF_HOME=${HF_HOME}." >&2
+  echo "        The job would fail loading nvidia/Cosmos-Reason2-2B (401)." >&2
+  echo "        Fix: export HF_TOKEN=hf_...   then re-run this." >&2
   FAIL=1
+else
+  # PRESENCE IS NOT ACCESS. A token that exists but has not been granted the
+  # gated repo looks identical until the request is actually made, so probe it.
+  # This runs on a login node, needs no GPU, and takes a second -- the
+  # alternative is discovering it a minute into a job that already holds an A100.
+  #
+  # benchmark_task.sbatch probes the same thing at job start; that stays as the
+  # last line of defence, since a token can be revoked between submit and run.
+  #
+  # A probe that cannot RUN (no huggingface_hub, no network from the login node)
+  # is a warning, not a failure -- it says nothing about the token. Only a probe
+  # that runs and is refused fails the submission.
+  HF_PROBE=$("${GROOT_PYTHON}" - <<'PYHF' 2>&1
+import sys
+try:
+    from huggingface_hub import HfApi
+except Exception as exc:
+    print("SKIP cannot import huggingface_hub: %s" % exc)
+    sys.exit(0)
+api = HfApi()
+try:
+    user = api.whoami().get("name", "?")
+except Exception as exc:
+    print("BAD token rejected by the hub (%s: %s)"
+          % (type(exc).__name__, str(exc)[:160]))
+    sys.exit(0)
+for repo in ("nvidia/GR00T-N1.7-3B", "nvidia/Cosmos-Reason2-2B"):
+    try:
+        api.model_info(repo)
+    except Exception as exc:
+        print("DENIED %s for user %s (%s: %s)"
+              % (repo, user, type(exc).__name__, str(exc)[:160]))
+        sys.exit(0)
+print("OK %s" % user)
+PYHF
+)
+  case "${HF_PROBE}" in
+    OK*)
+      echo "  ok  HF token valid, gated repos readable (hub user ${HF_PROBE#OK })"
+      ;;
+    SKIP*)
+      echo "  WARN  could not verify the HF token: ${HF_PROBE#SKIP }" >&2
+      echo "        Not a failure -- the job re-checks before loading weights." >&2
+      ;;
+    BAD*|DENIED*)
+      echo "  FAIL  ${HF_PROBE}" >&2
+      echo "        Create a token with access at" >&2
+      echo "          https://huggingface.co/settings/tokens" >&2
+      echo "        and request access to the gated repo at its model page." >&2
+      echo "        Submitting now would burn a queue slot for a 401." >&2
+      FAIL=1
+      ;;
+    *)
+      echo "  WARN  HF token probe returned something unexpected:" >&2
+      printf '        %s\n' "${HF_PROBE}" >&2
+      ;;
+  esac
 fi
 mkdir -p "${REPO_ROOT}/logs" || FAIL=1
 [[ -d "${REPO_ROOT}/logs" ]] && echo "  ok  logs/ exists"
