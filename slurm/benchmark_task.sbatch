@@ -369,6 +369,16 @@ done
 # Note HF_HOME is redirected above, which also moves where a stored login is
 # looked for ($HF_HOME/token, not ~/.cache/huggingface/token). Exporting
 # HF_TOKEN avoids that entirely and takes precedence over any stored login.
+# `${HF_TOKEN:+set}${HF_TOKEN:-UNSET}` would PRINT THE TOKEN when it is set:
+# `:+` yields "set" and `:-` yields the VALUE, and the two concatenate. In a
+# job that lands in <bundle>/logs/slurm.err, which the launcher creates 0644 --
+# a readable secret on a shared account. Never render a secret through a
+# default-value expansion. Same bug was in submit_benchmark.sh's wandb line.
+if [[ -n "${HF_TOKEN:-}" ]]; then
+  HF_TOKEN_STATE="set"
+else
+  HF_TOKEN_STATE="UNSET"
+fi
 if ! "${GROOT_PYTHON}" - <<'PYCHECK' 2>/dev/null
 import sys
 try:
@@ -384,7 +394,7 @@ then
          export HF_TOKEN=hf_...
        The job inherits it from the submitting shell. Request access at
        https://huggingface.co/nvidia/Cosmos-Reason2-2B if you have none.
-       HF_TOKEN is currently ${HF_TOKEN:+set}${HF_TOKEN:-UNSET}; HF_HOME=${HF_HOME}."
+       HF_TOKEN is currently ${HF_TOKEN_STATE}; HF_HOME=${HF_HOME}."
 fi
 
 # Same lesson as hf_transfer: do not pass a flag whose package may be absent.

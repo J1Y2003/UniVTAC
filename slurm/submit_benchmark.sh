@@ -159,6 +159,18 @@ FAIL=0
 check_dir()  { [[ -d "$2" ]] || { echo "  MISSING dir   $1=$2" >&2; FAIL=1; }; }
 check_exec() { [[ -x "$2" ]] || { echo "  NOT EXECUTABLE $1=$2" >&2; FAIL=1; }; }
 
+# NOT `${WANDB_API_KEY:+online}${WANDB_API_KEY:-offline}`. That looks like a
+# neat one-liner and it PRINTS THE KEY: when the variable is set, `:+` yields
+# "online" and `:-` yields the VALUE, so the two concatenate into
+# "online<the-actual-api-key>" in the terminal, in the scrollback, and
+# anywhere that output gets pasted. Never render a secret through a
+# default-value expansion.
+if [[ -n "${WANDB_API_KEY:-}" ]]; then
+  WANDB_STATE="online"
+else
+  WANDB_STATE="offline (no WANDB_API_KEY)"
+fi
+
 echo "Resolved configuration:"
 printf '  %-16s %s\n' \
   REPO_ROOT "${REPO_ROOT}" \
@@ -180,7 +192,7 @@ printf '  %-16s %s\n' \
   task_config "${TASK_CONFIG}" \
   variants "${VARIANTS}" \
   episodes "${EPISODES}" \
-  wandb "${WANDB_API_KEY:+online}${WANDB_API_KEY:-offline (no WANDB_API_KEY)}"
+  wandb "${WANDB_STATE}"
 echo
 
 echo "Checks:"
