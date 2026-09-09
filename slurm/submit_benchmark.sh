@@ -131,7 +131,12 @@ TASKS="${TASKS:-${TASK:-insert_hole insert_tube pull_out_key}}"
 # the sweep substrate -- it just must not compete for the queue.
 #
 # Set EXTRA_TASKS="" to submit the three priority tasks alone.
-EXTRA_TASKS="${EXTRA_TASKS:-lift_bottle}"
+#
+# `-` and not `:-`, deliberately: with `:-` an explicitly empty EXTRA_TASKS
+# falls back to lift_bottle, so the documented way to skip it silently
+# submitted a fourth job instead. `-` honours an empty value and still
+# defaults when the variable is unset.
+EXTRA_TASKS="${EXTRA_TASKS-lift_bottle}"
 ALL_TASKS="${TASKS} ${EXTRA_TASKS}"
 TASK_CONFIG="${TASK_CONFIG:-clean}"
 # 100, from the paper: "All policies are trained on 50 automatically collected
