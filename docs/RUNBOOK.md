@@ -45,7 +45,11 @@ git clone https://github.com/univtac/UniVTAC.git ~/UniVTAC-sim
 
 # 0b. Install it as a BATCH job (hours). Creates conda env `UniVTAC`, Python 3.10.
 cd $REPO_ROOT
-sbatch --wckey=project-short-name:sub_4dpdata --export=ALL,UNIVTAC_ROOT=$HOME/UniVTAC-sim slurm/install_univtac.sbatch
+env UNIVTAC_ROOT=$HOME/UniVTAC-sim bundle-sbatch \
+    --job-kind other --code-git-root $REPO_ROOT -- \
+    --job-name=univtac-groot-install-univtac-isaac-lab-tacex-and-curobo-stack \
+    --wckey=project-short-name:sub_4dpdata --partition=sjw_alinlab -- \
+    slurm/install_univtac.sbatch
 
 # 0c. Scene assets.
 cd ~/UniVTAC-sim && bash data/download.sh
@@ -149,9 +153,9 @@ source env.sh
 ```
 
 **On a shared or borrowed account, do not edit `~/.bashrc`.** It belongs to
-whoever owns the account. `env.sh` is gitignored, leaves no permanent trace, and
-`sbatch --export=ALL` propagates whatever the submitting shell exported -- so
-nothing here needs to be in a dotfile. Source it once per session.
+whoever owns the account. `env.sh` is gitignored, leaves no permanent trace, and a job inherits
+whatever the submitting shell exported -- so nothing here needs to be in a
+dotfile. Source it once per session.
 
 Two things to avoid on someone else's account:
 
@@ -305,28 +309,42 @@ finetune first — days of work, not minutes.
 #    intended source; collecting your own is only for tasks not in the release.
 #    CPU-only, so --partition=cpu. ~24 GB per task.              [login] -> [compute]
 cd $REPO_ROOT
-sbatch --wckey=project-short-name:sub_4dpdata --partition=cpu \
-    --export=ALL,TASKS=insert_hole,VERSION=45,RAW_CONFIG=clean slurm/download_data.sbatch
+env TASKS=insert_hole VERSION=45 RAW_CONFIG=clean UNIVTAC_JOB_CONFIG=1 \
+    bundle-sbatch --job-kind data_process --code-git-root $REPO_ROOT -- \
+    --job-name=univtac-groot-download-univtac-demonstration-data-from-modelscope \
+    --wckey=project-short-name:sub_4dpdata --partition=cpu -- \
+    slurm/download_data.sbatch
 
 # 8. Convert to GR00T LeRobot v2, once per variant -- the state layout differs.
 #    CPU-only, minutes. Runs under $CONVERT_PYTHON, not the simulator's Python.
 for v in tactile baseline_finetuned; do
-  sbatch --wckey=project-short-name:sub_4dpdata --partition=cpu \
-      --export=ALL,TASK=insert_hole,VARIANT=$v,TASK_CONFIG=clean slurm/convert.sbatch
+  env TASK=insert_hole VARIANT=$v TASK_CONFIG=clean UNIVTAC_JOB_CONFIG=1 \
+      bundle-sbatch --job-kind data_process --code-git-root $REPO_ROOT -- \
+      --job-name=univtac-groot-convert-univtac-hdf5-demonstrations-to-lerobot-v2 \
+      --wckey=project-short-name:sub_4dpdata --partition=cpu -- \
+      slurm/convert.sbatch
 done
 
-# 9. Finetune and evaluate both, same recipe, in one resumable job.
-#    EXTRA_TASKS="" skips the gated lift_bottle run.        [login] -> [compute]
+# 9a. Finetune both variants, same recipe.  EXTRA_TASKS="" skips lift_bottle.
 VARIANTS="tactile baseline_finetuned" TASKS=insert_hole EXTRA_TASKS="" \
     bash slurm/submit_benchmark.sh
+
+# 9b. WHEN THAT HAS FINISHED, evaluate the checkpoints it produced. Separate
+#     submission: an eval job must declare an existing physical checkpoint, and
+#     there is no job id to hang a dependency on.
+VARIANTS="tactile baseline_finetuned" TASKS=insert_hole EXTRA_TASKS="" \
+    bash slurm/submit_benchmark.sh --evals
 
 # 10. Compare them against each other.
 python scripts/compare_ablation.py --baseline-variant baseline_finetuned --tactile-variant tactile
 ```
 
-Every `sbatch` needs `--wckey`, and every CPU-only job needs `--partition=cpu`;
-the submit filter rejects them otherwise. `submit_benchmark.sh` adds both for
-you, which is the main reason to prefer it over hand-written `sbatch` lines.
+Every submission needs `--wckey`, and every CPU-only job needs
+`--partition=cpu`; the submit filter rejects them otherwise. Both go in the
+Slurm region of the `bundle-sbatch` command line, after the first `--`.
+`submit_benchmark.sh` adds them for you and validates the whole three-region
+command before anything is sent, which is the main reason to prefer it over a
+hand-written launcher line.
 
 Compare the tactile variant against `baseline_finetuned`, not against the zero-shot
 baseline — otherwise the whole finetuning effect gets credited to touch.

@@ -10,8 +10,11 @@
 # Submit one job per (variant, task). To sweep, use the array form below or the
 # helper: slurm/submit_ablation.sh
 #
-#   sbatch --wckey=project-short-name:sub_4dpdata --export=ALL,VARIANT=baseline,TASK=insert_hole slurm/eval_ablation.sbatch
-#   sbatch --wckey=project-short-name:sub_4dpdata --export=ALL,VARIANT=tactile,TASK=insert_hole,GROOT_MODEL=/ckpt/tactile slurm/eval_ablation.sbatch
+#   env VARIANT=baseline TASK=insert_hole UNIVTAC_JOB_CONFIG=1 bundle-sbatch #     --job-kind eval --checkpoint /physical/path/to/checkpoint-10000 #     --code-git-root "$REPO_ROOT" -- #     --job-name=univtac-groot-evaluate-one-ablation-variant-on-one-univtac-benchmark-task #     --wckey=project-short-name:sub_4dpdata --partition=background -- #     slurm/eval_ablation.sbatch
+#
+# --checkpoint must be a PHYSICAL directory: the launcher rejects symlinks, so
+# the `final` symlink a finetune leaves behind has to be resolved first
+# (readlink -f). slurm/submit_ablation.sh does that for you.
 #
 # SITE RULES (see CLAUDE.md, "Cluster rules"). Enforced here; do not "helpfully"
 # reintroduce any of them:
@@ -25,27 +28,34 @@
 #   * NEVER pass --cpus-per-task or --mem. Jobs take the node's per-GPU
 #     defaults, and the submit filter rejects the job if either is specified.
 #   * ALWAYS pass --wckey=project-short-name:sub_4dpdata.
-#   * MODEL_OUTPUT_DIR must be in the SUBMITTING environment, for every job --
-#     including CPU-only ones that write no checkpoints. The filter checks it at
-#     submit time, before this script runs, so no in-script default can help:
-#       ❌ ERROR: MODEL_OUTPUT_DIR가 없습니다.
-#          MODEL_OUTPUT_DIR=/rlwrld-unified-checkpoints/jimin/... 로 지정하세요.
-#     `source env.sh` sets it and --export=ALL carries it in.
+#   * MODEL_OUTPUT_DIR is injected by bundle-sbatch and equals CODE_OUTPUT_DIR
+#     (<bundle>/code-output). Never set it, never pass it with --export, and do
+#     not expect it under /rlwrld-unified-checkpoints any more.
 #
 # Do pass --partition explicitly, or export SBATCH_PARTITION: `debug` is the
 # default here and is short-lived, so it is not where long training belongs.
-#SBATCH --job-name=univtac-groot-evaluate-one-ablation-variant-on-one-univtac-benchmark-task
-#SBATCH --output=logs/%x-%A_%a.out
-#SBATCH --error=logs/%x-%A_%a.err
 #SBATCH --gres=gpu:1
 # Evaluation is not allowed on sjw_alinlab. This header is the floor, not the
 # guarantee: --partition on the command line and SBATCH_PARTITION in the shell
 # both outrank it, which is why slurm/submit_ablation.sh and
 # slurm/submit_benchmark.sh also pass it explicitly.
-#SBATCH --partition=background
-#SBATCH --wckey=project-short-name:sub_4dpdata
 
 set -euo pipefail
+
+# bundle-sbatch owns --export, so this job's configuration is not handed to it
+# as a variable list: it arrives only because the submitter exported it and the
+# launcher's environment is inherited. If that ever stops holding, the variables
+# below would quietly fall back to their defaults and the job would do the WRONG
+# WORK while looking healthy. The submitters set this sentinel; a real job
+# without it stops here. A local `bash` run for a dry run is unaffected.
+if [[ -n "${SLURM_JOB_ID:-}" && -z "${UNIVTAC_JOB_CONFIG:-}" ]]; then
+  echo "error: UNIVTAC_JOB_CONFIG is unset, so this job's environment did not" >&2
+  echo "       reach it and its configuration would silently take defaults." >&2
+  echo "       Submit through the scripts in slurm/, which export it, or set" >&2
+  echo "       UNIVTAC_JOB_CONFIG=1 alongside the rest of the configuration." >&2
+  exit 2
+fi
+
 
 # --------------------------------------------------------------------------- #
 # The site wckey, checked at runtime
@@ -119,16 +129,23 @@ UNIVTAC_PYTHON="${UNIVTAC_PYTHON:?set UNIVTAC_PYTHON to the UniVTAC/Isaac Lab in
 
 # Checkpoint + embodiment tag. The baseline runs zero-shot on the released
 # model; the tactile variant needs a NEW_EMBODIMENT finetune (docs/ABLATION.md).
+#
+# CHECKPOINT_DIR is what bundle-sbatch injects for the `--checkpoint PATH` this
+# job was submitted with, and it is the authoritative answer for a finetuned
+# variant: it is the very path the launcher validated and recorded as this
+# job's declared intent. GROOT_MODEL still wins if set explicitly, so an
+# operator can point a rerun somewhere else without re-declaring the job.
+GROOT_MODEL="${GROOT_MODEL:-${CHECKPOINT_DIR:-}}"
 if [[ "${VARIANT}" == "baseline" ]]; then
   GROOT_MODEL="${GROOT_MODEL:-nvidia/GR00T-N1.7-3B}"
   EMBODIMENT_TAG="${EMBODIMENT_TAG:-OXE_DROID_RELATIVE_EEF_RELATIVE_JOINT}"
   MODALITY_CONFIG="${MODALITY_CONFIG:-}"
 elif [[ "${VARIANT}" == "tactile" ]]; then
-  GROOT_MODEL="${GROOT_MODEL:?tactile needs a finetuned checkpoint; set GROOT_MODEL}"
+  GROOT_MODEL="${GROOT_MODEL:?tactile needs a finetuned checkpoint; set GROOT_MODEL or submit with bundle-sbatch --checkpoint}"
   EMBODIMENT_TAG="${EMBODIMENT_TAG:-NEW_EMBODIMENT}"
   MODALITY_CONFIG="${MODALITY_CONFIG:-${REPO_ROOT}/configs/modality/univtac_tactile_config.py}"
 else
-  GROOT_MODEL="${GROOT_MODEL:?baseline_finetuned needs a checkpoint; set GROOT_MODEL}"
+  GROOT_MODEL="${GROOT_MODEL:?baseline_finetuned needs a checkpoint; set GROOT_MODEL or submit with bundle-sbatch --checkpoint}"
   EMBODIMENT_TAG="${EMBODIMENT_TAG:-NEW_EMBODIMENT}"
   MODALITY_CONFIG="${MODALITY_CONFIG:-${REPO_ROOT}/configs/modality/univtac_baseline_config.py}"
 fi
@@ -149,7 +166,10 @@ fi
 # A per-job port keeps concurrent array tasks on one node from colliding.
 PORT="${PORT:-$((20000 + (${SLURM_JOB_ID:-$$} % 20000)))}"
 RESULTS_DIR="${RESULTS_DIR:-${REPO_ROOT}/eval_result}"
-RUN_TAG="${SLURM_ARRAY_TASK_ID:-0}"
+# Overridable, and it matters: without a distinct tag every non-array eval
+# writes seed<offset>-0.jsonl, so two runs into the same RESULTS_DIR silently
+# overwrite each other. slurm/sweep_checkpoints.sh sets RUN_TAG=ckpt<N>.
+RUN_TAG="${RUN_TAG:-${SLURM_ARRAY_TASK_ID:-0}}"
 OUTPUT="${RESULTS_DIR}/${VARIANT}/${TASK}/seed${SEED_OFFSET}-${RUN_TAG}.jsonl"
 SERVER_LOG="${RESULTS_DIR}/${VARIANT}/${TASK}/server-${RUN_TAG}.log"
 
@@ -287,6 +307,13 @@ EVAL_CMD=(
   --startup-timeout 1800
   --device "${SIM_DEVICE}"
 )
+# START_SEED resumes a preempted run: run_eval.py starts at an absolute seed
+# rather than deriving one from SEED_OFFSET, and ResultWriter appends to the
+# existing JSONL. slurm/sweep_checkpoints.sh computes it from what is already
+# recorded there. Unset means "start at 1_000_000 * (1 + SEED_OFFSET)".
+if [[ -n "${START_SEED:-}" ]]; then
+  EVAL_CMD+=(--start-seed "${START_SEED}")
+fi
 if [[ "${VARIANT}" == "tactile" ]]; then
   EVAL_CMD+=(--tactile-mode "${TACTILE_MODE:-depth_pool}")
 fi

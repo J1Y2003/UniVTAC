@@ -59,13 +59,19 @@ converted (see [RUNBOOK.md](RUNBOOK.md)):
 ```bash
 # One dataset per variant -- the state layout differs, so they cannot share one
 for v in baseline_finetuned tactile; do
-  sbatch --wckey=project-short-name:sub_4dpdata --partition=cpu \
-    --export=ALL,TASK=insert_hole,VARIANT=$v,TASK_CONFIG=clean slurm/convert.sbatch
+  env TASK=insert_hole VARIANT=$v TASK_CONFIG=clean UNIVTAC_JOB_CONFIG=1 \
+    bundle-sbatch --job-kind data_process --code-git-root $REPO_ROOT -- \
+    --job-name=univtac-groot-convert-univtac-hdf5-demonstrations-to-lerobot-v2 \
+    --wckey=project-short-name:sub_4dpdata --partition=cpu -- slurm/convert.sbatch
 done
 
-# Finetune and evaluate both, same recipe, in one resumable job
+# Finetune both variants, same recipe
 VARIANTS="tactile baseline_finetuned" TASKS=insert_hole EXTRA_TASKS="" \
   bash slurm/submit_benchmark.sh
+
+# Then, once those have finished, evaluate what they produced
+VARIANTS="tactile baseline_finetuned" TASKS=insert_hole EXTRA_TASKS="" \
+  bash slurm/submit_benchmark.sh --evals
 
 # Table
 python scripts/compare_ablation.py --baseline-variant baseline_finetuned --tactile-variant tactile

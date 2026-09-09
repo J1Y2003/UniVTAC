@@ -486,37 +486,36 @@ WCKEY = "project-short-name:sub_4dpdata"
 """Required on every sbatch and srun here; the submit filter rejects jobs without it."""
 
 
-UNIFIED_CHECKPOINTS = "/rlwrld-unified-checkpoints"
-"""The cluster's unified training-outputs folder; MODEL_OUTPUT_DIR must be under it."""
+def check_bundle_sbatch(report: Report) -> None:
+    """``bundle-sbatch`` is on PATH, and ``MODEL_OUTPUT_DIR`` is NOT set.
 
-
-def check_model_output_dir(report: Report) -> None:
-    """``MODEL_OUTPUT_DIR`` is set, and under the unified folder.
-
-    The submit filter rejects **every** job without it -- including CPU-only
-    ones that write no checkpoints -- and it checks at submit time, before the
-    batch script runs, so no in-script default can rescue it. The only symptom
-    is ``MODEL_OUTPUT_DIR가 없습니다`` followed by "Unspecified error".
+    Every job is submitted through the launcher now. It creates one output
+    bundle per submission and injects ``MODEL_OUTPUT_DIR`` = ``CODE_OUTPUT_DIR``
+    = ``<bundle>/code-output``; the guide is explicit that we must not supply
+    it. A leftover ``MODEL_OUTPUT_DIR`` in the shell (from ``env.sh``, written
+    for the old unified-folder policy) would be inherited by the job and could
+    send checkpoints somewhere the launcher does not know about, so it is worth
+    a warning rather than a shrug.
     """
-    raw = os.environ.get("MODEL_OUTPUT_DIR", "").strip()
-    suggested = f"{UNIFIED_CHECKPOINTS}/{os.environ.get('USER', '$USER')}/checkpoints/univtac-groot"
-    if not raw:
-        report.add(
-            FAIL, "MODEL_OUTPUT_DIR", "not set -- every sbatch will be rejected",
-            f"  export MODEL_OUTPUT_DIR={suggested}\n"
-            "  Add it to env.sh; --export=ALL then carries it into the job.",
-        )
-    elif not raw.startswith(UNIFIED_CHECKPOINTS + "/"):
-        report.add(
-            FAIL, "MODEL_OUTPUT_DIR", f"{raw} is outside {UNIFIED_CHECKPOINTS}",
-            f"  export MODEL_OUTPUT_DIR={suggested}",
-        )
+    if shutil.which("bundle-sbatch"):
+        report.add(PASS, "bundle-sbatch", "on PATH")
     else:
-        parts = raw.rstrip("/").split("/")
-        shape_ok = len(parts) >= 5 and parts[3] == "checkpoints"
-        report.add(PASS if shape_ok else WARN, "MODEL_OUTPUT_DIR",
-                   raw + ("" if shape_ok else
-                          "  (policy shape is {NFS}/{user}/checkpoints/{job})"))
+        report.add(
+            FAIL, "bundle-sbatch", "not on PATH -- nothing can be submitted",
+            "  Every job here goes through it; plain sbatch is not the\n"
+            "  supported path any more. See\n"
+            "  https://github.com/RLWRLD/bundle-sbatch",
+        )
+
+    raw = os.environ.get("MODEL_OUTPUT_DIR", "").strip()
+    if not raw:
+        report.add(PASS, "MODEL_OUTPUT_DIR", "unset (the launcher injects it)")
+    else:
+        report.add(
+            WARN, "MODEL_OUTPUT_DIR", f"{raw} is set, but bundle-sbatch injects it",
+            "  unset MODEL_OUTPUT_DIR   # and drop it from env.sh\n"
+            "  It pointed at the retired /rlwrld-unified-checkpoints layout.",
+        )
 
 
 def check_wckey(report: Report) -> None:
@@ -533,8 +532,8 @@ def check_wckey(report: Report) -> None:
 
     ``SLURM_WCKEY`` is deliberately NOT required. SLURM sets it *inside* a job
     to report the wckey the job actually got, which is what every ``.sbatch``
-    here re-checks at runtime. Exporting it from your shell would ride in on
-    ``--export=ALL`` and mask that check, so an exported value earns a warning
+    here re-checks at runtime. Exporting it from your shell would be inherited by
+    the job and mask that check, so an exported value earns a warning
     rather than a pass. For ``srun``, pass ``--wckey`` on the command line --
     every documented ``srun`` in this repo does.
     """
@@ -555,8 +554,8 @@ def check_wckey(report: Report) -> None:
     else:
         report.add(
             WARN, "wckey",
-            f"SBATCH_WCKEY unset -- fine for the job scripts, which pass "
-            f"--wckey={WCKEY} themselves; export it for ad-hoc sbatch",
+            f"SBATCH_WCKEY unset -- fine, the submitters pass --wckey={WCKEY} "
+            f"on the bundle-sbatch command line; export it for ad-hoc use",
         )
 
     if srun_key and srun_key != WCKEY:
@@ -565,9 +564,10 @@ def check_wckey(report: Report) -> None:
     elif srun_key and not in_job:
         report.add(
             WARN, "  SLURM_WCKEY",
-            "exported from your shell -- this rides in on --export=ALL and masks "
-            "the runtime wckey check inside every .sbatch. Prefer `unset "
-            "SLURM_WCKEY` and --wckey on srun.",
+            "exported from your shell -- the job inherits it and it masks the "
+            "runtime wckey check inside every .sbatch. Prefer `unset "
+            "SLURM_WCKEY`; the submitters pass --wckey on the bundle-sbatch "
+            "command line.",
         )
 
 
@@ -646,7 +646,7 @@ def main(argv: list[str] | None = None) -> int:
     report = Report()
     check_slurm(report)
     check_wckey(report)
-    check_model_output_dir(report)
+    check_bundle_sbatch(report)
     check_conda(report)
     check_repo(report)
     check_univtac(report)

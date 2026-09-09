@@ -13,19 +13,24 @@
 # STAGES defaults to all three, so a single-partition run still works for a
 # smoke test or a local `bash` invocation.
 #
-#   sbatch --wckey=project-short-name:sub_4dpdata slurm/benchmark_task.sbatch
-#   sbatch --wckey=project-short-name:sub_4dpdata --export=ALL,TASK=lift_bottle,EPISODES=50 slurm/benchmark_task.sbatch
+# Submitted through bundle-sbatch, never plain sbatch:
 #
-# Prefer slurm/submit_benchmark.sh, which resolves every path for you. Do not
-# raise --gres above gpu:1 -- see the note on the #SBATCH --gres line below.
+#   env TASK=lift_bottle EPISODES=50 STAGES=finetune UNIVTAC_JOB_CONFIG=1 #     bundle-sbatch --job-kind train --checkpoint from_scratch #     --code-git-root "$REPO_ROOT" -- #     --job-name=univtac-groot-per-task-finetune-only-vision-only-lift_bottle #     --wckey=project-short-name:sub_4dpdata --partition=sjw_alinlab #     --time=10:00:00 -- slurm/benchmark_task.sbatch
+#
+# Prefer slurm/submit_benchmark.sh, which resolves every path and both regions
+# of that command line for you. Do not raise --gres above gpu:1 -- see the note
+# on the #SBATCH --gres line below.
 #
 # BEFORE submitting, verify it without spending GPU time. DRY_RUN=1 runs the
 # full preflight, prints the exact arguments every stage would use, checks the
 # aggregator imports, and exits -- cheap enough for a login node:
 #
-#   bash -n slurm/benchmark_task.sbatch --wckey=project-short-name:sub_4dpdata          # syntax only, instant
-#   DRY_RUN=1 bash slurm/benchmark_task.sbatch --wckey=project-short-name:sub_4dpdata   # paths, datasets, plan
-#   sbatch --wckey=project-short-name:sub_4dpdata --test-only slurm/benchmark_task.sbatch  # submit filter + resources
+#   bash -n slurm/benchmark_task.sbatch            # syntax only, instant
+#   DRY_RUN=1 bash slurm/benchmark_task.sbatch     # paths, datasets, plan
+#
+# There is no --test-only rehearsal any more: that flag belongs to the launcher
+# and cannot be passed through. DRY_RUN and `submit_benchmark.sh --print` are
+# what is left.
 #
 # Stages, in order:
 #   1. preflight     -- every path and dataset checked BEFORE any GPU time is spent
@@ -57,23 +62,20 @@
 #   * NEVER pass --cpus-per-task or --mem. Jobs take the node's per-GPU
 #     defaults, and the submit filter rejects the job if either is specified.
 #   * ALWAYS pass --wckey=project-short-name:sub_4dpdata.
-#   * MODEL_OUTPUT_DIR must be in the SUBMITTING environment, for every job --
-#     including CPU-only ones that write no checkpoints. The filter checks it at
-#     submit time, before this script runs, so no in-script default can help:
-#       ❌ ERROR: MODEL_OUTPUT_DIR가 없습니다.
-#          MODEL_OUTPUT_DIR=/rlwrld-unified-checkpoints/jimin/... 로 지정하세요.
-#     `source env.sh` sets it and --export=ALL carries it in.
+#   * MODEL_OUTPUT_DIR is INJECTED BY THE LAUNCHER and equals CODE_OUTPUT_DIR,
+#     i.e. <bundle>/code-output. Do not set it, do not pass it, and do not
+#     expect the old /rlwrld-unified-checkpoints layout -- bundle storage is
+#     managed storage with its own retention.
 #
-# Do pass --partition explicitly, or export SBATCH_PARTITION: `debug` is the
-# default here and is short-lived, so it is not where long training belongs.
-#SBATCH --job-name=univtac-groot-benchmark-one-task-finetune-then-evaluate
-#SBATCH --output=logs/%x-%j.out
-#SBATCH --error=logs/%x-%j.err
+# Everything the launcher owns has been removed from the directives below:
+# --job-name, --output, --error, --export, --wckey, --partition and --time all
+# live on the bundle-sbatch command line now. What remains is the resource
+# request, in attached long form.
+#
 # 1 GPU, deliberately: --num-gpus > 1 makes launch_finetune.py wrap the model
 # in nn.DataParallel, which dies with "module must have its parameters ... on
 # device: cpu". Overridden by slurm/submit_benchmark.sh's --gres.
 #SBATCH --gres=gpu:1
-#SBATCH --wckey=project-short-name:sub_4dpdata
 
 # Deliberately NOT `set -e`: a failing stage must be recorded and stepped over,
 # not abort the job. Stage failures are tracked explicitly instead.
@@ -129,6 +131,25 @@ fi
 # --------------------------------------------------------------------------- #
 # Configuration
 # --------------------------------------------------------------------------- #
+# bundle-sbatch owns --export, so this job's configuration is NOT passed as an
+# explicit variable list any more -- it arrives only because the submitter
+# exported it and sbatch propagates the submitting environment by default. If
+# that ever stops being true the variables below would quietly fall back to
+# their defaults and the job would train the WRONG TASK while looking healthy.
+#
+# So the submitters set this sentinel, and a real job without it stops here.
+# (Plain `bash slurm/benchmark_task.sbatch` for a dry run is unaffected: the
+# check only applies inside a Slurm allocation.)
+if [[ -n "${SLURM_JOB_ID:-}" && -z "${UNIVTAC_JOB_CONFIG:-}" ]]; then
+  echo "error: UNIVTAC_JOB_CONFIG is unset, so this job's environment did not" >&2
+  echo "       reach it and TASK/VARIANTS/STAGES would silently take their" >&2
+  echo "       defaults. Submit through slurm/submit_benchmark.sh, which" >&2
+  echo "       exports the configuration before calling bundle-sbatch." >&2
+  echo "       If you are submitting by hand, export UNIVTAC_JOB_CONFIG=1" >&2
+  echo "       alongside the rest of the configuration." >&2
+  exit 2
+fi
+
 TASK="${TASK:-lift_bottle}"
 TASK_CONFIG="${TASK_CONFIG:-clean}"
 # 100 test rollouts, matching the paper's evaluation protocol.
@@ -148,10 +169,10 @@ if [[ -n "${ARMS:-}" && -z "${VARIANTS:-}" ]]; then
   VARIANTS="${ARMS}"
 fi
 VARIANTS="${VARIANTS:-tactile baseline_finetuned}"
-# Accept ':' and ',' as separators as well as spaces. sbatch --export is itself
-# a COMMA-separated list, so neither a space nor a comma can appear inside one of
-# its values -- 'STAGES=eval,compare' would make SLURM read 'compare' as a
-# variable of its own. The submitters therefore send colons.
+# Accept ':' and ',' as separators as well as spaces. A value crossing the
+# submitters' `env NAME=VALUE` list is easiest to keep whole when it contains no
+# spaces at all, and a comma still reads as a list separator in too many places
+# to be safe. So the submitters send colons and this turns them back into words.
 VARIANTS="${VARIANTS//[,:]/ }"
 
 # Which stages this job runs. The default is all three, so a plain
@@ -222,35 +243,26 @@ HP_ARGS=""
 [[ -n "${WEIGHT_DECAY}" ]] && HP_ARGS+=" --weight-decay ${WEIGHT_DECAY}"
 
 DATA_ROOT="${DATA_ROOT:-${HOME}/jaewon/workspace/groot-data}"
-# Training outputs policy ("모델 학습 Outputs 통합 저장 및 Retention 정책"):
-# every checkpoint must land under the cluster's unified folder,
-# {NFS}/{user}/..., which on Kakao is /rlwrld-unified-checkpoints. Required, not
-# defaulted: the policy's own train.sbatch asserts MODEL_OUTPUT_DIR, jobs
-# without it are to be rejected outright in future, and a silent fallback to
-# home NFS is precisely the sprawl the policy exists to stop.
-: "${MODEL_OUTPUT_DIR:?set MODEL_OUTPUT_DIR=/rlwrld-unified-checkpoints/\$USER/checkpoints/<job> (training-outputs policy)}"
+# Where checkpoints go. Under bundle-sbatch this is not ours to choose: the
+# launcher creates one output bundle per submission and injects
+#   MODEL_OUTPUT_DIR = CODE_OUTPUT_DIR = <bundle>/code-output
+# so every submission writes to a DIFFERENT directory. The old
+# /rlwrld-unified-checkpoints layout and its validation are gone with it.
+#
+# Two consequences worth stating plainly:
+#
+#  * A resubmission does not see the previous run's checkpoints. Resuming is no
+#    longer automatic -- pass the previous physical checkpoint directory as
+#    `bundle-sbatch --checkpoint`, which arrives here as CHECKPOINT_DIR.
+#  * Bundle storage is managed storage with its own retention. Anything worth
+#    keeping still has to be copied out; slurm/preserve_outputs.sh does that.
+: "${MODEL_OUTPUT_DIR:?MODEL_OUTPUT_DIR is injected by bundle-sbatch. Submit through slurm/submit_benchmark.sh, not with plain sbatch}"
 CKPT_ROOT="${CKPT_ROOT:-${MODEL_OUTPUT_DIR}}"
-# CKPT_ROOT can still be redirected (the smoke test does), but not off the
-# unified folder -- that would put tens of GB back on home NFS.
-case "${CKPT_ROOT}" in
-  /rlwrld-unified-checkpoints/*) ;;
-  *)
-    if [[ "${ALLOW_NONSTANDARD_OUTPUT:-0}" == "1" ]]; then
-      echo "[job] WARNING: CKPT_ROOT=${CKPT_ROOT} is outside" >&2
-      echo "[job] /rlwrld-unified-checkpoints -- against the training-outputs" >&2
-      echo "[job] policy. Proceeding because ALLOW_NONSTANDARD_OUTPUT=1." >&2
-    else
-      echo "error: CKPT_ROOT=${CKPT_ROOT} is outside /rlwrld-unified-checkpoints." >&2
-      echo "       The training-outputs policy requires checkpoints under" >&2
-      echo "       {NFS}/{user}/... on the unified folder. Set MODEL_OUTPUT_DIR" >&2
-      echo "       (and CKPT_ROOT, if you override it) accordingly, or pass" >&2
-      echo "       ALLOW_NONSTANDARD_OUTPUT=1 if you really mean it." >&2
-      exit 2
-    fi
-    ;;
-esac
 RESULTS_DIR="${RESULTS_DIR:-${REPO_ROOT}/eval_result}"
-STAGE_DIR="${STAGE_DIR:-${CKPT_ROOT}/.stages}"
+# Stage markers must OUTLIVE the bundle: they are what makes a resubmission skip
+# work that is already done, and a per-submission bundle would hand every run a
+# clean slate. Keep them next to the repo unless told otherwise.
+STAGE_DIR="${STAGE_DIR:-${REPO_ROOT}/.stages}"
 
 UNIVTAC_ROOT="${UNIVTAC_ROOT:?set UNIVTAC_ROOT to the UniVTAC checkout}"
 UNIVTAC_PYTHON="${UNIVTAC_PYTHON:?set UNIVTAC_PYTHON to the UniVTAC/Isaac Lab interpreter}"
@@ -349,7 +361,7 @@ then
   fatal "cannot read the gated nvidia/Cosmos-Reason2-2B (needed by every GR00T
        checkpoint). Export a token with access, in the shell you submit from:
          export HF_TOKEN=hf_...
-       --export=ALL then carries it into the job. Request access at
+       The job inherits it from the submitting shell. Request access at
        https://huggingface.co/nvidia/Cosmos-Reason2-2B if you have none.
        HF_TOKEN is currently ${HF_TOKEN:+set}${HF_TOKEN:-UNSET}; HF_HOME=${HF_HOME}."
 fi
@@ -503,6 +515,35 @@ for variant in ${VARIANTS}; do
   # experiments, so it must be requested explicitly.
   resume_args=""
   existing=$(latest_checkpoint "${out_dir}")
+  # Under bundle-sbatch, out_dir is a FRESH directory on every submission, so a
+  # resumable run has nothing here to find. The previous run's checkpoint comes
+  # in as CHECKPOINT_DIR (from `bundle-sbatch --checkpoint <physical path>`).
+  # Link it into out_dir under its own name and --resume-from-checkpoint picks
+  # it up, since that flag selects the highest-numbered checkpoint-N in
+  # output_dir. A link, not a copy: these are ~40 GB each.
+  #
+  # Only the variant whose name the checkpoint carries may claim it -- with two
+  # variants in one job, seeding both from one checkpoint would silently train
+  # the baseline from the tactile weights.
+  if [[ -z "${existing}" && -n "${CHECKPOINT_DIR:-}" ]]; then
+    case "$(basename "${CHECKPOINT_DIR}")" in
+      checkpoint-[0-9]*)
+        if [[ "${CHECKPOINT_DIR}" == *"${TASK}-${variant}"* ]]; then
+          mkdir -p "${out_dir}"
+          ln -sfn "${CHECKPOINT_DIR}" "${out_dir}/$(basename "${CHECKPOINT_DIR}")"
+          existing=$(latest_checkpoint "${out_dir}")
+          echo "[stage] seeded ${out_dir} from CHECKPOINT_DIR=${CHECKPOINT_DIR}"
+        else
+          echo "[stage] CHECKPOINT_DIR=${CHECKPOINT_DIR} does not name" >&2
+          echo "[stage] ${TASK}-${variant}; not seeding this variant with it" >&2
+        fi
+        ;;
+      *)
+        echo "[stage] CHECKPOINT_DIR=${CHECKPOINT_DIR} is not a checkpoint-N" >&2
+        echo "[stage] directory; ignoring it for resume" >&2
+        ;;
+    esac
+  fi
   if [[ -n "${existing}" ]]; then
     resume_args="--resume-from-checkpoint"
     echo "[stage] resuming ${variant} from ${existing}"
@@ -512,7 +553,7 @@ for variant in ${VARIANTS}; do
   echo "[stage] log -> ${log}"
 
   if [[ "${DRY_RUN:-0}" == "1" ]]; then
-    echo "[dry-run] would run slurm/finetune.sbatch --wckey=project-short-name:sub_4dpdata with:"
+    echo "[dry-run] would run slurm/finetune.sbatch with:"
     echo "[dry-run]   VARIANT=${variant}"
     echo "[dry-run]   DATASET=${DATA_ROOT}/univtac-${TASK}-${variant}"
     echo "[dry-run]   OUTPUT_DIR=${out_dir}"
@@ -575,7 +616,7 @@ for variant in ${VARIANTS}; do
   summary="${RESULTS_DIR}/${variant}/${TASK}/seed0-0.summary.json"
 
   if [[ "${DRY_RUN:-0}" == "1" ]]; then
-    echo "[dry-run] would run slurm/eval_ablation.sbatch --wckey=project-short-name:sub_4dpdata with:"
+    echo "[dry-run] would run slurm/eval_ablation.sbatch with:"
     echo "[dry-run]   VARIANT=${variant} TASK=${TASK} TASK_CONFIG=${TASK_CONFIG}"
     echo "[dry-run]   GROOT_MODEL=${ckpt:-<from the finetune stage>}"
     echo "[dry-run]   EPISODES=${EPISODES} EXECUTION_HORIZON=${EXECUTION_HORIZON}"

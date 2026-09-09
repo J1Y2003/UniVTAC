@@ -4,9 +4,14 @@
 # Needed on clusters where `srun` is restricted to a short debug partition, so a
 # multi-hour interactive install is not possible.
 #
-#   sbatch --export=ALL,UNIVTAC_ROOT=$HOME/jaewon/workspace/UniVTAC-sim \
-#          --wckey=project-short-name:sub_4dpdata \
-#          slurm/install_univtac.sbatch
+#   env UNIVTAC_ROOT=$HOME/jaewon/workspace/UniVTAC-sim \
+#     bundle-sbatch --job-kind other --code-git-root "$REPO_ROOT" -- \
+#     --job-name=univtac-groot-install-univtac-isaac-lab-tacex-and-curobo-stack \
+#     --wckey=project-short-name:sub_4dpdata --partition=sjw_alinlab -- \
+#     slurm/install_univtac.sbatch
+#
+# --job-kind other, and no --checkpoint: this job consumes no checkpoint and
+# the launcher rejects one for that kind.
 #
 # UniVTAC's own scripts/install.sh guards every step with
 # `if pip show <pkg>; then skip`, so this job is RESUMABLE: if it hits the
@@ -27,20 +32,13 @@
 #   * NEVER pass --cpus-per-task or --mem. Jobs take the node's per-GPU
 #     defaults, and the submit filter rejects the job if either is specified.
 #   * ALWAYS pass --wckey=project-short-name:sub_4dpdata.
-#   * MODEL_OUTPUT_DIR must be in the SUBMITTING environment, for every job --
-#     including CPU-only ones that write no checkpoints. The filter checks it at
-#     submit time, before this script runs, so no in-script default can help:
-#       ❌ ERROR: MODEL_OUTPUT_DIR가 없습니다.
-#          MODEL_OUTPUT_DIR=/rlwrld-unified-checkpoints/jimin/... 로 지정하세요.
-#     `source env.sh` sets it and --export=ALL carries it in.
+#   * MODEL_OUTPUT_DIR is injected by bundle-sbatch and equals CODE_OUTPUT_DIR
+#     (<bundle>/code-output). Never set it, never pass it with --export, and do
+#     not expect it under /rlwrld-unified-checkpoints any more.
 #
 # Do pass --partition explicitly, or export SBATCH_PARTITION: `debug` is the
 # default here and is short-lived, so it is not where long training belongs.
-#SBATCH --job-name=univtac-groot-install-univtac-isaac-lab-tacex-and-curobo-stack
-#SBATCH --output=logs/%x-%j.out
-#SBATCH --error=logs/%x-%j.err
 #SBATCH --gres=gpu:1
-#SBATCH --wckey=project-short-name:sub_4dpdata
 
 set -uo pipefail
 
@@ -172,6 +170,8 @@ else
   echo "[job] install exited ${STATUS}."
   echo "[job] This job is resumable -- every step is guarded by a 'pip show' check,"
   echo "[job] so resubmitting continues from where it stopped:"
-  echo "  sbatch --wckey=project-short-name:sub_4dpdata --export=ALL,UNIVTAC_ROOT=${UNIVTAC_ROOT} slurm/install_univtac.sbatch"
+  echo "  env UNIVTAC_ROOT=${UNIVTAC_ROOT} bundle-sbatch --job-kind other \\"
+echo "    --code-git-root ${REPO_ROOT} -- --job-name=univtac-groot-install-univtac-isaac-lab-tacex-and-curobo-stack \\"
+echo "    --wckey=project-short-name:sub_4dpdata --partition=sjw_alinlab -- slurm/install_univtac.sbatch"
 fi
 exit ${STATUS}

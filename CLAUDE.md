@@ -87,6 +87,54 @@ state/action are a **one-step shift of a single `embodiment/joint` array**; and
 the marker field's shape is not what its name suggests. `docs/UPSTREAM.md`
 records each with its source -- add to it rather than re-deriving.
 
+## Everything is submitted through `bundle-sbatch`
+
+Plain `sbatch` is no longer the supported path. `bundle-sbatch` is a managed
+wrapper: it creates one output bundle per submission, snapshots the script and
+the git state as evidence, injects the output/checkpoint environment, and then
+submits one Slurm request. Its command line has **three regions**:
+
+```
+bundle-sbatch <wrapper options> -- <slurm options> -- <script> [args]
+```
+
+with opposite conventions in the two option regions -- wrapper options are
+**separate tokens** (`--job-kind train`), Slurm options are **attached long
+form** (`--partition=background`). `slurm/bundle_submit.sh` encodes this once;
+the submitters use it and validate before anything is sent.
+
+What the launcher owns, and what therefore must not appear in any `#SBATCH`
+header or on any command line we build: `--output`, `--error`, `--open-mode`,
+`--export`, `--export-file`, `--get-user-env`, `--parsable`, `--quiet`,
+`--wait`, `--test-only`, `--wrap`, `--clusters`, and `#SBATCH --array` (an
+array goes through the wrapper's own `--array SPEC`). `--job-name`, `--wckey`,
+`--partition` and `--time` moved out of the headers onto the command line.
+
+Four consequences that changed how the work is run, none of them optional:
+
+- **`MODEL_OUTPUT_DIR` is injected, not chosen.** It equals `CODE_OUTPUT_DIR` =
+  `<bundle>/code-output`, one directory per submission, and we must not supply
+  it. The `/rlwrld-unified-checkpoints` layout is retired.
+- **Configuration reaches a job by inheritance.** With `--export` gone, the
+  submitters `env NAME=VALUE ...` the launcher and the job inherits it. Every
+  job script refuses to run without the `UNIVTAC_JOB_CONFIG=1` sentinel, so a
+  job that did not receive its configuration stops instead of silently doing
+  the wrong work with default values.
+- **Finetune and evaluation are submitted separately, in that order.** An eval
+  job must declare `--checkpoint <existing physical directory>`, which does not
+  exist until training has finished, and `--parsable` is the launcher's so
+  there is no job id to hang a `--dependency=afterok` on. `submit_benchmark.sh`
+  submits the finetunes; `submit_benchmark.sh --evals` submits an evaluation
+  for every checkpoint that now exists, skipping the rest. Run it again later
+  for the stragglers.
+- **A checkpoint path must be physical.** The launcher rejects symlinks, so the
+  `final` symlink a finetune leaves behind is resolved with `readlink -f`
+  before it is declared.
+
+Never resubmit a request the launcher has already accepted, even when the
+outcome looks unclear or `sbatch` reported a rejection: read the diagnostic and
+the retained bundle instead.
+
 ## Cluster rules (Kakao SLURM)
 
 The submit filter rejects jobs violating any of these, usually with an
@@ -97,7 +145,8 @@ unhelpful "Unspecified error":
   directions: `convert.sbatch`'s 63-character name and the benchmark jobs'
   69-70 character names all submit, and a short name is refused. This is why
   the job names here are absurdly descriptive -- do not shorten them
-- `MODEL_OUTPUT_DIR` set under `/rlwrld-unified-checkpoints/<user>/checkpoints/<job>`
+- `MODEL_OUTPUT_DIR` present -- but it is the **launcher** that supplies it
+  now, so never set or export it yourself
 - `--wckey=project-short-name:sub_4dpdata` on **every** `sbatch` and `srun`.
   The string `project-short-name:` is a **literal part of the required
   format**, not a template to fill in. It looks exactly like a placeholder and
@@ -113,21 +162,21 @@ unhelpful "Unspecified error":
   removed once on the assumption it was a placeholder and every submission
   failed until it was put back.
 
-  **A `#SBATCH --wckey` header is not enough.** sbatch precedence is
-  **command line > environment variable > `#SBATCH` directive**, so a stale
-  `SBATCH_WCKEY` in your shell -- e.g. an `env.sh` copied from the old
-  `env.example.sh` -- silently overrides the header and the job goes out under
-  the wrong project. `env.sh` is gitignored, so fixing the repo does not fix
-  yours: `export SBATCH_WCKEY=project-short-name:sub_4dpdata`.
+  The `#SBATCH --wckey` headers are **gone** -- the launcher owns that option,
+  and the submitters pass it in the Slurm region of the bundle-sbatch command
+  line. A stale `SBATCH_WCKEY` in your shell still outranks nothing there, but
+  it would apply to any ad-hoc submission, so keep it correct anyway:
+  `export SBATCH_WCKEY=project-short-name:sub_4dpdata`.
 
   **Do not export `SLURM_WCKEY`.** SLURM sets it *inside* a job to report the
   wckey the job actually got, which is what every `.sbatch` re-checks at
-  runtime before doing any work. Exporting it from your shell rides in on
-  `--export=ALL` and masks that check. `srun` takes `--wckey` on the command
+  runtime before doing any work. The job inherits your shell's environment, so
+  an exported value masks that check. `srun` takes `--wckey` on the command
   line instead, and every documented `srun` here does.
 
-  So: `--wckey` on every command line (strongest), a runtime re-check in every
-  `.sbatch`, and `scripts/preflight.py` failing on a wrong `SBATCH_WCKEY`.
+  So: `--wckey` in every bundle-sbatch Slurm region, a runtime re-check in
+  every `.sbatch`, and `scripts/preflight.py` failing on a wrong
+  `SBATCH_WCKEY`.
 - **no** `--cpus-per-task` and **no** `--mem` — memory and CPUs are not
   specifiable here at all; a job takes the node's per-GPU defaults
 - `--time` is **allowed and usually worth setting** (it was banned here for a
@@ -160,8 +209,9 @@ job even when it really holds 12 CPUs. Size thread pools off
 `SLURM_CPUS_ON_NODE` instead — not `nproc`, which returns the node's full 128
 since there is no cpuset isolation here.
 
-`sbatch --test-only <script>` runs the filter without queueing -- use it before
-blaming the script. `srun` is restricted to the `debug` partition. `debug` is
+`sbatch --test-only` is gone -- the flag belongs to the launcher, so there is
+no rehearsal any more; `submit_benchmark.sh --print` and `--dry` are what is
+left. `srun` is restricted to the `debug` partition. `debug` is
 the *default* partition and caps at 3 hours, which is why untuned jobs sit
 pending with `PartitionTimeLimit`; every other partition allows 2 days.
 `PriorityTier` is a strict ordering (`background` 1 < `sjw_alinlab` 2 <
@@ -177,47 +227,56 @@ shorter queue when its own nodes are idle. Check whether it preempts
 (`scontrol show partition background`) before trusting a long eval to it --
 `scripts/run_eval.py` has no resume and would restart from the first seed.
 
-`logs/` must exist **before** submitting: SLURM opens `--output` before the
-script runs, so a missing directory kills the job with no log at all.
+`logs/` still has to exist before submitting, though the Slurm logs themselves
+now land in the bundle: `benchmark_task.sbatch` writes its per-stage logs under
+`REPO_ROOT/logs`.
 
-Checkpoints under `/rlwrld-unified-checkpoints` are archived off NFS after
-**4 days** untouched and deleted 90 days later. Run
-`bash slurm/preserve_outputs.sh` as soon as a finetune finishes or you will
-retrain it.
+Bundle storage is **managed, not permanent**: retention migrates and later
+deletes aged outputs. The bundle window is undocumented, so assume the old
+unified-folder one (4 days untouched, deleted 90 days later) and run
+`BUNDLE_DIR=<bundle> bash slurm/preserve_outputs.sh` as soon as a finetune
+finishes -- or you will retrain it, and you will also have lost the only way to
+resume it.
 
 ## How to run things
 
 ```bash
 bash slurm/submit_benchmark.sh --dry    # full preflight, no GPU time, no submit
-bash slurm/submit_benchmark.sh          # the real run (two jobs per task)
+bash slurm/submit_benchmark.sh          # submit the finetunes
+bash slurm/submit_benchmark.sh --evals  # then, later: evaluate what finished
 bash slurm/smoke_test.sh                # 20 steps + 1 eval episode, isolated
-bash slurm/preserve_outputs.sh          # rescue checkpoints from retention
+BUNDLE_DIR=<bundle> bash slurm/preserve_outputs.sh   # rescue checkpoints
 ```
 
 Everything is an overridable env var (`GPUS`, `MAX_STEPS`, `TASK`, `PARTITION`,
 ...). Prefer adding a variable over editing a command line.
 
-`submit_benchmark.sh` submits **two jobs per task**: a finetune on
-`PARTITION` (`sjw_alinlab`), then an evaluation on `EVAL_PARTITION`
-(`background`) held behind it with `--dependency=afterok`. They are separate
-jobs because evaluation is not allowed on the training partition. Both run
-`benchmark_task.sbatch`, which takes `STAGES` (`finetune` or `eval:compare`);
-colons, not spaces or commas, because `--export` is itself a comma list.
+`submit_benchmark.sh` submits **one finetune per task** on `PARTITION`
+(`sjw_alinlab`); `--evals` later submits **one evaluation per finished
+checkpoint** on `EVAL_PARTITION` (`background`), because evaluation is not
+allowed on the training partition and, under bundle-sbatch, cannot be queued
+before its checkpoint exists. Both run `benchmark_task.sbatch`, which takes
+`STAGES` (`finetune` or `eval:compare`) -- colon-separated, since a value with
+spaces is awkward to carry through the submitters' `env` list.
 
-An eval job stuck in `DependencyNeverSatisfied` means its finetune failed or
-was killed -- `afterok` is deliberate, since there is nothing to evaluate
-otherwise. Resume the finetune, `scancel` the orphaned eval, and resubmit that
-task alone: `TASKS=<task> EXTRA_TASKS= bash slurm/submit_benchmark.sh`.
+`--evals` skips any task whose checkpoint is not there yet and says so, so it
+is safe to run early and repeatedly. It finds checkpoints by searching
+`CKPT_SEARCH_ROOT` for `*/code-output/<task>-<variant>/final`; point that at
+the launcher's per-user output root if the default guess is wrong.
 
-Tasks go in two tiers: `TASKS` (the three reported tasks) first and
-unconstrained, then `EXTRA_TASKS` (`lift_bottle`) with `--dependency=afterany`
-on the reported tasks' **finetunes**, so it cannot take a GPU a reported task
-still wants. (Ordering behind the finetunes, not the evals: the evals are on
-another partition and never compete with training.) `lift_bottle` is separate
-because it is the only task a hyperparameter sweep may touch without
-fitting the reported numbers.
+The queue-ordering dependency between tasks is **gone** with `--parsable`:
+`EXTRA_TASKS` (`lift_bottle`) is simply submitted last. It is separate because
+it is the only task a hyperparameter sweep may touch without fitting the
+reported numbers -- if it competing for a GPU becomes a problem, hold it with
+`scontrol hold <jobid>` rather than reaching for a dependency that cannot be
+built.
 
-`benchmark_task.sbatch` is resumable: stage markers plus
+`benchmark_task.sbatch` is resumable, but resuming is no longer automatic:
+each submission gets a fresh bundle, so the previous run's checkpoints are not
+where the next one looks. Stage markers live outside the bundle (in
+`.stages/`), and a resumed finetune has to be pointed at its predecessor with
+`bundle-sbatch --checkpoint <physical checkpoint dir>`, which arrives as
+`CHECKPOINT_DIR` and is linked into the output directory for
 `--resume-from-checkpoint`. It also **pins the training recipe** on first run
 (GPU count and `MAX_STEPS`) and refuses a mismatch, because `--num-gpus`
 multiplies the effective batch size -- training the two variants at different

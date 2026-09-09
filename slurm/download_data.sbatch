@@ -18,10 +18,11 @@
 # the checkpoints, so you can validate convert -> finetune -> eval before
 # committing ~190 GB.
 #
-#   sbatch --wckey=project-short-name:sub_4dpdata --partition=cpu --export=ALL,TASKS=lift_bottle            slurm/download_data.sbatch
-#   sbatch --wckey=project-short-name:sub_4dpdata --partition=cpu --export=ALL,TASKS="lift_bottle lift_can" slurm/download_data.sbatch
-#   sbatch --wckey=project-short-name:sub_4dpdata --partition=cpu --export=ALL,TASKS=all                    slurm/download_data.sbatch   # all 8, ~190 GB
-#   sbatch --wckey=project-short-name:sub_4dpdata --partition=cpu --export=ALL,TASKS=none,CHECKPOINT=1      slurm/download_data.sbatch   # encoder only, ~minutes
+#   env TASKS=lift_bottle UNIVTAC_JOB_CONFIG=1 bundle-sbatch #     --job-kind data_process --code-git-root "$REPO_ROOT" -- #     --job-name=univtac-groot-download-univtac-demonstration-data-from-modelscope #     --wckey=project-short-name:sub_4dpdata --partition=cpu -- #     slurm/download_data.sbatch
+#
+# TASKS="lift_bottle lift_can" for several, TASKS=all for all 8 (~190 GB),
+# TASKS=none CHECKPOINT=1 for the encoder alone (~minutes). The variables go in
+# the environment because bundle-sbatch owns --export; the job inherits them.
 #
 # No GPU. Network + disk bound. modelscope resumes, so a walltime kill is safe
 # to resubmit.
@@ -38,12 +39,9 @@
 #   * NEVER pass --cpus-per-task or --mem. Jobs take the node's per-GPU
 #     defaults, and the submit filter rejects the job if either is specified.
 #   * ALWAYS pass --wckey=project-short-name:sub_4dpdata.
-#   * MODEL_OUTPUT_DIR must be in the SUBMITTING environment, for every job --
-#     including CPU-only ones that write no checkpoints. The filter checks it at
-#     submit time, before this script runs, so no in-script default can help:
-#       ❌ ERROR: MODEL_OUTPUT_DIR가 없습니다.
-#          MODEL_OUTPUT_DIR=/rlwrld-unified-checkpoints/jimin/... 로 지정하세요.
-#     `source env.sh` sets it and --export=ALL carries it in.
+#   * MODEL_OUTPUT_DIR is injected by bundle-sbatch and equals CODE_OUTPUT_DIR
+#     (<bundle>/code-output). Never set it, never pass it with --export, and do
+#     not expect it under /rlwrld-unified-checkpoints any more.
 #
 # Do pass --partition explicitly, or export SBATCH_PARTITION: `debug` is the
 # default here and is short-lived, so it is not where long training belongs.
@@ -56,13 +54,23 @@
 # command line > SBATCH_PARTITION > #SBATCH directive, so an exported
 # SBATCH_PARTITION pointing at a GPU partition silently overrides it and the
 # submission is refused. Pass --partition=cpu on the command line too.
-#SBATCH --job-name=univtac-groot-download-univtac-demonstration-data-from-modelscope
-#SBATCH --output=logs/%x-%j.out
-#SBATCH --error=logs/%x-%j.err
-#SBATCH --wckey=project-short-name:sub_4dpdata
-#SBATCH --partition=cpu
 
 set -uo pipefail
+
+# bundle-sbatch owns --export, so this job's configuration is not handed to it
+# as a variable list: it arrives only because the submitter exported it and the
+# launcher's environment is inherited. If that ever stops holding, the variables
+# below would quietly fall back to their defaults and the job would do the WRONG
+# WORK while looking healthy. The submitters set this sentinel; a real job
+# without it stops here. A local `bash` run for a dry run is unaffected.
+if [[ -n "${SLURM_JOB_ID:-}" && -z "${UNIVTAC_JOB_CONFIG:-}" ]]; then
+  echo "error: UNIVTAC_JOB_CONFIG is unset, so this job's environment did not" >&2
+  echo "       reach it and its configuration would silently take defaults." >&2
+  echo "       Submit through the scripts in slurm/, which export it, or set" >&2
+  echo "       UNIVTAC_JOB_CONFIG=1 alongside the rest of the configuration." >&2
+  exit 2
+fi
+
 
 # --------------------------------------------------------------------------- #
 # The site wckey, checked at runtime
@@ -228,6 +236,9 @@ for task in ${TASKS}; do
   echo "  # UniVTAC's own ACT baseline (its data step, then training):"
   echo "  bash ${UNIVTAC_ROOT}/policy/ACT/process_data.sh ${task} ${RAW_CONFIG} 100"
   echo "  # this repo's GR00T path:"
-  echo "  sbatch --wckey=project-short-name:sub_4dpdata --partition=cpu --export=ALL,TASK=${task},VARIANT=tactile,RAW_DIR=${OUTPUT}/isaac${VERSION}/${task}/hdf5 slurm/convert.sbatch"
+  echo "  env TASK=${task} VARIANT=tactile RAW_DIR=${OUTPUT}/isaac${VERSION}/${task}/hdf5 UNIVTAC_JOB_CONFIG=1 \\"
+  echo "    bundle-sbatch --job-kind data_process --code-git-root ${REPO_ROOT} -- \\"
+  echo "    --job-name=univtac-groot-convert-univtac-hdf5-demonstrations-to-lerobot-v2 \\"
+  echo "    --wckey=project-short-name:sub_4dpdata --partition=cpu -- slurm/convert.sbatch"
 done
 exit ${STATUS}

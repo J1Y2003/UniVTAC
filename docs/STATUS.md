@@ -3,18 +3,39 @@
 Current state, decisions in force, and the reference tables worth checking
 before re-diagnosing something.
 
-Last updated 2026-09-08.
+Last updated 2026-09-09.
 
 ## In flight
 
-Eight jobs, **two per task**, submitted by `slurm/submit_benchmark.sh`: a
-finetune on `sjw_alinlab` and an evaluation on `background` held behind it with
-`--dependency=afterok`. `insert_hole`, `insert_tube`, `pull_out_key`
-unconstrained, then `lift_bottle` gated behind the three finetunes with
-`--dependency=afterany`.
+**Everything must be resubmitted through `bundle-sbatch`.** Plain `sbatch` is
+no longer the supported path (server policy, 2026-09-09), and the whole
+`slurm/` tree was converted for it. Jobs 166346-166349 predate both this and
+the partition split, so they are wrong twice over: cancel them.
 
-Jobs 166346-166349, submitted before the split, are the OLD single-job shape and
-would evaluate on `sjw_alinlab`. Cancel and resubmit them.
+The shape is now **finetune first, evaluate later**, not two jobs chained:
+
+```bash
+bash slurm/submit_benchmark.sh          # one finetune per task, sjw_alinlab
+bash slurm/submit_benchmark.sh --evals  # later: one eval per finished ckpt, background
+```
+
+`--evals` cannot be queued in advance -- an eval job has to declare an existing
+physical checkpoint directory, and `--parsable` belongs to the launcher so
+there is no job id for a `--dependency`.
+
+**Not yet verified against the real launcher** (this conversion was written and
+tested against a stub, since Claude does not touch the cluster):
+
+* that the submitting shell's environment reaches the job. Every job script now
+  refuses to run without `UNIVTAC_JOB_CONFIG=1` rather than silently taking
+  default values, so the failure mode is loud.
+* that `readlink -f` on a `final` symlink satisfies `--checkpoint`. The
+  symlink-rejection rule is documented; resolving it could not be exercised on
+  a Windows checkout, which cannot create symlinks.
+* whether `bundle-sbatch` prints a job id this repo can parse. If it does not,
+  submissions still work -- the id is only used for display.
+* `CKPT_SEARCH_ROOT`, the directory `--evals` searches for finished bundles.
+  The default is a guess at the launcher's per-user output root.
 
 ## Verified
 

@@ -8,7 +8,7 @@
 #
 #   bash slurm/submit_benchmark.sh                 # submit
 #   bash slurm/submit_benchmark.sh --print         # show the sbatch command only
-#   bash slurm/submit_benchmark.sh --test-only     # run the submit filter, queue nothing
+#   bash slurm/submit_benchmark.sh --evals         # submit evals for finished checkpoints
 #   bash slurm/submit_benchmark.sh --dry           # DRY_RUN=1 locally, no sbatch at all
 #
 # Everything below is an overridable default, so a changed path is one variable
@@ -24,7 +24,7 @@
 #                with --dependency=afterany, so it cannot take a GPU from a
 #                reported task. EXTRA_TASKS="" skips it.
 #
-# Why a wrapper: the `sbatch --export=ALL,...` form needs seven absolute paths
+# Why a wrapper: the bundle-sbatch form needs seven absolute paths
 # plus four site-specific flags, which is unreadable to type and easy to get
 # subtly wrong -- and a wrong path there fails minutes into a queued job rather
 # than here.
@@ -35,19 +35,32 @@ set -uo pipefail
 # Paths -- override any of these in the environment
 # --------------------------------------------------------------------------- #
 WORKSPACE="${WORKSPACE:-${HOME}/jaewon/workspace}"
+# USER is not exported in every shell; squeue and the paths below need a name.
+WHOAMI="${USER:-$(id -un)}"
 
 REPO_ROOT="${REPO_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
+# Every submission goes through bundle-sbatch; the contract lives in one place.
+# shellcheck source=slurm/bundle_submit.sh
+. "${REPO_ROOT}/slurm/bundle_submit.sh"
 UNIVTAC_ROOT="${UNIVTAC_ROOT:-${WORKSPACE}/UniVTAC-sim}"
 GROOT_ROOT="${GROOT_ROOT:-${WORKSPACE}/Isaac-GR00T}"
 GROOT_PYTHON="${GROOT_PYTHON:-${GROOT_ROOT}/.venv/bin/python}"
 UNIVTAC_PYTHON="${UNIVTAC_PYTHON:-${HOME}/miniconda3/envs/UniVTAC/bin/python}"
 DATA_ROOT="${DATA_ROOT:-${WORKSPACE}/groot-data}"
 HF_HOME="${HF_HOME:-${HOME}/jaewon/hf_cache}"
-# The submit filter requires this under /rlwrld-unified-checkpoints, and it is
-# also where the ~120 GB of checkpoints per variant belongs rather than on the
-# shared home mount.
-# Shape follows the training-outputs policy: {NFS}/{user}/checkpoints/<job>.
-MODEL_OUTPUT_DIR="${MODEL_OUTPUT_DIR:-/rlwrld-unified-checkpoints/${USER}/checkpoints/univtac-groot}"
+# MODEL_OUTPUT_DIR is NOT set here any more. bundle-sbatch creates one output
+# bundle per submission and injects
+#   MODEL_OUTPUT_DIR = CODE_OUTPUT_DIR = <bundle>/code-output
+# and the guide is explicit that we must not supply it. The old
+# /rlwrld-unified-checkpoints path went with it.
+#
+# Which means finished checkpoints are scattered one-bundle-per-submission, so
+# --evals has to go looking for them. Point this at the launcher's per-user
+# output root (the OUTPUT_DIR it exports) if the default guess is wrong.
+CKPT_SEARCH_ROOT="${CKPT_SEARCH_ROOT:-${OUTPUT_DIR:-${HOME}/rlwrld-outputs}}"
+# A --dry run has no bundle and therefore no injected MODEL_OUTPUT_DIR, but
+# benchmark_task.sbatch requires one. Hand it a throwaway; nothing is written.
+DRY_RUN_OUTPUT_DIR="${DRY_RUN_OUTPUT_DIR:-${TMPDIR:-/tmp}/univtac-dry-run}"
 
 # --------------------------------------------------------------------------- #
 # Job shape
@@ -143,7 +156,7 @@ printf '  %-16s %s\n' \
   UNIVTAC_PYTHON "${UNIVTAC_PYTHON}" \
   DATA_ROOT "${DATA_ROOT}" \
   HF_HOME "${HF_HOME}" \
-  MODEL_OUTPUT_DIR "${MODEL_OUTPUT_DIR}" \
+  CKPT_SEARCH_ROOT "${CKPT_SEARCH_ROOT} (where --evals looks)" \
   partition "${PARTITION} (finetune)" \
   time_limit "${TIME_LIMIT:-<none: partition maximum>}" \
   eval_time_limit "${EVAL_TIME_LIMIT:-<none: partition maximum>}" \
@@ -164,6 +177,10 @@ check_dir  UNIVTAC_ROOT   "${UNIVTAC_ROOT}"
 check_dir  GROOT_ROOT     "${GROOT_ROOT}"
 check_exec GROOT_PYTHON   "${GROOT_PYTHON}"
 check_exec UNIVTAC_PYTHON "${UNIVTAC_PYTHON}"
+# Evaluation reads no training data -- it talks to the policy server and Isaac
+# Sim -- so --evals must not be blocked by a dataset that was never converted or
+# has since been cleaned up.
+if [[ "${MODE}" != "--evals" ]]; then
 check_dir  DATA_ROOT      "${DATA_ROOT}"
 # Only the variants actually being trained -- demanding a tactile dataset we
 # deliberately are not training would block the submit for no reason.
@@ -182,7 +199,11 @@ for task in ${ALL_TASKS}; do
       echo "  ok  ${task}/${variant}: ${n} parquet in ${dataset}"
     else
       task_ok=0
-      convert="sbatch --wckey=project-short-name:sub_4dpdata --partition=cpu --export=ALL,TASK=${task},VARIANT=${variant},TASK_CONFIG=${TASK_CONFIG} slurm/convert.sbatch"
+      convert="env TASK=${task} VARIANT=${variant} TASK_CONFIG=${TASK_CONFIG}"
+      convert+=" UNIVTAC_JOB_CONFIG=1 bundle-sbatch --job-kind data_process"
+      convert+=" --code-git-root ${REPO_ROOT} --"
+      convert+=" --job-name=univtac-groot-convert-univtac-hdf5-demonstrations-to-lerobot-v2"
+      convert+=" --wckey=${WCKEY} --partition=cpu -- slurm/convert.sbatch"
       if [[ "${extra}" -eq 1 ]]; then
         echo "  skip ${task}/${variant}: no dataset, and it is an EXTRA task -- not submitting it" >&2
         echo "        convert it later: ${convert}" >&2
@@ -197,14 +218,15 @@ for task in ${ALL_TASKS}; do
 done
 # Only the extra tasks that actually have data.
 EXTRA_TASKS="${EXTRA_TASKS_OK% }"
+fi   # end of the dataset checks skipped by --evals
 ALL_TASKS="${TASKS} ${EXTRA_TASKS}"
-# SLURM opens the --output file before the script runs, so a missing logs/ kills
-# the job instantly with no log to explain it.
+# The launcher owns the Slurm logs now (they land in the bundle), but
+# benchmark_task.sbatch still writes its per-stage logs under REPO_ROOT/logs.
 # Every GR00T checkpoint loads the gated nvidia/Cosmos-Reason2-2B, so no token
 # means a 401 about a minute into training -- after the job already holds a GPU.
 # Warn here, where it costs nothing. HF_HOME is redirected, which also moves
 # where a stored login is read from ($HF_HOME/token), so HF_TOKEN in the
-# environment is the reliable route; --export=ALL carries it into the job.
+# environment is the reliable route; the job inherits it from this shell.
 if [[ -z "${HF_TOKEN:-}" && ! -s "${HF_HOME}/token" && ! -s "${HOME}/.cache/huggingface/token" ]]; then
   echo "WARNING: no HF_TOKEN and no token file under HF_HOME=${HF_HOME}." >&2
   echo "         The job will fail loading nvidia/Cosmos-Reason2-2B (401)." >&2
@@ -224,8 +246,8 @@ echo
 # Build and run
 # --------------------------------------------------------------------------- #
 # The submit filter rejects job names of 50 characters or fewer, so keep the
-# per-task name long. `%x` in the sbatch --output pattern picks this up, which
-# is what keeps the tasks' -- and now the two stages' -- logs apart.
+# per-task name long. It is also what tells one submission's bundle from
+# another's at a glance, now that the launcher owns the log paths.
 #
 # Shortest possible name here is 55 characters ('finetune-only' + 'lift_bottle'),
 # comfortably over the floor. Do not trim these.
@@ -238,187 +260,191 @@ job_name_for() {
   esac
 }
 
-# `stage` is passed through as STAGES=, which is what makes one job train and
-# the other evaluate. Everything else is identical between the two.
-exports_for() {
-  local task="$1" stage="$2" e="ALL"
-  # Colon-separated: --export is itself a comma list, so neither a space nor a
-  # comma may appear inside a value. benchmark_task.sbatch splits on ':' again.
+# The job's configuration travels in the ENVIRONMENT, not in an --export list:
+# bundle-sbatch owns --export, and sbatch propagates the submitting environment
+# by default. env_for prints `NAME=VALUE` pairs for `env`, one per line.
+#
+# UNIVTAC_JOB_CONFIG is the canary. If this environment ever stops reaching the
+# job, benchmark_task.sbatch stops instead of silently training TASK's default.
+env_for() {
+  local task="$1" stage="$2"
+  # Colon-separated: a space inside a value would need quoting through two
+  # command-line regions. benchmark_task.sbatch splits ':' back out.
   case "${stage}" in
-    finetune) e+=",STAGES=finetune" ;;
-    eval)     e+=",STAGES=eval:compare" ;;
-    *) echo "exports_for: unknown stage '${stage}'" >&2; return 1 ;;
+    finetune) printf '%s
+' "STAGES=finetune" ;;
+    eval)     printf '%s
+' "STAGES=eval:compare" ;;
+    *) echo "env_for: unknown stage '${stage}'" >&2; return 1 ;;
   esac
-  e+=",MODEL_OUTPUT_DIR=${MODEL_OUTPUT_DIR}"
-  e+=",UNIVTAC_ROOT=${UNIVTAC_ROOT}"
-  e+=",UNIVTAC_PYTHON=${UNIVTAC_PYTHON}"
-  e+=",GROOT_ROOT=${GROOT_ROOT}"
-  e+=",GROOT_PYTHON=${GROOT_PYTHON}"
-  e+=",HF_HOME=${HF_HOME}"
-  e+=",DATA_ROOT=${DATA_ROOT}"
-  e+=",TASK=${task}"
-  e+=",TASK_CONFIG=${TASK_CONFIG}"
-  e+=",EPISODES=${EPISODES}"
-  e+=",VARIANTS=${VARIANTS// /:}"   # same reason as STAGES above
-  # DRY_RUN must be pinned off: if it is exported in the calling shell (from
-  # testing), --export=ALL would carry it in and the job would exit in seconds
-  # having trained nothing.
-  e+=",DRY_RUN=0"
-  printf '%s' "${e}"
+  printf '%s
+'     "UNIVTAC_JOB_CONFIG=1"     "UNIVTAC_ROOT=${UNIVTAC_ROOT}"     "UNIVTAC_PYTHON=${UNIVTAC_PYTHON}"     "GROOT_ROOT=${GROOT_ROOT}"     "GROOT_PYTHON=${GROOT_PYTHON}"     "HF_HOME=${HF_HOME}"     "DATA_ROOT=${DATA_ROOT}"     "TASK=${task}"     "TASK_CONFIG=${TASK_CONFIG}"     "EPISODES=${EPISODES}"     "VARIANTS=${VARIANTS// /:}"     "DRY_RUN=0"
+  # MODEL_OUTPUT_DIR is deliberately absent: bundle-sbatch injects it, and the
+  # guide is explicit that we must not supply it.
 }
 
-# sbatch_args_for <task> <stage> [dependency-spec]
+# slurm_args_for <task> <stage>
 #
-# The dependency spec is passed WHOLE, e.g. 'afterok:123' or 'afterany:1:2:3',
-# because the two callers need different kinds:
-#
-#   afterok  -- the eval job on its own finetune. It is a real data dependency:
-#               there is no checkpoint to evaluate if training did not finish.
-#               The cost is that a failed or walltime-killed finetune leaves the
-#               eval job in DependencyNeverSatisfied, needing a scancel and a
-#               resubmit once the finetune is resumed.
-#   afterany -- an EXTRA task's finetune on the reported tasks' finetunes. That
-#               one is pure queue ordering, not a data dependency, so a priority
-#               task crashing must not abandon it.
-#
-# --partition is passed on the COMMAND LINE, not left to a #SBATCH header: it
-# beats a stale SBATCH_PARTITION in the submitting shell, which would otherwise
-# silently put the eval job back on the training partition.
-sbatch_args_for() {
-  local task="$1" stage="$2" dep="${3:-}" partition="${PARTITION}"
-  local time_limit="${TIME_LIMIT}"
+# Region 2 of the bundle-sbatch command line: Slurm options, attached long form
+# only. --output/--error/--export/--parsable/--test-only are the launcher's and
+# must not appear; --job-name/--wckey/--partition/--time moved here out of the
+# #SBATCH headers.
+slurm_args_for() {
+  local task="$1" stage="$2" partition="${PARTITION}" time_limit="${TIME_LIMIT}"
   if [[ "${stage}" == "eval" ]]; then
     partition="${EVAL_PARTITION}"
     time_limit="${EVAL_TIME_LIMIT}"
   fi
-  # No --cpus-per-task and no --mem: both are site rules, and the submit filter
-  # rejects the job outright. --time is optional; see the block where
-  # TIME_LIMIT is set for why training carries one and evaluation does not.
-  SBATCH_ARGS=(
+  # No --cpus-per-task and no --mem: site rules, rejected by the submit filter.
+  BUNDLE_SLURM_ARGS=(
+    --job-name="$(job_name_for "${task}" "${stage}")"
+    --wckey="${WCKEY}"
     --partition="${partition}"
     --gres="gpu:${GPUS}"
-    --wckey="${WCKEY}"
-    --job-name="$(job_name_for "${task}" "${stage}")"
-    --export="$(exports_for "${task}" "${stage}")"
   )
-  [[ -n "${time_limit}" ]] && SBATCH_ARGS+=(--time="${time_limit}")
-  [[ -n "${dep}" ]] && SBATCH_ARGS+=(--dependency="${dep}")
+  [[ -n "${time_limit}" ]] && BUNDLE_SLURM_ARGS+=(--time="${time_limit}")
   return 0
+}
+
+# The physical checkpoint an eval job must declare. bundle-sbatch rejects a
+# symlink, so the `final` symlink the finetune leaves is resolved to the
+# checkpoint-N directory it points at. Prints nothing when there is none yet,
+# which is what makes `--evals` refuse to submit for that task.
+checkpoint_for() {
+  local task="$1" variant="$2" dir
+  for dir in "${CKPT_SEARCH_ROOT}"/*/code-output/"${task}-${variant}"              "${CKPT_SEARCH_ROOT}/${task}-${variant}"; do
+    [[ -e "${dir}/final" ]] || continue
+    local resolved
+    resolved=$(readlink -f "${dir}/final" 2>/dev/null) || continue
+    [[ -d "${resolved}" ]] && { printf '%s' "${resolved}"; return 0; }
+  done
+  return 1
+}
+
+submit_stage() {
+  # One submission. BUNDLE_ENV is the job's configuration: --export belongs to
+  # the launcher, so the job inherits its environment instead of being handed a
+  # variable list.
+  local task="$1" stage="$2" checkpoint="$3" label="$4"
+  mapfile -t BUNDLE_ENV < <(env_for "${task}" "${stage}") || return 2
+  slurm_args_for "${task}" "${stage}" || return 2
+
+  if [[ "${stage}" == "eval" ]]; then
+    BUNDLE_JOB_KIND=eval
+  else
+    BUNDLE_JOB_KIND=train
+  fi
+  BUNDLE_CHECKPOINT="${checkpoint}"
+  BUNDLE_GIT_ROOT="${REPO_ROOT}"
+
+  if [[ "${MODE}" == "--print" ]]; then
+    bundle_print "slurm/benchmark_task.sbatch"
+    return $?
+  fi
+
+  # NOTE: no retry, ever. Once the launcher has recorded submission_started, a
+  # second invocation for the same request is forbidden even when the outcome
+  # is unclear -- read the diagnostic and the retained bundle instead.
+  if bundle_submit "slurm/benchmark_task.sbatch"; then
+    submitted+=("${label}${BUNDLE_JOBID:+  (job ${BUNDLE_JOBID})}")
+    echo "submitted  ${label}${BUNDLE_JOBID:+  (job ${BUNDLE_JOBID})}"
+    return 0
+  fi
+  echo "FAILED to submit ${label}" >&2
+  failed=1
+  return 1
 }
 
 case "${MODE}" in
   --dry)
     for task in ${ALL_TASKS}; do
       echo "=== preflight ${task} (DRY_RUN=1), submitting nothing ==="
-      env MODEL_OUTPUT_DIR="${MODEL_OUTPUT_DIR}" UNIVTAC_ROOT="${UNIVTAC_ROOT}" \
-          UNIVTAC_PYTHON="${UNIVTAC_PYTHON}" GROOT_ROOT="${GROOT_ROOT}" \
-          GROOT_PYTHON="${GROOT_PYTHON}" HF_HOME="${HF_HOME}" DATA_ROOT="${DATA_ROOT}" \
-          TASK="${task}" TASK_CONFIG="${TASK_CONFIG}" EPISODES="${EPISODES}" \
-          VARIANTS="${VARIANTS}" \
-          DRY_RUN=1 bash "${REPO_ROOT}/slurm/benchmark_task.sbatch"
+      # MODEL_OUTPUT_DIR is normally the launcher's; a dry run has no bundle,
+      # so hand the script a throwaway one purely to get past its check.
+      env $(env_for "${task}" finetune) \
+          MODEL_OUTPUT_DIR="${DRY_RUN_OUTPUT_DIR}" \
+          STAGES="finetune:eval:compare" DRY_RUN=1 \
+          bash "${REPO_ROOT}/slurm/benchmark_task.sbatch"
       echo
     done
     ;;
   --print)
-    for task in ${ALL_TASKS}; do
-      for stage in finetune eval; do
-        sbatch_args_for "${task}" "${stage}"
-        echo "sbatch ${SBATCH_ARGS[*]} slurm/benchmark_task.sbatch"
-      done
+    for task in ${TASKS} ${EXTRA_TASKS}; do
+      submit_stage "${task}" finetune from_scratch "${task} finetune"
+      echo
     done
-    ;;
-  --test-only)
-    # The dependency is left off here on purpose: --test-only would reject an
-    # afterok on a job id that does not exist yet. It tests the submit filter,
-    # which is what this mode is for.
-    for task in ${ALL_TASKS}; do
-      for stage in finetune eval; do
-        sbatch_args_for "${task}" "${stage}"
-        sbatch --test-only "${SBATCH_ARGS[@]}" "${REPO_ROOT}/slurm/benchmark_task.sbatch"
-      done
-    done
+    echo "# evaluation is submitted separately, once checkpoints exist:"
+    echo "#   bash slurm/submit_benchmark.sh --evals"
     ;;
   submit)
     cd "${REPO_ROOT}"
+    bundle_require || exit 2
     submitted=() ; failed=0
-
-    # Submit one task: its finetune on PARTITION, then its evaluation on
-    # EVAL_PARTITION held behind that finetune. Sets TRAIN_JOBID for the caller
-    # so the extra tasks can be ordered behind the reported tasks' TRAINING,
-    # which is what actually competes for a GPU on the training partition.
-    submit_task() {
-      local task="$1" train_dep="${2:-}" out jobid
-      TRAIN_JOBID=""
-
-      sbatch_args_for "${task}" finetune "${train_dep}"
-      if ! out=$(sbatch --parsable "${SBATCH_ARGS[@]}" slurm/benchmark_task.sbatch); then
-        echo "FAILED to submit finetune for ${task}" >&2
-        failed=1
-        return 1
-      fi
-      jobid="${out%%;*}"
-      TRAIN_JOBID="${jobid}"
-      submitted+=("${jobid} ${task} finetune on ${PARTITION}${train_dep:+ [held: ${train_dep}]}")
-      echo "submitted ${jobid}  ${task}  finetune  (${PARTITION})${train_dep:+  [held: ${train_dep}]}"
-
-      # The eval job is NOT skipped when the finetune fails to submit -- it is
-      # never reached, because we returned above. An eval with no finetune to
-      # wait on would evaluate a checkpoint that will never exist.
-      sbatch_args_for "${task}" eval "afterok:${jobid}"
-      if ! out=$(sbatch --parsable "${SBATCH_ARGS[@]}" slurm/benchmark_task.sbatch); then
-        echo "FAILED to submit eval for ${task} (its finetune ${jobid} is queued)" >&2
-        failed=1
-        return 1
-      fi
-      submitted+=("${out%%;*} ${task} evaluate on ${EVAL_PARTITION} [held: afterok:${jobid}]")
-      echo "submitted ${out%%;*}  ${task}  evaluate  (${EVAL_PARTITION})  [held: afterok:${jobid}]"
-    }
-
-    # Phase 1: the reported tasks, unconstrained, so they start as soon as a
-    # GPU frees up.
-    priority_ids=""
-    for task in ${TASKS}; do
-      # Gate on TRAIN_JOBID, not on submit_task's exit status: the finetune can
-      # queue successfully and its eval still fail to submit, and lift_bottle
-      # must stay ordered behind that finetune either way.
-      submit_task "${task}"
-      [[ -n "${TRAIN_JOBID}" ]] && priority_ids+="${TRAIN_JOBID}:"
-    done
-    # Phase 2: the extra tasks, held until every phase-1 FINETUNE has finished.
-    # Ordering behind the finetunes rather than the evals is deliberate: the
-    # evals run on a different partition and never compete with training.
-    dep="${priority_ids%:}"
-    for task in ${EXTRA_TASKS}; do
-      submit_task "${task}" "${dep:+afterany:${dep}}"
+    # FINETUNES ONLY. The eval job cannot be queued alongside its finetune any
+    # more: bundle-sbatch wants --checkpoint to be an existing physical
+    # directory at submit time, and the checkpoint does not exist until the
+    # finetune has run. The --dependency=afterok chain went with it, since
+    # --parsable is the launcher's and there is no job id to depend on.
+    for task in ${TASKS} ${EXTRA_TASKS}; do
+      submit_stage "${task}" finetune from_scratch "${task} finetune on ${PARTITION}"
     done
     if ((${#submitted[@]})); then
       echo
-      echo "Submitted ${#submitted[@]} job(s) -- two per task, finetune then evaluate"
-      echo "(evaluation on ${EVAL_PARTITION}, extras held last):"
+      echo "Submitted ${#submitted[@]} finetune(s):"
       printf '  %s\n' "${submitted[@]}"
       echo
       echo "Watch them with:"
-      echo "  squeue -u ${USER} -o '%.10i %.20P %.70j %.9T %.10M %.20R'"
+      echo "  squeue -u ${WHOAMI} -o '%.10i %.20P %.70j %.9T %.10M %.20R'"
       echo
-      echo "An eval job showing DependencyNeverSatisfied means its finetune failed"
-      echo "or was killed. Resume that finetune, then resubmit its eval alone:"
-      echo "  TASKS=<task> EXTRA_TASKS= bash slurm/submit_benchmark.sh"
-      echo "  tail -f logs/univtac-groot-per-task-*.out          # preflight, then stages"
-      echo "  tail -f logs/benchmark-<task>-<jobid>/finetune-${VARIANTS%% *}.log"
+      echo "THEN, once a finetune has finished, submit its evaluation:"
+      echo "  bash slurm/submit_benchmark.sh --evals"
+      echo "It skips any task whose checkpoint does not exist yet, so running it"
+      echo "early is safe and running it repeatedly is how the evals trickle out."
+    fi
+    exit ${failed}
+    ;;
+  --evals)
+    cd "${REPO_ROOT}"
+    bundle_require || exit 2
+    submitted=() ; failed=0
+    skipped=0
+    for task in ${TASKS} ${EXTRA_TASKS}; do
+      for variant in ${VARIANTS}; do
+        ckpt=$(checkpoint_for "${task}" "${variant}") || ckpt=""
+        if [[ -z "${ckpt}" ]]; then
+          echo "  skip ${task}/${variant}: no finished checkpoint under ${CKPT_SEARCH_ROOT}" >&2
+          skipped=$((skipped + 1))
+          continue
+        fi
+        submit_stage "${task}" eval "${ckpt}" \
+          "${task}/${variant} evaluate on ${EVAL_PARTITION}  ckpt=${ckpt}"
+      done
+    done
+    if ((${#submitted[@]})); then
+      echo
+      echo "Submitted ${#submitted[@]} evaluation(s):"
+      printf '  %s\n' "${submitted[@]}"
       echo
       echo "Aggregate when they finish:"
       echo "  python scripts/compare_ablation.py --results-dir eval_result"
     fi
+    ((skipped)) && echo "${skipped} task/variant pair(s) had no checkpoint yet; re-run later."
     exit ${failed}
     ;;
   *)
-    echo "usage: bash slurm/submit_benchmark.sh [--print|--test-only|--dry]" >&2
+    echo "usage: bash slurm/submit_benchmark.sh [--print|--dry|--evals]" >&2
+    echo "  (no argument)  submit one FINETUNE per task" >&2
+    echo "  --evals        submit an EVALUATION per finished checkpoint" >&2
+    echo "  --dry          local preflight only, submits nothing" >&2
+    echo "  --print        show the bundle-sbatch command lines" >&2
+    echo >&2
     echo "  TASKS=\"a b c\"  EXTRA_TASKS=\"d\"  VARIANTS=...  EPISODES=N  GPUS=N" >&2
     echo "  PARTITION=<train>  EVAL_PARTITION=<eval>  are also overridable." >&2
     echo "  TIME_LIMIT=10:00:00 (training) and EVAL_TIME_LIMIT= (unset) set --time;" >&2
     echo "  empty means no --time, i.e. the partition maximum." >&2
-    echo "  Two jobs per task: finetune on PARTITION, evaluate on EVAL_PARTITION." >&2
-    echo "  EXTRA_TASKS run last, gated behind the reported tasks' finetunes." >&2
+    echo "  CKPT_SEARCH_ROOT=<dir> is where --evals looks for finished bundles." >&2
+    echo >&2
+    echo "  There is no --test-only: that flag belongs to the launcher." >&2
     exit 2
     ;;
 esac

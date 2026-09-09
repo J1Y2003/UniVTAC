@@ -30,6 +30,8 @@ WHOAMI="${USER:-$(id -un)}"
 
 WORKSPACE="${WORKSPACE:-${HOME}/jaewon/workspace}"
 REPO_ROOT="${REPO_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
+# shellcheck source=slurm/bundle_submit.sh
+. "${REPO_ROOT}/slurm/bundle_submit.sh"
 UNIVTAC_ROOT="${UNIVTAC_ROOT:-${WORKSPACE}/UniVTAC-sim}"
 GROOT_ROOT="${GROOT_ROOT:-${WORKSPACE}/Isaac-GR00T}"
 GROOT_PYTHON="${GROOT_PYTHON:-${GROOT_ROOT}/.venv/bin/python}"
@@ -38,9 +40,10 @@ DATA_ROOT="${DATA_ROOT:-${WORKSPACE}/groot-data}"
 HF_HOME="${HF_HOME:-${HOME}/jaewon/hf_cache}"
 
 # Everything this run writes lives here. Delete it and nothing is lost.
-SMOKE_ROOT="${SMOKE_ROOT:-/rlwrld-unified-checkpoints/${WHOAMI}/checkpoints/univtac-groot-smoke}"
-# The submit filter demands MODEL_OUTPUT_DIR under /rlwrld-unified-checkpoints.
-MODEL_OUTPUT_DIR="${MODEL_OUTPUT_DIR:-${SMOKE_ROOT}}"
+# Ordinary scratch, not the unified folder: bundle-sbatch owns the real output
+# location now, and this only holds the smoke run's redirected CKPT_ROOT,
+# results and stage markers so they can never collide with the real run's.
+SMOKE_ROOT="${SMOKE_ROOT:-${HOME}/jaewon/workspace/groot-smoke}"
 
 TASK="${TASK:-lift_bottle}"
 TASK_CONFIG="${TASK_CONFIG:-clean}"
@@ -61,6 +64,10 @@ EPISODES="${EPISODES:-1}"
 # deliberately does not, because what it proves is that the chain holds inside
 # one job. 20 steps plus one episode fits either partition's limit.
 PARTITION="${PARTITION:-background}"
+# Names must be longer than 50 characters or the submit filter rejects them;
+# this one is 57 plus the task. It moved here out of benchmark_task.sbatch's
+# #SBATCH header, which the launcher now owns.
+JOB_NAME="${JOB_NAME:-univtac-groot-smoke-test-finetune-then-evaluate-one-task-${TASK}}"
 GPUS="${GPUS:-1}"
 # A short --time so backfill can slot this into a small gap -- the whole point
 # of a smoke test is that it schedules and finishes quickly. 20 steps plus one
@@ -120,7 +127,7 @@ done
 # means a 401 about a minute into training -- after the job already holds a GPU.
 # Warn here, where it costs nothing. HF_HOME is redirected, which also moves
 # where a stored login is read from ($HF_HOME/token), so HF_TOKEN in the
-# environment is the reliable route; --export=ALL carries it into the job.
+# environment is the reliable route; the job inherits it from this shell.
 if [[ -z "${HF_TOKEN:-}" && ! -s "${HF_HOME}/token" && ! -s "${HOME}/.cache/huggingface/token" ]]; then
   echo "WARNING: no HF_TOKEN and no token file under HF_HOME=${HF_HOME}." >&2
   echo "         The job will fail loading nvidia/Cosmos-Reason2-2B (401)." >&2
@@ -133,36 +140,47 @@ if [[ "${FAIL}" -ne 0 ]]; then
   exit 2
 fi
 
-EXPORTS="ALL"
-EXPORTS+=",MODEL_OUTPUT_DIR=${MODEL_OUTPUT_DIR}"
-EXPORTS+=",CKPT_ROOT=${SMOKE_ROOT}"
-EXPORTS+=",RESULTS_DIR=${SMOKE_ROOT}/eval_result"
-EXPORTS+=",STAGE_DIR=${SMOKE_ROOT}/.stages"
-EXPORTS+=",UNIVTAC_ROOT=${UNIVTAC_ROOT}"
-EXPORTS+=",UNIVTAC_PYTHON=${UNIVTAC_PYTHON}"
-EXPORTS+=",GROOT_ROOT=${GROOT_ROOT}"
-EXPORTS+=",GROOT_PYTHON=${GROOT_PYTHON}"
-EXPORTS+=",HF_HOME=${HF_HOME}"
-EXPORTS+=",DATA_ROOT=${DATA_ROOT}"
-EXPORTS+=",TASK=${TASK}"
-EXPORTS+=",TASK_CONFIG=${TASK_CONFIG}"
-EXPORTS+=",EPISODES=${EPISODES}"
-EXPORTS+=",MAX_STEPS=${MAX_STEPS}"
-EXPORTS+=",SAVE_STEPS=${SAVE_STEPS}"
-EXPORTS+=",SAVE_TOTAL_LIMIT=${SAVE_TOTAL_LIMIT}"
-EXPORTS+=",USE_WANDB=${USE_WANDB}"
-# DRY_RUN left exported from testing would ride in on --export=ALL and the job
-# would exit in seconds having proved nothing.
-EXPORTS+=",DRY_RUN=0"
+# The job's configuration travels in the environment: bundle-sbatch owns
+# --export. MODEL_OUTPUT_DIR is absent deliberately -- the launcher injects it,
+# pointing at this submission's own bundle. CKPT_ROOT still redirects the
+# checkpoints into SMOKE_ROOT so the smoke test cannot touch the real run's.
+BUNDLE_ENV=(
+  "UNIVTAC_JOB_CONFIG=1"
+  "CKPT_ROOT=${SMOKE_ROOT}"
+  "RESULTS_DIR=${SMOKE_ROOT}/eval_result"
+  "STAGE_DIR=${SMOKE_ROOT}/.stages"
+  "UNIVTAC_ROOT=${UNIVTAC_ROOT}"
+  "UNIVTAC_PYTHON=${UNIVTAC_PYTHON}"
+  "GROOT_ROOT=${GROOT_ROOT}"
+  "GROOT_PYTHON=${GROOT_PYTHON}"
+  "HF_HOME=${HF_HOME}"
+  "DATA_ROOT=${DATA_ROOT}"
+  "TASK=${TASK}"
+  "TASK_CONFIG=${TASK_CONFIG}"
+  "EPISODES=${EPISODES}"
+  "MAX_STEPS=${MAX_STEPS}"
+  "SAVE_STEPS=${SAVE_STEPS}"
+  "SAVE_TOTAL_LIMIT=${SAVE_TOTAL_LIMIT}"
+  "USE_WANDB=${USE_WANDB}"
+  # DRY_RUN left exported from testing would ride in and the job would exit in
+  # seconds having proved nothing.
+  "DRY_RUN=0"
+)
 
-# No --cpus-per-task and no --mem: site rules, rejected by the submit filter.
-SBATCH_ARGS=(
+BUNDLE_SLURM_ARGS=(
+  --job-name="${JOB_NAME}"
+  --wckey="${WCKEY}"
   --partition="${PARTITION}"
   --gres="gpu:${GPUS}"
-  --wckey="${WCKEY}"
-  --export="${EXPORTS}"
 )
-[[ -n "${TIME_LIMIT}" ]] && SBATCH_ARGS+=(--time="${TIME_LIMIT}")
+[[ -n "${TIME_LIMIT}" ]] && BUNDLE_SLURM_ARGS+=(--time="${TIME_LIMIT}")
+
+# --job-kind train with from_scratch: this job trains before it evaluates, and
+# it starts from the released weights rather than a local checkpoint. The eval
+# it then runs is inside the same job, which is the whole point of a smoke test.
+BUNDLE_JOB_KIND=train
+BUNDLE_CHECKPOINT=from_scratch
+BUNDLE_GIT_ROOT="${REPO_ROOT}"
 
 echo "Smoke test: ${MAX_STEPS} training steps, ${EPISODES} eval episode(s)"
 echo "  task       ${TASK}/${TASK_CONFIG}"
@@ -172,9 +190,10 @@ echo "  job        ${GPUS} gpu on ${PARTITION}, wckey=${WCKEY}, time=${TIME_LIMI
 echo
 
 if [[ "${MODE}" == "--print" ]]; then
-  echo "sbatch ${SBATCH_ARGS[*]} slurm/benchmark_task.sbatch"
-  exit 0
+  bundle_print "${REPO_ROOT}/slurm/benchmark_task.sbatch"
+  exit $?
 fi
+bundle_require || exit 2
 
 # A second queued job competes with the real run for this cluster's per-user GPU
 # cap. Say so rather than silently delaying the thing that matters.
@@ -196,11 +215,13 @@ if [[ -n "${existing}" ]]; then
 fi
 
 cd "${REPO_ROOT}"
-out=$(sbatch --parsable "${SBATCH_ARGS[@]}" slurm/benchmark_task.sbatch) || exit $?
-jobid="${out%%;*}"
+# Never retried: once the launcher records a submission, a second invocation for
+# the same request is forbidden. See slurm/bundle_submit.sh.
+bundle_submit "${REPO_ROOT}/slurm/benchmark_task.sbatch" || exit $?
+jobid="${BUNDLE_JOBID:-<see the launcher output above>}"
 echo "Submitted smoke job ${jobid}"
 echo
-echo "Watch:   tail -f logs/univtac-groot-full-*-${jobid}.out"
+echo "Watch:   the bundle's logs/slurm.out (the launcher prints the bundle path)"
 echo "Verdict: bash slurm/smoke_test.sh --check"
 echo
 echo "Expected timeline: a few minutes to load the 3B checkpoint, then 20 steps"

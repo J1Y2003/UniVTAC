@@ -15,6 +15,7 @@ from __future__ import annotations
 
 from dataclasses import asdict, dataclass, field
 import json
+import sys
 from pathlib import Path
 import time
 from typing import Any, Iterable, Iterator, Mapping
@@ -185,14 +186,29 @@ def wilson_interval(successes: int, total: int, z: float = 1.96) -> tuple[float,
 
 
 def read_jsonl(path: str | Path) -> Iterator[EpisodeResult]:
-    """Stream episode results back out of a JSONL file, line by line."""
+    """Stream episode results back out of a JSONL file, line by line.
+
+    Undecodable lines are skipped with a warning rather than raising. A run
+    killed mid-write -- routine on a preemptible partition -- leaves a
+    truncated final line, and every episode before it is still valid data.
+    Raising would throw away a whole results directory over the last few bytes
+    of one file.
+    """
     known = set(EpisodeResult.__dataclass_fields__)
     with Path(path).open("r", encoding="utf-8") as handle:
-        for line in handle:
+        for lineno, line in enumerate(handle, start=1):
             line = line.strip()
             if not line:
                 continue
-            raw = json.loads(line)
+            try:
+                raw = json.loads(line)
+            except json.JSONDecodeError:
+                print(
+                    f"warning: {path}:{lineno} is not valid JSON, skipping it "
+                    "(a run killed mid-write leaves one such line)",
+                    file=sys.stderr,
+                )
+                continue
             extra = {k: v for k, v in raw.items() if k not in known}
             kept = {k: v for k, v in raw.items() if k in known}
             kept.setdefault("extra", {}).update(extra)

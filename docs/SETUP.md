@@ -314,27 +314,36 @@ steps 5 and 6 — reloading the checkpoint per attempt is the main time sink.
 
 ## Training-outputs policy (Kakao cluster)
 
-Per "모델 학습 Outputs 통합 저장 및 Retention 정책", checkpoints must be written
-to the cluster's unified folder, `{NFS}/{user}/...`:
+**Superseded by `bundle-sbatch`.** Checkpoints no longer go to a path we
+choose. The launcher creates one output bundle per submission and injects
 
-| Cluster | NFS root |
+```
+MODEL_OUTPUT_DIR = CODE_OUTPUT_DIR = <bundle>/code-output
+```
+
+and the guide is explicit that we must not supply `MODEL_OUTPUT_DIR`
+ourselves. The unified-folder roots below are what the previous policy
+required, kept only so an old path in someone's `env.sh` is recognisable:
+
+| Cluster | NFS root (retired for our jobs) |
 | --- | --- |
 | Kakao | `/rlwrld-unified-checkpoints` |
 | Naver (MLXP) | `/data/rlwrld-unified-checkpoints` |
 | AWS (SKT) | `/fsx/rlwrld-unified-checkpoints` |
 
-`MODEL_OUTPUT_DIR` is **required**, not defaulted: the policy's own
-`train.sbatch` asserts it, jobs submitted without it are to be rejected
-outright in future, and a silent fallback to home NFS is the sprawl the
-policy exists to stop. `benchmark_task.sbatch` and `finetune.sbatch` both
-refuse an output path outside the unified folder unless
-`ALLOW_NONSTANDARD_OUTPUT=1`.
+**Retention is the part that bites a multi-week study, and bundles do not
+change that.** Bundle storage is managed storage, not permanent storage: the
+guide says retention may migrate and later delete aged outputs, and tells you
+to move long-lived artifacts to designated user storage yourself. The old
+unified-folder window was 4 days untouched (§5.1 body; its table says 7 -- the
+document contradicts itself) before migration to Object Storage and deletion 90
+days later; the bundle window is not documented, so plan for the same. A
+checkpoint you want to re-evaluate weeks later will not be there, and
+`<output_dir>/final` becomes a dangling symlink.
 
-**Retention is the part that bites a multi-week study.** A folder untouched
-for 4 days (§5.1 body; the §5.1 table says 7 -- the document contradicts
-itself, so plan for 4) is moved to Object Storage and removed from NFS, then
-deleted 90 days later. So a checkpoint you want to re-evaluate weeks later
-will not be there, and `<output_dir>/final` becomes a dangling symlink.
+It is worse than it used to be: a rescued checkpoint is now also the only way
+to **resume** that training, since a resubmission gets a fresh bundle and must
+be pointed at its predecessor with `--checkpoint`.
 
 §7 gives the remedy: write to the unified folder first, then move anything
 needing permanent retention into your own user folder. That is what
@@ -366,7 +375,7 @@ Run it as soon as a finetune finishes, not days later.
 | `Arm motion planning failed on action 0` | cuRobo, not GR00T. Verify UniVTAC's own expert works: `bash collect_data.sh grasp_classify demo 0` |
 | `ValueError: Fast download using 'hf_transfer' is enabled (HF_HUB_ENABLE_HF_TRANSFER=1) but 'hf_transfer' package is not available` | The flag is a hard error, not a fallback, and it fires mid-download inside the *server* log so it reads like a checkpoint fault. `eval_ablation.sbatch` now probes `GROOT_PYTHON` for the package and only enables the flag when present. Override with `HF_HUB_ENABLE_HF_TRANSFER=0`, or install it: `$GROOT_PYTHON -m pip install hf_transfer` (worth it for the ~15 GB of weights). |
 | `GPU 파티션에는 GPU를 요청한 잡만 제출할 수 있습니다` | A CPU-only job went to a GPU partition. Add `--partition=cpu`. Applies to `download_data.sbatch` and `convert.sbatch`; both set it in their headers, but an exported `SBATCH_PARTITION` beats a `#SBATCH` directive, so pass it on the command line too. |
-| `sbatch: error: ... Batch job submission failed: Unspecified error` | This cluster's submit filter enforces site rules and rejects the job before it queues. Known rules: a job name **longer than 50 characters**, `MODEL_OUTPUT_DIR` set under `/rlwrld-unified-checkpoints`, `--wckey=project-short-name:sub_4dpdata` (the `project-short-name:` prefix is **literal**, not a placeholder -- without it the filter answers `WCKey를 project-short-name:<name> 형식으로 지정해야 합니다`), and **no** `--cpus-per-task` or `--mem` (jobs take the node's per-GPU defaults). `--time` is allowed, but must not exceed the partition maximum. Check with `sbatch --test-only`, which runs the filter without queueing anything. |
+| `sbatch: error: ... Batch job submission failed: Unspecified error` | This cluster's submit filter enforces site rules and rejects the job before it queues. Known rules: a job name **longer than 50 characters**, `--wckey=project-short-name:sub_4dpdata` (the `project-short-name:` prefix is **literal**, not a placeholder -- without it the filter answers `WCKey를 project-short-name:<name> 형식으로 지정해야 합니다`), and **no** `--cpus-per-task` or `--mem` (jobs take the node's per-GPU defaults). `--time` is allowed, but must not exceed the partition maximum. `MODEL_OUTPUT_DIR` is still required but bundle-sbatch injects it -- do not set it yourself. There is no `--test-only` rehearsal any more (the launcher owns that flag); `bash slurm/submit_benchmark.sh --print` shows the exact command instead. |
 | Port already in use with concurrent jobs | `eval_ablation.sbatch` derives a per-job port from `SLURM_JOB_ID`; pass `PORT=` to override |
 
 ---

@@ -1,21 +1,22 @@
 #!/bin/bash
-# Copy the checkpoints we still need out of the retention-managed unified folder.
+# Copy the checkpoints we still need out of retention-managed storage.
 #
 #   bash slurm/preserve_outputs.sh --check    # what exists, and how close to expiry
 #   bash slurm/preserve_outputs.sh            # copy the final checkpoints to KEEP_ROOT
 #
-# Why this exists. The training-outputs policy ("모델 학습 Outputs 통합 저장 및
-# Retention 정책") requires outputs to live under the cluster's unified folder
-# (Kakao: /rlwrld-unified-checkpoints/{user}/...), and applies retention there:
-# a folder untouched for 4 days (§5.1 body; the §5.1 table says 7 -- the document
-# contradicts itself, so treat 4 as the deadline) is moved to Object Storage and
-# removed from NFS, then deleted 90 days after that.
+# Why this exists. Training outputs no longer land where we choose them to:
+# bundle-sbatch creates one output bundle per submission and writes checkpoints
+# to <bundle>/code-output. That is MANAGED storage, not permanent storage --
+# the guide is explicit that retention may migrate and later delete aged
+# outputs, and tells you to move long-lived artifacts to designated user
+# storage yourself. The 4-day window below is the old unified-folder deadline,
+# kept as a conservative default until the bundle retention period is known.
 #
 # Our study runs for weeks across 8 tasks. A lift_bottle checkpoint we want to
-# re-evaluate later will simply not be on NFS any more, and <output_dir>/final
-# will be a dangling symlink. §7 is explicit about the remedy: store outputs in
-# the unified folder first, then move anything needing permanent retention into
-# your own user folder.
+# re-evaluate later will simply not be there any more, and <output_dir>/final
+# will be a dangling symlink. Worse under bundles than before: a rescued
+# checkpoint is also the ONLY way to resume that training, since a resubmission
+# gets a fresh bundle and must be pointed at the old checkpoint explicitly.
 #
 # So this copies only the *final* checkpoint per variant -- the one evaluation
 # uses -- and leaves the intermediates to expire. That is deliberate: a full 3B
@@ -26,8 +27,20 @@ set -uo pipefail
 
 WHOAMI="${USER:-$(id -un)}"
 
-# Retention-managed. Outputs must be written here first (policy §3, §7).
-CKPT_ROOT="${CKPT_ROOT:-${MODEL_OUTPUT_DIR:-/rlwrld-unified-checkpoints/${WHOAMI}/checkpoints/univtac-groot}}"
+# Retention-managed: one bundle per submission, checkpoints under its
+# code-output. BUNDLE_DIR names a single bundle; CKPT_ROOT is that bundle's
+# code-output. Pass either -- the launcher prints the bundle path when it
+# submits, and JOB_OUTPUT_BUNDLE_DIR is what it exports inside a job.
+if [[ -n "${BUNDLE_DIR:-}" ]]; then
+  CKPT_ROOT="${CKPT_ROOT:-${BUNDLE_DIR}/code-output}"
+fi
+CKPT_ROOT="${CKPT_ROOT:-${MODEL_OUTPUT_DIR:-${JOB_OUTPUT_BUNDLE_DIR:+${JOB_OUTPUT_BUNDLE_DIR}/code-output}}}"
+if [[ -z "${CKPT_ROOT}" ]]; then
+  echo "Set CKPT_ROOT, or BUNDLE_DIR to the bundle holding the checkpoints." >&2
+  echo "  bundle-sbatch prints the bundle path when it submits; a finished job's" >&2
+  echo "  checkpoints are under <bundle>/code-output/<task>-<variant>/." >&2
+  exit 2
+fi
 # Your own space, outside the retention sweep. Not the unified folder.
 KEEP_ROOT="${KEEP_ROOT:-${HOME}/jaewon/workspace/groot-keep}"
 
@@ -55,7 +68,7 @@ resolve_final() {
   printf '%s' "${latest}"
 }
 
-echo "unified (retention-managed): ${CKPT_ROOT}"
+echo "bundle (retention-managed):  ${CKPT_ROOT}"
 echo "keep (yours, no sweep):      ${KEEP_ROOT}"
 echo
 

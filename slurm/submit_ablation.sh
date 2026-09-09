@@ -18,9 +18,14 @@
 #   BASELINE_MODEL=nvidia/GR00T-N1.7-3B \
 #   bash slurm/submit_ablation.sh
 
-set -euo pipefail
+# Not `set -e`: one task failing to submit must not abandon the rest, and a
+# skipped variant is an ordinary outcome here.
+set -uo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# shellcheck source=slurm/bundle_submit.sh
+. "${REPO_ROOT}/slurm/bundle_submit.sh"
+failed=0
 
 # The eight benchmark tasks under UniVTAC/envs/ ('collect' is data-gen only).
 # The three reported tasks, matching submit_benchmark.sh. Pass TASKS="..." for
@@ -60,25 +65,57 @@ for variant in ${VARIANTS}; do
   esac
 
   for task in ${TASKS}; do
-    exports="ALL,VARIANT=${variant},TASK=${task},TASK_CONFIG=${TASK_CONFIG}"
-    exports+=",EPISODES=${EPISODES},EXECUTION_HORIZON=${EXECUTION_HORIZON}"
-    exports+=",GROOT_MODEL=${model},UNIVTAC_ROOT=${UNIVTAC_ROOT}"
-    exports+=",GROOT_PYTHON=${GROOT_PYTHON},UNIVTAC_PYTHON=${UNIVTAC_PYTHON}"
-    exports+=",REPO_ROOT=${REPO_ROOT}"
-    [[ -n "${TACTILE_MODE:-}" ]] && exports+=",TACTILE_MODE=${TACTILE_MODE}"
+    # bundle-sbatch --checkpoint must be an EXISTING PHYSICAL DIRECTORY: the
+    # launcher rejects symlinks, so `<out>/final` has to be resolved. The
+    # zero-shot `baseline` names a hub model rather than a local checkpoint and
+    # therefore cannot be submitted as --job-kind eval at all.
+    if [[ "${variant}" == "baseline" ]]; then
+      echo "skip ${task}/${variant}: the zero-shot baseline is a hub id" >&2
+      echo "     (${model}), and --job-kind eval requires a local checkpoint" >&2
+      continue
+    fi
+    checkpoint=$(readlink -f "${model}" 2>/dev/null || printf '%s' "${model}")
+    if [[ ! -d "${checkpoint}" ]]; then
+      echo "skip ${task}/${variant}: ${model} is not an existing directory" >&2
+      failed=1
+      continue
+    fi
+
+    BUNDLE_ENV=(
+      "UNIVTAC_JOB_CONFIG=1"
+      "VARIANT=${variant}"
+      "TASK=${task}"
+      "TASK_CONFIG=${TASK_CONFIG}"
+      "EPISODES=${EPISODES}"
+      "EXECUTION_HORIZON=${EXECUTION_HORIZON}"
+      "GROOT_MODEL=${checkpoint}"
+      "UNIVTAC_ROOT=${UNIVTAC_ROOT}"
+      "GROOT_PYTHON=${GROOT_PYTHON}"
+      "UNIVTAC_PYTHON=${UNIVTAC_PYTHON}"
+      "REPO_ROOT=${REPO_ROOT}"
+    )
+    [[ -n "${TACTILE_MODE:-}" ]] && BUNDLE_ENV+=("TACTILE_MODE=${TACTILE_MODE}")
 
     # The submit filter rejects job names of 50 characters or fewer, so this
-    # cannot be the short "uv-<variant>-<task>" it used to be. No --time, no
-    # --cpus-per-task, no --mem; --wckey always. See CLAUDE.md, "Cluster rules".
-    jobname="univtac-groot-evaluate-one-variant-on-one-task-${variant}-${task}"
-    cmd=(sbatch --job-name="${jobname}" --wckey="${WCKEY:-project-short-name:sub_4dpdata}"
-         --partition="${EVAL_PARTITION}"
-         --export="${exports}" "${REPO_ROOT}/slurm/eval_ablation.sbatch")
-    [[ -n "${EVAL_TIME_LIMIT}" ]] &&
-      cmd=("${cmd[@]:0:1}" --time="${EVAL_TIME_LIMIT}" "${cmd[@]:1}")
-    echo "${cmd[*]}"
-    if [[ "${DRY_RUN:-0}" != "1" ]]; then
-      "${cmd[@]}"
+    # cannot be the short "uv-<variant>-<task>" it used to be. No --cpus-per-task
+    # and no --mem; --wckey always. See CLAUDE.md, "Cluster rules".
+    BUNDLE_SLURM_ARGS=(
+      --job-name="univtac-groot-evaluate-one-variant-on-one-task-${variant}-${task}"
+      --wckey="${WCKEY:-project-short-name:sub_4dpdata}"
+      --partition="${EVAL_PARTITION}"
+      --gres="gpu:1"
+    )
+    [[ -n "${EVAL_TIME_LIMIT}" ]] && BUNDLE_SLURM_ARGS+=(--time="${EVAL_TIME_LIMIT}")
+
+    BUNDLE_JOB_KIND=eval
+    BUNDLE_CHECKPOINT="${checkpoint}"
+    BUNDLE_GIT_ROOT="${REPO_ROOT}"
+
+    if [[ "${DRY_RUN:-0}" == "1" ]]; then
+      bundle_print "${REPO_ROOT}/slurm/eval_ablation.sbatch" || failed=1
+    else
+      # Never retried: see slurm/bundle_submit.sh.
+      bundle_submit "${REPO_ROOT}/slurm/eval_ablation.sbatch" || failed=1
     fi
   done
 done
@@ -86,3 +123,4 @@ done
 echo
 echo "When the jobs finish, aggregate with:"
 echo "  python ${REPO_ROOT}/scripts/compare_ablation.py --results-dir ${REPO_ROOT}/eval_result --json ablation.json"
+exit ${failed}

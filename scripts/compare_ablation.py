@@ -150,7 +150,7 @@ def no_results_message(results_dir: Path, args, *, exists: bool) -> str:
         "",
         "Nothing to compare yet -- run at least one evaluation first:",
         "",
-        "  sbatch --export=ALL,VARIANT=baseline,TASK=insert_hole slurm/eval_ablation.sbatch",
+        "  VARIANTS=baseline_finetuned bash slurm/submit_benchmark.sh --evals",
         "",
         "That needs UNIVTAC_ROOT, UNIVTAC_PYTHON and GROOT_PYTHON exported; see",
         "docs/SETUP.md. Evaluation is GPU work, so it must go to a compute node.",

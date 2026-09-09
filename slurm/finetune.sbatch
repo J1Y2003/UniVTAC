@@ -9,7 +9,7 @@
 #       --raw-dir "${UNIVTAC_ROOT}/data/insert_hole/demo" \
 #       --out "${DATA_ROOT}/univtac-insert_hole-tactile" --variant tactile
 #
-#   sbatch --wckey=project-short-name:sub_4dpdata --export=ALL,TASK=insert_hole,VARIANT=tactile,DATASET=/data/univtac-insert_hole-tactile slurm/finetune.sbatch
+#   env TASK=insert_hole VARIANT=tactile DATASET=/data/univtac-insert_hole-tactile \n#     UNIVTAC_JOB_CONFIG=1 bundle-sbatch --job-kind train --checkpoint from_scratch \n#     --code-git-root "$REPO_ROOT" -- \n#     --job-name=univtac-groot-finetune-one-ablation-variant-under-new-embodiment-tag \n#     --wckey=project-short-name:sub_4dpdata --partition=sjw_alinlab -- \n#     slurm/finetune.sbatch
 #
 # SITE RULES (see CLAUDE.md, "Cluster rules"). Enforced here; do not "helpfully"
 # reintroduce any of them:
@@ -23,20 +23,13 @@
 #   * NEVER pass --cpus-per-task or --mem. Jobs take the node's per-GPU
 #     defaults, and the submit filter rejects the job if either is specified.
 #   * ALWAYS pass --wckey=project-short-name:sub_4dpdata.
-#   * MODEL_OUTPUT_DIR must be in the SUBMITTING environment, for every job --
-#     including CPU-only ones that write no checkpoints. The filter checks it at
-#     submit time, before this script runs, so no in-script default can help:
-#       ❌ ERROR: MODEL_OUTPUT_DIR가 없습니다.
-#          MODEL_OUTPUT_DIR=/rlwrld-unified-checkpoints/jimin/... 로 지정하세요.
-#     `source env.sh` sets it and --export=ALL carries it in.
+#   * MODEL_OUTPUT_DIR is injected by bundle-sbatch and equals CODE_OUTPUT_DIR
+#     (<bundle>/code-output). Never set it, never pass it with --export, and do
+#     not expect it under /rlwrld-unified-checkpoints any more.
 #
 # Do pass --partition explicitly, or export SBATCH_PARTITION: `debug` is the
 # default here and is short-lived, so it is not where long training belongs.
-#SBATCH --job-name=univtac-groot-finetune-one-ablation-variant-under-new-embodiment-tag
-#SBATCH --output=logs/%x-%j.out
-#SBATCH --error=logs/%x-%j.err
 #SBATCH --gres=gpu:1
-#SBATCH --wckey=project-short-name:sub_4dpdata
 
 set -euo pipefail
 
@@ -235,4 +228,5 @@ cd "${GROOT_ROOT}"
 
 echo "[job] finetune finished; checkpoints under ${OUTPUT_DIR}"
 echo "[job] evaluate with:"
-echo "  sbatch --wckey=project-short-name:sub_4dpdata --export=ALL,VARIANT=${VARIANT},TASK=<task>,GROOT_MODEL=${OUTPUT_DIR}/<checkpoint> ${REPO_ROOT}/slurm/eval_ablation.sbatch"
+echo "  VARIANTS=${VARIANT} TASKS=<task> bash ${REPO_ROOT}/slurm/submit_ablation.sh"
+echo "  (it resolves the physical checkpoint path bundle-sbatch --checkpoint needs)"
