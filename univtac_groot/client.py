@@ -84,12 +84,9 @@ def _decode(obj: Any) -> Any:
 
             return np.load(io.BytesIO(payload), allow_pickle=False)
 
-        # ModalityConfig envelope, from ``MsgSerializer._encode_custom``:
-        #   {"__ModalityConfig__": True, "as_json": to_json_serializable(cfg)}
-        # The server rebuilds a real ``ModalityConfig``; we have no such class
-        # here (importing gr00t is the whole thing this client avoids), so the
-        # dataclass dict is returned as-is. ``resolve_horizons`` reads
-        # ``delta_indices`` / ``modality_keys`` off either shape.
+        # ModalityConfig envelope from ``MsgSerializer._encode_custom``. The
+        # server rebuilds a real ``ModalityConfig``; importing gr00t is what
+        # this client exists to avoid, so return the dataclass dict as-is.
         if any(marker in obj for marker in _MODALITY_MARKERS):
             key = next((k for k in ("as_json", b"as_json") if k in obj), None)
             if key is None:

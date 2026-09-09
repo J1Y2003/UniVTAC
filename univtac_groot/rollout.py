@@ -118,11 +118,10 @@ def run_episode(
         obs, info = env.reset(seed=seed)
         instruction = str(info.get("instruction", getattr(env, "instruction", "")))
 
-        # The task plans its own scripted pre-move through cuRobo during reset.
-        # If that failed, the variant is not at its start pose and the policy never
-        # gets a fair attempt, so this seed is unusable rather than failed --
-        # scoring it would blame the policy for a planner miss. UniVTAC's own
-        # evaluator rejects such seeds up front via --expert_check.
+        # The task plans a scripted pre-move through cuRobo during reset. If
+        # that failed the arm is not at its start pose, so the seed is unusable
+        # rather than failed -- scoring it would blame the policy for a planner
+        # miss. UniVTAC's evaluator rejects such seeds via --expert_check.
         if config.skip_on_plan_failure and not info.get("plan_success", True):
             _log(f"seed {seed} skipped: task pre-move planning failed", log)
             return EpisodeResult(

@@ -26,10 +26,9 @@ import argparse
 import os
 import sys
 
-# The metrics worth reporting, in the order they get printed. Keys differ
-# between wandb versions and between the HF trainer's own logging and wandb's
-# system monitor, so each entry lists the aliases seen in practice and the
-# first one present wins.
+# Keys differ between wandb versions and between the trainer's logging and
+# wandb's system monitor, so each entry lists the aliases seen in practice and
+# the first present wins.
 TRAIN_SERIES = [
     ("loss", ["train/loss", "loss", "train_loss"]),
     ("learning rate", ["train/learning_rate", "learning_rate", "lr"]),

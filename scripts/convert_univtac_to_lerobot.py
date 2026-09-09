@@ -578,11 +578,9 @@ def main(argv: list[str] | None = None) -> int:
 
     grid = (int(args.tactile_pool_grid[0]), int(args.tactile_pool_grid[1]))
     spec_kwargs: dict[str, Any] = {"image_size": (args.image_size[0], args.image_size[1])}
-    # Cameras are per-task, matching the paper's ACT configuration: two views
-    # for insert_tube and lift_bottle, third-person only otherwise. Converting
-    # a wrist stream the baseline never saw would hand GR00T an unfair
-    # advantage that is invisible downstream, so it is decided here from the
-    # task rather than left to a default.
+    # Cameras are per task: two views for insert_tube and lift_bottle,
+    # third-person only otherwise. Decided from the task rather than defaulted,
+    # since a converted wrist stream would be invisible downstream.
     if args.cameras:
         spec_kwargs["video_keys"] = {c: c for c in args.cameras}
     else:

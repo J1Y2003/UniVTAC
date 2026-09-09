@@ -249,11 +249,9 @@ class Policy(BasePolicy):
         print(f"[GR00T] launching server: {' '.join(cmd)}  (log: {log_path})")
         self._log_handle = log_path.open("a", encoding="utf-8")
 
-        # Scrub the CUDA environment we inherited from Isaac Sim's conda env.
-        # UniVTAC ships CUDA 12.4 and exports CUDA_HOME/LD_LIBRARY_PATH at
-        # activation; GR00T's torch is cu128 and finds its own cuDNN through its
-        # venv. Leaking those makes the server load a mismatched cuDNN and fail
-        # with CUDNN_STATUS_NOT_INITIALIZED on the first inference.
+        # Scrub Isaac Sim's CUDA environment: UniVTAC exports CUDA_HOME and
+        # LD_LIBRARY_PATH for CUDA 12.4, and leaking them makes the cu128
+        # server load a mismatched cuDNN and fail on the first inference.
         server_env = {
             k: v
             for k, v in os.environ.items()

@@ -339,7 +339,16 @@ def build_env(args, univtac_root: Path, spec, action_adapter, task_config: dict)
     launcher_parser = _argparse.ArgumentParser()
     AppLauncher.add_app_launcher_args(launcher_parser)
     app_args = launcher_parser.parse_args([])
-    app_args.headless = True          # no GUI: this must survive `sbatch`
+    # `livestream = 2`, NOT `headless = True`, which is what eval_policy.py does.
+    # Both run without a display -- livestream implicitly forces headless -- but
+    # they load different Kit experience files, and only livestream's
+    # `isaaclab.python.rendering.kit` carries the extensions the camera-based
+    # GelSight sensors need. Under the headless kit their gel surface renders
+    # empty, `estimate_rigid_transform` gets zero points and returns a NaN
+    # translation, and the gelpads (which are robot collision bodies) land at a
+    # NaN-derived pose -- so cuRobo fails to plan the task's scripted pre-move
+    # for every seed, with "Arm motion planning failed on action 0".
+    app_args.livestream = 2
     app_args.enable_cameras = True    # RGB + tactile rendering
     app_args.num_envs = 1
     if args.device:

@@ -50,12 +50,8 @@ fi
 . "${REPO_ROOT}/slurm/common.sh"
 univtac_job_guard
 UNIVTAC_ROOT="${UNIVTAC_ROOT:?set UNIVTAC_ROOT to the UniVTAC checkout}"
-# Same default as submit_benchmark.sh, smoke_test.sh and
-# benchmark_task.sbatch. This used to be a hard `:?` requirement while
-# every other script defaulted it, so forgetting to export it failed the
-# convert job after a queue wait -- and, worse, exporting a DIFFERENT value
-# here than the trainer uses would convert to one place and train from
-# another. One default, everywhere.
+# The same default as every other script here: a different value would convert
+# to one place and train from another.
 DATA_ROOT="${DATA_ROOT:-${HOME}/jaewon/workspace/groot-data}"
 case "${DATA_ROOT}" in
   /*) ;;
@@ -84,13 +80,9 @@ VARIANT="${VARIANT:-tactile}"                       # tactile | baseline_finetun
 # this used to default to `demo`, so a downloaded task failed to convert with a
 # missing-directory error that pointed nowhere useful.
 TASK_CONFIG="${TASK_CONFIG:-clean}"
-# How many TRAINING episodes to convert. Empty = all available, which is the
-# full released 100 per task -- that is the intended setting.
-#
-# NOTE the name collision: the eval jobs (eval_ablation.sbatch,
-# benchmark_task.sbatch) use EPISODES for the number of EVALUATION
-# ROLLOUTS, and the job inherits whatever the submitting shell holds. So
-# prefer CONVERT_EPISODES here; EPISODES is still honoured for compatibility.
+# How many TRAINING episodes to convert; empty means all 100. Prefer
+# CONVERT_EPISODES: the eval jobs use EPISODES for evaluation ROLLOUTS and the
+# job inherits whatever the submitting shell holds.
 CONVERT_EPISODES="${CONVERT_EPISODES:-${EPISODES:-}}"
 EPISODES="${CONVERT_EPISODES}"
 TACTILE_MODE="${TACTILE_MODE:-depth_pool}"
@@ -138,11 +130,10 @@ if [[ ! -d "${RAW_DIR}" ]]; then
   exit 1
 fi
 
-# The converter needs numpy + h5py + pyarrow + imageio[ffmpeg] + cv2. The
-# UniVTAC env has numpy/h5py/cv2 for its own collection dumps but typically not
-# pyarrow or imageio-ffmpeg, and installing them there would re-pin packages
-# under a working Isaac Lab + TacEx install. Nothing here imports torch, gr00t
-# or Isaac Sim, so a private venv is both safe and sufficient.
+# The converter needs numpy + h5py + pyarrow + imageio[ffmpeg] + cv2. Installing
+# the missing ones into the UniVTAC env would re-pin packages under a working
+# Isaac Lab install, and nothing here imports torch or Isaac Sim, so use a
+# private venv.
 MISSING=$("${CONVERT_PYTHON}" - <<'PYCHECK' 2>/dev/null || echo "IMPORT_CHECK_FAILED"
 mods = {"numpy": "numpy", "h5py": "h5py", "pyarrow": "pyarrow",
         "imageio": "imageio", "cv2": "opencv-python-headless"}
@@ -164,14 +155,11 @@ if [[ -n "${MISSING}" && "${MISSING}" != "IMPORT_CHECK_FAILED" ]]; then
     echo "       Do NOT install into the shared base conda env." >&2
     exit 1
   fi
-  # CONCURRENCY: every (task, variant) job resolves CONVERT_VENV to the SAME
-  # path, and the intended way to run this script is several jobs at once (a
-  # per-task loop, or --array). `python -m venv` writes bin/python BEFORE pip
-  # installs anything, so an existence check alone is not a valid guard: the
-  # first job starts building, the others see bin/python, skip the build, and
-  # run the converter against a venv with no pyarrow in it. That is how a
-  # three-task loop converted exactly one task. So: serialise on a lock, and
-  # gate on the imports actually working rather than on a file existing.
+  # Every job resolves CONVERT_VENV to the same path, and these run
+  # concurrently. `python -m venv` writes bin/python BEFORE pip installs
+  # anything, so an existence check is not a valid guard -- the other jobs
+  # would skip the build and run against a venv with no pyarrow. Serialise on a
+  # lock and gate on the imports working.
   _venv_ready() {
     [[ -x "${CONVERT_VENV}/bin/python" ]] &&
       "${CONVERT_VENV}/bin/python" -c \

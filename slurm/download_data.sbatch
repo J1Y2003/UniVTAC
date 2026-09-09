@@ -89,12 +89,9 @@ echo " node=$(hostname)  job=${SLURM_JOB_ID:-none}"
 echo "=========================================================="
 df -h "${OUTPUT}" || true
 
-# download.sh does `require_command modelscope`, i.e. it needs the CLI on PATH.
-# Downloading needs nothing from Isaac Lab, so rather than installing modelscope
-# into the UniVTAC conda env (where it would re-pin requests/urllib3/tqdm under
-# a working Isaac Lab + TacEx install) or into ~/.local (which every python3.10
-# process on this account would then see), keep it in a throwaway venv. Delete
-# DOWNLOAD_VENV any time; it is rebuilt on demand.
+# download.sh needs the modelscope CLI on PATH. Keep it in a throwaway venv:
+# installing it into the UniVTAC env would re-pin requests/urllib3/tqdm, and
+# ~/.local is shared with everything else on this account.
 if ! command -v modelscope >/dev/null 2>&1; then
   DOWNLOAD_VENV="${DOWNLOAD_VENV:-${REPO_ROOT}/.venv-modelscope}"
   if [[ "${NO_AUTO_VENV:-0}" == "1" ]]; then
@@ -153,12 +150,9 @@ for task in ${TASKS}; do
 done
 du -sh "${OUTPUT}" 2>/dev/null || true
 
-# download.sh preserves the published layout (isaac45/<task>/hdf5/{0..99}.hdf5)
-# but BaseDataPreprocessor reads data/<task>/<config>/, and no <config> level
-# exists in the download. The episodes are already named 0.hdf5..99.hdf5, which
-# find_episodes sorts by int(stem), so one directory symlink per task bridges
-# the two and costs no disk. isaac45 wins where both exist: `main` installs
-# Isaac Sim 4.5 and the released checkpoints target that data.
+# download.sh writes isaac45/<task>/hdf5/, but BaseDataPreprocessor reads
+# data/<task>/<config>/. One directory symlink per task bridges them at no disk
+# cost. isaac45 wins where both exist, since `main` installs Isaac Sim 4.5.
 if [[ ${STATUS} -eq 0 && -n "${TASKS}" ]]; then
   echo "----------------------------------------------------------"
   echo "[job] linking downloaded episodes into data/<task>/${RAW_CONFIG}"

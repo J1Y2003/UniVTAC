@@ -37,19 +37,12 @@ from gr00t.data.types import (
 )
 
 
-# --------------------------------------------------------------------------- #
-# Cameras are per-task
-# --------------------------------------------------------------------------- #
-# The UniVTAC paper trains ACT with two views on `insert_tube` and
-# `lift_bottle` and the third-person view alone on every other task, so GR00T
-# must match per task or the comparison is unfair in GR00T's favour. The table
-# lives in univtac_groot.variants (one copy, shared with the dataset
-# converter); this module only resolves it.
-#
-# Resolution order: UNIVTAC_VIDEO_KEYS (explicit, comma-separated), then TASK.
-# With neither set this raises rather than falling back to a default, because a
-# silently wrong camera set is exactly the class of bug that left UniVTAC's own
-# tactile encoder randomly initialised -- see docs/UPSTREAM.md.
+# Cameras are per task: two views on `insert_tube` and `lift_bottle`, the
+# third-person view alone elsewhere. The table lives in univtac_groot.variants,
+# shared with the dataset converter; this module only resolves it, from
+# UNIVTAC_VIDEO_KEYS if set and otherwise TASK. With neither set it raises
+# rather than defaulting, since a silently richer observation is invisible in
+# the results.
 import os as _os
 import sys as _sys
 from pathlib import Path as _Path

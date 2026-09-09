@@ -80,14 +80,9 @@ VARIANTS="${VARIANTS:-tactile baseline_finetuned}"
 # to be safe. So the submitters send colons and this turns them back into words.
 VARIANTS="${VARIANTS//[,:]/ }"
 
-# Which stages to run; the default is all three, so a plain `bash
-# slurm/benchmark_task.sbatch` still does the whole task end to end. Splitting
-# exists because training and evaluation belong on different partitions and one
-# job holds one allocation on one. submit_benchmark.sh sends STAGES=finetune;
-# evaluation is slurm/eval_checkpoint.sh.
-#
-# Unknown names are rejected rather than ignored: a typo'd STAGES=finetne would
-# otherwise run nothing and look like a clean success.
+# Which stages to run. submit_benchmark.sh sends STAGES=finetune; the default
+# is all three, for a local run. Unknown names are rejected, since a typo'd
+# STAGES=finetne would otherwise run nothing and look like success.
 STAGES="${STAGES:-finetune eval compare}"
 STAGES="${STAGES//[,:]/ }"   # same reason as VARIANTS above
 for _stage in ${STAGES}; do
@@ -104,31 +99,20 @@ stage_enabled() {
   return 1
 }
 
-# The recipe: 30,000 steps at batch 64, retaining exactly checkpoint-10000,
-# -20000 and -30000. Those three are the only points of the success-rate curve
-# that decides the reported step count -- why 30,000 rather than GR00T's own
-# 10,000 default, and how one of the three gets chosen, are in
-# docs/BENCHMARK.md, "Choosing the step count". 30,000 is OUR choice, not a
-# GR00T default, so it is disclosed with the numbers.
+# 30,000 steps at batch 64, retaining exactly checkpoint-10000, -20000 and
+# -30000; how one of the three becomes the reported number is in
+# docs/BENCHMARK.md, "Choosing the step count".
 #
 # SAVE_TOTAL_LIMIT is a ceiling, not a target: 4 leaves a spare slot so an extra
-# end-of-training save can never evict checkpoint-10000. Only three are written,
-# ~26 GB each (measured), so ~77 GB per variant.
-#
-# The cost of sparse saves is resume granularity: a kill rolls back to the last
-# 10k boundary, ~1.9 h of redone work at 0.70 s/it. Taken knowingly.
-#
-# launch_finetune.py exposes no eval metric or load-best-at-end, so the last
-# checkpoint is the final model by definition and `<output_dir>/final` points at
-# the highest-numbered one. Preferring 10k or 20k is an act performed at
-# EVALUATION time, on a dev seed block -- never here.
+# end-of-training save cannot evict checkpoint-10000. Three at ~26 GB each.
+# The cost of sparse saves is resume granularity -- a kill rolls back to the
+# last 10k boundary, ~1.9 h of redone work.
 MAX_STEPS="${MAX_STEPS:-30000}"
 SAVE_STEPS="${SAVE_STEPS:-10000}"
 SAVE_TOTAL_LIMIT="${SAVE_TOTAL_LIMIT:-4}"
 
-# Left unset, so launch_finetune.py's own defaults apply. Set them only for a
-# deliberate sweep; the pinned recipe below records whatever was used so a
-# resubmission cannot silently train the second variant differently.
+# Unset, so launch_finetune.py's own defaults apply. The recipe pin below
+# records whatever was used.
 LEARNING_RATE="${LEARNING_RATE:-}"
 WEIGHT_DECAY="${WEIGHT_DECAY:-}"
 HP_ARGS=""
@@ -136,21 +120,12 @@ HP_ARGS=""
 [[ -n "${WEIGHT_DECAY}" ]] && HP_ARGS+=" --weight-decay ${WEIGHT_DECAY}"
 
 DATA_ROOT="${DATA_ROOT:-${HOME}/jaewon/workspace/groot-data}"
-# Where checkpoints go. Under bundle-sbatch this is not ours to choose: the
-# launcher creates one output bundle per submission and injects
-#   MODEL_OUTPUT_DIR = CODE_OUTPUT_DIR = <bundle>/code-output
-# so every submission writes to a DIFFERENT directory. The old
-# /rlwrld-unified-checkpoints layout and its validation are gone with it.
-#
-# Two consequences worth stating plainly:
-#
-#  * A resubmission does not see the previous run's checkpoints. Resuming is no
-#    longer automatic -- pass the previous physical checkpoint directory as
-#    `bundle-sbatch --checkpoint`, which arrives here as CHECKPOINT_DIR.
-#  * Bundle storage is managed storage with its own retention, and we do NOT
-#    copy checkpoints out of it. If a bundle ages out, that finetune is gone
-#    and gets resubmitted -- at ~6.2 h per task that is cheaper than keeping a
-#    private duplicate of every checkpoint on NFS. Evaluate while it is live.
+# The launcher injects MODEL_OUTPUT_DIR = <bundle>/code-output, a fresh
+# directory per submission. So a resubmission does not see the previous run's
+# checkpoints: pass the previous physical checkpoint directory as
+# `bundle-sbatch --checkpoint`, which arrives here as CHECKPOINT_DIR. Bundle
+# storage is retention-managed and nothing copies checkpoints out, so evaluate
+# a checkpoint while its bundle is live.
 : "${MODEL_OUTPUT_DIR:?MODEL_OUTPUT_DIR is injected by bundle-sbatch. Submit through slurm/submit_benchmark.sh, not with plain sbatch}"
 CKPT_ROOT="${CKPT_ROOT:-${MODEL_OUTPUT_DIR}}"
 RESULTS_DIR="${RESULTS_DIR:-${REPO_ROOT}/eval_result}"
@@ -234,20 +209,12 @@ done
   || fatal "missing ${GROOT_ROOT}/gr00t/experiment/launch_finetune.py"
 "${GROOT_PYTHON}" -c "import gr00t" 2>/dev/null \
   || fatal "${GROOT_PYTHON} cannot import gr00t (try: cd ${GROOT_ROOT} && uv sync)"
-# Every GR00T checkpoint loads the gated nvidia/Cosmos-Reason2-2B backbone, so
-# without credentials training dies with a 401 about a minute in -- after the
-# job has a GPU, which on a contended cluster is an expensive way to learn it.
-# Probe actual access, not just the presence of a token: a token that lacks
-# access to the gated repo looks identical until the request is made.
+# Probe actual ACCESS to the gated nvidia/Cosmos-Reason2-2B, not just the
+# presence of a token: a token without the grant looks identical until the
+# request is made, and the 401 lands a minute in, after the job holds a GPU.
 #
-# Note HF_HOME is redirected above, which also moves where a stored login is
-# looked for ($HF_HOME/token, not ~/.cache/huggingface/token). Exporting
-# HF_TOKEN avoids that entirely and takes precedence over any stored login.
-# `${HF_TOKEN:+set}${HF_TOKEN:-UNSET}` would PRINT THE TOKEN when it is set:
-# `:+` yields "set" and `:-` yields the VALUE, and the two concatenate. In a
-# job that lands in <bundle>/logs/slurm.err, which the launcher creates 0644 --
-# a readable secret on a shared account. Never render a secret through a
-# default-value expansion. Same bug was in submit_benchmark.sh's wandb line.
+# Not `${HF_TOKEN:+set}${HF_TOKEN:-UNSET}`: when the variable is set, `:-`
+# yields its VALUE, so that one-liner prints the token into slurm.err.
 if [[ -n "${HF_TOKEN:-}" ]]; then
   HF_TOKEN_STATE="set"
 else
@@ -307,17 +274,10 @@ done
 [[ -f "${REPO_ROOT}/configs/modality/univtac_baseline_config.py" ]] \
   || fatal "missing configs/modality/univtac_baseline_config.py"
 
-# Pin the training recipe across runs. Both variants must train under identical
-# conditions or the ablation measures the recipe, not the tactile modality --
-# and the two variants are NOT necessarily trained by the same job invocation: a
-# walltime kill mid-way means the second variant trains on a later resubmission,
-# which the scheduler may hand a different number of GPUs. That matters because
-# with data-parallel training --num-gpus multiplies the effective batch size, so
-# the same --max-steps on 4 GPUs sees roughly twice the data as on 2.
-#
-# So record the recipe when the first variant starts and refuse to continue if a
-# later run differs. Set ALLOW_RECIPE_CHANGE=1 to override deliberately (e.g.
-# you are restarting the whole experiment from scratch).
+# Record the recipe on the first run for a task and refuse a later run that
+# differs, since --num-gpus multiplies the effective batch size and a
+# resubmission may be handed a different allocation. ALLOW_RECIPE_CHANGE=1
+# overrides.
 RECIPE_FILE="${STAGE_DIR}/recipe-${TASK}.env"
 # The pin exists to keep the two variants TRAINED alike; an eval-only job has no
 # recipe, and checking one would fail it purely for holding a different GPU count.
@@ -418,24 +378,17 @@ for variant in ${VARIANTS}; do
     continue
   fi
 
-  # A checkpoint without the marker means an earlier attempt was killed
-  # mid-training. Resume it rather than either restarting from step 0 or
-  # treating a partial run as finished -- launch_finetune.py has
-  # --resume-from-checkpoint, which picks the latest checkpoint-* in output_dir.
-  # It defaults to off precisely so an accidental rerun does not merge two
-  # experiments, so it must be requested explicitly.
+  # An unmarked checkpoint is a killed run: resume it rather than restarting
+  # from step 0. --resume-from-checkpoint defaults to off so an accidental
+  # rerun cannot merge two experiments, so it has to be asked for.
   resume_args=""
   existing=$(latest_checkpoint "${out_dir}")
-  # Under bundle-sbatch, out_dir is a FRESH directory on every submission, so a
-  # resumable run has nothing here to find. The previous run's checkpoint comes
-  # in as CHECKPOINT_DIR (from `bundle-sbatch --checkpoint <physical path>`).
-  # Link it into out_dir under its own name and --resume-from-checkpoint picks
-  # it up, since that flag selects the highest-numbered checkpoint-N in
-  # output_dir. A link, not a copy: these are ~40 GB each.
-  #
-  # Only the variant whose name the checkpoint carries may claim it -- with two
-  # variants in one job, seeding both from one checkpoint would silently train
-  # the baseline from the tactile weights.
+  # out_dir is fresh on every submission, so a resume comes from CHECKPOINT_DIR
+  # instead. Link it in under its own name and --resume-from-checkpoint finds
+  # it, since that flag takes the highest-numbered checkpoint-N in output_dir;
+  # a link rather than a copy, at ~26 GB each. Only the variant whose name the
+  # checkpoint carries may claim it, or two variants in one job would seed from
+  # each other's weights.
   if [[ -z "${existing}" && -n "${CHECKPOINT_DIR:-}" ]]; then
     case "$(basename "${CHECKPOINT_DIR}")" in
       checkpoint-[0-9]*)

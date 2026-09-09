@@ -77,14 +77,9 @@ UNIVTAC_ROOT="${UNIVTAC_ROOT:?set UNIVTAC_ROOT to the UniVTAC checkout}"
 GROOT_PYTHON="${GROOT_PYTHON:?set GROOT_PYTHON to the GR00T interpreter, e.g. Isaac-GR00T/.venv/bin/python}"
 UNIVTAC_PYTHON="${UNIVTAC_PYTHON:?set UNIVTAC_PYTHON to the UniVTAC/Isaac Lab interpreter}"
 
-# Checkpoint + embodiment tag. The baseline runs zero-shot on the released
-# model; the tactile variant needs a NEW_EMBODIMENT finetune (docs/BENCHMARK.md).
-#
-# CHECKPOINT_DIR is what bundle-sbatch injects for the `--checkpoint PATH` this
-# job was submitted with, and it is the authoritative answer for a finetuned
-# variant: it is the very path the launcher validated and recorded as this
-# job's declared intent. GROOT_MODEL still wins if set explicitly, so an
-# operator can point a rerun somewhere else without re-declaring the job.
+# The baseline runs zero-shot on the released model; a finetune needs
+# NEW_EMBODIMENT. GROOT_MODEL defaults to the CHECKPOINT_DIR bundle-sbatch
+# injected, i.e. the path the launcher validated, and an explicit value wins.
 GROOT_MODEL="${GROOT_MODEL:-${CHECKPOINT_DIR:-}}"
 if [[ "${VARIANT}" == "baseline" ]]; then
   GROOT_MODEL="${GROOT_MODEL:-nvidia/GR00T-N1.7-3B}"
@@ -116,11 +111,9 @@ fi
 # A per-job port keeps concurrent array tasks on one node from colliding.
 PORT="${PORT:-$((20000 + (${SLURM_JOB_ID:-$$} % 20000)))}"
 RESULTS_DIR="${RESULTS_DIR:-${REPO_ROOT}/eval_result}"
-# Overridable, and it matters twice over: without a distinct tag every non-array
-# eval writes seed<offset>-0.jsonl, so two runs into one RESULTS_DIR overwrite
-# each other -- and the tag is what makes the path STABLE across a requeue,
-# which is what lets the resume below find the work already done.
-# slurm/eval_checkpoint.sh sets RUN_TAG=ckpt<N>.
+# Without a distinct tag every eval writes seed<offset>-0.jsonl and two runs
+# collide; it must also be STABLE across a requeue, so the resume below finds
+# the work already done. eval_checkpoint.sh sets RUN_TAG=ckpt<N>.
 RUN_TAG="${RUN_TAG:-${SLURM_ARRAY_TASK_ID:-0}}"
 OUTPUT="${RESULTS_DIR}/${VARIANT}/${TASK}/seed${SEED_OFFSET}-${RUN_TAG}.jsonl"
 SERVER_LOG="${RESULTS_DIR}/${VARIANT}/${TASK}/server-${RUN_TAG}.log"
@@ -128,17 +121,15 @@ SERVER_LOG="${RESULTS_DIR}/${VARIANT}/${TASK}/server-${RUN_TAG}.log"
 # --------------------------------------------------------------------------- #
 # Resume, because `background` preempts with REQUEUE
 # --------------------------------------------------------------------------- #
-# A requeued job re-runs THIS SCRIPT FROM THE TOP with the same job id and the
-# same OUTPUT path. ResultWriter opens that file in append mode, so without the
-# arithmetic below a preemption would append a second pass starting from the
-# first seed -- duplicate seeds, an inflated episode count and a success rate
-# averaged over episodes counted twice.
+# A requeue re-runs this script from the top with the same OUTPUT path, and
+# ResultWriter appends -- so without the arithmetic below a preemption would add
+# a second pass from the first seed and inflate the tally. Read what is already
+# recorded and continue past it: every episode is flushed as it completes and
+# carries its seed, so the file is truthful even after a SIGKILL.
 #
-# So: read what is already recorded and continue past it. The file is truthful
-# even after a SIGKILL, since every episode is flushed as it completes and each
-# line carries its seed. Errored and skipped episodes consumed a seed but not
-# the episode budget, which is why the two are counted separately -- the resumed
-# run targets the same number of SCORED episodes a clean run would produce.
+# Errored and skipped episodes consumed a seed but not the episode budget, so
+# the two are counted separately and the resumed run targets the same number of
+# SCORED episodes a clean run would.
 EPISODES_TARGET="${EPISODES}"
 EVAL_COMPLETE=0
 BASE_SEED=$(( 1000000 * (1 + SEED_OFFSET) ))
@@ -206,11 +197,9 @@ echo "=========================================================="
 # every rank would otherwise re-download the 3B checkpoint.
 export HF_HOME="${HF_HOME:-${SCRATCH:-/tmp}/hf_cache}"
 
-# hf_transfer roughly triples download throughput on the 15 GB of weights, but
-# HF_HUB_ENABLE_HF_TRANSFER=1 without the package installed is a hard
-# ValueError from huggingface_hub, not a fallback -- and it surfaces mid-download
-# inside the server log, looking like a checkpoint problem. So probe for it
-# rather than assuming. An explicit setting from the caller always wins.
+# Roughly triples download throughput, but the flag without the package is a
+# hard ValueError rather than a fallback, surfacing mid-download as what looks
+# like a checkpoint problem. An explicit setting from the caller wins.
 if [[ -z "${HF_HUB_ENABLE_HF_TRANSFER:-}" ]]; then
   if "${GROOT_PYTHON}" -c "import hf_transfer" 2>/dev/null; then
     export HF_HUB_ENABLE_HF_TRANSFER=1
@@ -221,12 +210,9 @@ if [[ -z "${HF_HUB_ENABLE_HF_TRANSFER:-}" ]]; then
   fi
 fi
 
-# Credentials for the gated Cosmos-Reason2-2B backbone. Note the interaction:
-# redirecting HF_HOME above also moves where the CLI's stored token is looked
-# for, so a token saved under the default ~/.cache/huggingface would NOT be
-# found here. Exporting HF_TOKEN avoids that entirely -- the env var takes
-# precedence over any stored login, which is also how you override a shared
-# machine's ambient `hf auth login` identity.
+# Credentials for the gated Cosmos-Reason2-2B. Redirecting HF_HOME also moves
+# where a stored token is looked for, so exporting HF_TOKEN is the reliable
+# route and takes precedence over any stored login.
 if [[ -z "${HF_TOKEN:-}" && ! -s "${HF_HOME}/token" && ! -s "${HOME}/.cache/huggingface/token" ]]; then
   echo "[job] WARNING: no HF_TOKEN and no token file under HF_HOME=${HF_HOME}." >&2
   echo "[job] The server will fail to load nvidia/Cosmos-Reason2-2B (GatedRepoError)." >&2
@@ -373,15 +359,12 @@ else
   echo "[job] cuDNN check skipped (SKIP_CUDNN_CHECK=1)"
 fi
 
-# The server must NOT inherit the UniVTAC environment's CUDA settings. UniVTAC's
-# conda env carries CUDA 12.4 (libuipc's env.yaml) and its installer exports
-#     CUDA_HOME=$CONDA_PREFIX; LD_LIBRARY_PATH=$CUDA_HOME/lib
-# while GR00T's torch is cu128 with its own bundled cuDNN, resolved through its
-# venv. A leaked LD_LIBRARY_PATH makes the server load the wrong cuDNN, which
-# surfaces as `cuDNN error: CUDNN_STATUS_NOT_INITIALIZED` on the first
-# get_action -- long after the weights loaded fine, so it looks like a model bug.
-# `env -u` scrubs them for the server only; the evaluator keeps them, since
-# Isaac Sim genuinely needs them.
+# The server must not inherit UniVTAC's CUDA settings: its conda env exports
+# CUDA_HOME and LD_LIBRARY_PATH for CUDA 12.4, and GR00T's torch is cu128 with
+# its own bundled cuDNN. A leaked LD_LIBRARY_PATH surfaces as
+# CUDNN_STATUS_NOT_INITIALIZED on the first get_action, long after the weights
+# loaded, so it reads as a model bug. The evaluator keeps them; Isaac Sim needs
+# them.
 SERVER_ENV=(env -u LD_LIBRARY_PATH -u CUDA_HOME -u CUDA_PATH -u CONDA_PREFIX)
 
 echo "[job] starting server: ${SERVER_CMD[*]}"

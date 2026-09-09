@@ -46,20 +46,11 @@ bundle_warn_inherited() {
   echo "      which injects them itself. Remove them from env.sh." >&2
 }
 
-# --------------------------------------------------------------------------- #
-# bundle_build <script> [script args...]
-#
-# Reads:
-#   BUNDLE_JOB_KIND    train | eval | data_process | other
-#   BUNDLE_CHECKPOINT  required for train (from_scratch or a PATH) and for eval
-#                      (a PATH); must be EMPTY for data_process and other
-#   BUNDLE_GIT_ROOT    exact repository root, not a subdirectory
-#   BUNDLE_SLURM_ARGS  array of attached-long-form Slurm options
-#   BUNDLE_ARRAY       optional array SPEC
-#
-# Writes BUNDLE_CMD, the full argv. Returns 2 on a contract violation, so a bad
-# call fails here rather than after the launcher has recorded a submission.
-# --------------------------------------------------------------------------- #
+# bundle_build <script> [args...] -- validate and assemble BUNDLE_CMD, the full
+# argv, from BUNDLE_JOB_KIND, BUNDLE_CHECKPOINT, BUNDLE_GIT_ROOT,
+# BUNDLE_SLURM_ARGS and the optional BUNDLE_ARRAY. Returns 2 on a contract
+# violation, so a bad call fails here rather than after the launcher has
+# recorded a submission.
 bundle_build() {
   local script="$1"; shift
   local kind="${BUNDLE_JOB_KIND:-}" ckpt="${BUNDLE_CHECKPOINT:-}"
@@ -142,17 +133,13 @@ bundle_build() {
   return 0
 }
 
-# --------------------------------------------------------------------------- #
-# bundle_submit <script> [script args...]
+# bundle_submit <script> [args...] -- build and run one submission. Sets
+# BUNDLE_JOBID when an id could be parsed out, empty otherwise, since
+# --parsable is the launcher's and the id is whatever it chooses to print.
 #
-# Builds and runs one submission. Sets BUNDLE_JOBID when a job id could be read
-# back, empty otherwise -- `--parsable` belongs to the launcher, so the id is
-# whatever it chooses to print and must be treated as a bonus, not a contract.
-#
-# NEVER retries. The launcher's rule is explicit: once a submission has started,
-# a fresh invocation for the same request is forbidden even when the outcome is
-# unclear. On a non-zero exit, read the diagnostic and the retained bundle.
-# --------------------------------------------------------------------------- #
+# NEVER retries: once a submission has started, a fresh invocation for the same
+# request is forbidden even when the outcome is unclear. Read the diagnostic
+# and the retained bundle instead.
 bundle_submit() {
   BUNDLE_JOBID=""
   declare -p BUNDLE_ENV >/dev/null 2>&1 || BUNDLE_ENV=()
@@ -205,13 +192,9 @@ bundle_require() {
   return 2
 }
 
-# --------------------------------------------------------------------------- #
-# univtac_job_guard -- the two runtime checks every job script needs, in one
-# place rather than copied into six.
-#
-# Both are about configuration arriving intact, and both are no-ops outside
-# Slurm so a local `bash` dry run is unaffected.
-# --------------------------------------------------------------------------- #
+# univtac_job_guard -- the two checks every job script runs: the wckey and the
+# configuration sentinel. Both no-op outside Slurm, so a local dry run is
+# unaffected.
 univtac_job_guard() {
   # An exported SBATCH_WCKEY outranks what the submitter passed on the command
   # line, and a job once went out under the wrong project exactly that way.

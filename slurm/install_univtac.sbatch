@@ -46,11 +46,8 @@ echo " node=$(hostname)  gpus=${CUDA_VISIBLE_DEVICES:-none}"
 echo " job=${SLURM_JOB_ID:-none}  cpus=${SLURM_CPUS_ON_NODE:-?}"
 echo "=========================================================="
 
-# --------------------------------------------------------------------------- #
-# Conda must be initialised: install.sh exits if CONDA_PREFIX is unset, and it
-# calls `conda activate`, which needs the shell hook. A batch shell is not a
-# login shell, so source the hook explicitly.
-# --------------------------------------------------------------------------- #
+# install.sh calls `conda activate`, which needs the shell hook, and a batch
+# shell is not a login shell.
 CONDA_BASE="${CONDA_BASE:-$(conda info --base 2>/dev/null || true)}"
 if [[ -z "${CONDA_BASE}" ]]; then
   echo "[job] conda not on PATH. Set CONDA_BASE=/path/to/miniconda3 and resubmit." >&2
@@ -61,12 +58,8 @@ source "${CONDA_BASE}/etc/profile.d/conda.sh"
 conda activate base
 echo "[job] conda base: ${CONDA_BASE}"
 
-# --------------------------------------------------------------------------- #
-# Prerequisite check. install.sh calls `sudo apt install` for these, which
-# cannot work in a batch job (no TTY, and no sudo on a shared cluster). They are
-# normally already present; if one is missing, load a module or install it via
-# conda into base BEFORE resubmitting -- do not try to make sudo work.
-# --------------------------------------------------------------------------- #
+# install.sh installs these with `sudo apt`, which cannot work in a batch job.
+# If one is missing, load a module or install it via conda before resubmitting.
 missing=()
 for tool in cmake gcc make git git-lfs; do
   command -v "${tool}" >/dev/null 2>&1 || missing+=("${tool}")
@@ -78,17 +71,9 @@ if (( ${#missing[@]} )); then
 fi
 echo "[job] build tools present: cmake gcc make git git-lfs"
 
-# --------------------------------------------------------------------------- #
-# vcpkg. Upstream install.sh has an inverted test at step 6:
-#
-#     if [ -d "Toolchain" ]; then   # relative to the repo, so normally false
-#         mkdir ~/Toolchain; git clone .../vcpkg; ./bootstrap-vcpkg.sh
-#     fi
-#     export CMAKE_TOOLCHAIN_FILE="$HOME/Toolchain/vcpkg/scripts/..."
-#
-# so vcpkg is never cloned on a fresh machine, yet CMAKE_TOOLCHAIN_FILE points
-# into it and the libuipc build fails. Do it here instead.
-# --------------------------------------------------------------------------- #
+# Upstream's install.sh guards the vcpkg clone with an inverted `if [ -d
+# "Toolchain" ]` test, so vcpkg is never cloned on a fresh machine while
+# CMAKE_TOOLCHAIN_FILE still points into it and the libuipc build fails.
 VCPKG_DIR="${VCPKG_DIR:-$HOME/Toolchain/vcpkg}"
 if [[ ! -f "${VCPKG_DIR}/scripts/buildsystems/vcpkg.cmake" ]]; then
   echo "[job] installing vcpkg into ${VCPKG_DIR}"
@@ -100,18 +85,11 @@ else
 fi
 export CMAKE_TOOLCHAIN_FILE="${VCPKG_DIR}/scripts/buildsystems/vcpkg.cmake"
 
-# --------------------------------------------------------------------------- #
-# PATCHES to a scratch copy of install.sh. The repo is left untouched.
-#
-#   1. `sudo apt install ...`  -> a no-op echo (see the check above).
-#   2. `--livestream 2`        -> `--headless`. Livestream waits for a GUI
-#                                 client to connect, which never happens in a
-#                                 batch job; the TacEx smoke test would hang
-#                                 until the walltime.
-#   3. `python3 -m pytest .`   -> made non-fatal. install.sh runs `set -e`, so a
-#      (cuRobo's test suite)     single environment-specific test failure would
-#                                abort the whole install after cuRobo built.
-# --------------------------------------------------------------------------- #
+# Three patches, applied to a scratch copy so the repo is untouched:
+# `sudo apt install` becomes a no-op echo; `--livestream 2` becomes
+# `--headless`, since livestream waits for a GUI client that never connects in
+# a batch job; and cuRobo's pytest run is made non-fatal, since install.sh runs
+# `set -e` and one environment-specific failure would abort everything after it.
 PATCHED="${UNIVTAC_ROOT}/.install_batch.sh"
 sed -e 's|^\([[:space:]]*\)sudo apt install|\1echo "[patched] skipping sudo apt install"  #|' \
     -e 's|--livestream 2|--headless|g' \

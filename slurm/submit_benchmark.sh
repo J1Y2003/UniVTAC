@@ -40,52 +40,31 @@ DRY_RUN_OUTPUT_DIR="${DRY_RUN_OUTPUT_DIR:-${TMPDIR:-/tmp}/univtac-dry-run}"
 # --------------------------------------------------------------------------- #
 # Job shape
 # --------------------------------------------------------------------------- #
-# `debug` is the cluster default and caps at 3 hours, which is why training jobs
-# sit pending with REASON=PartitionTimeLimit. Name a 2-day partition instead.
+# `debug` is the cluster default and caps at 3 h, so training sits pending with
+# REASON=PartitionTimeLimit. Name a 2-day partition instead.
 PARTITION="${PARTITION:-sjw_alinlab}"
-# EVAL_PARTITION and EVAL_TIME_LIMIT live in slurm/eval_checkpoint.sh now;
-# setting them for this script does nothing.
-#
-# GPUS stays 1. --num-gpus > 1 makes launch_finetune.py wrap the model in
-# nn.DataParallel, which dies with "module must have its parameters and buffers
-# ... on device: cuda:0 ... but found one on device: cpu". It would also change
-# the effective batch size, and the recipe pin locks in whatever you choose.
+# 1 GPU: --num-gpus > 1 makes launch_finetune.py wrap the model in
+# nn.DataParallel, which dies on a device mismatch.
 GPUS="${GPUS:-1}"
-# Walltime. Without one, a job is assumed to want the partition maximum, so
-# backfill can only start it in a 2-day gap; a realistic limit makes it eligible
-# for many more. 9 h is ~1.45x the measured ~6.2 h: 30,000 steps at 0.70 s/it
-# (insert_hole did 10,000 in 117 min) plus model load, dataset statistics and
-# three checkpoint writes. Do NOT size this off the 1.89 s/it in docs/SETUP.md
-# -- that was a 20-step smoke test, two of whose steps wrote a checkpoint.
-#
-# Roughly double it if VARIANTS names more than one: the finetune loop inside
-# benchmark_task.sbatch is sequential.
+# ~1.45x the measured 6.2 h (30,000 steps at 0.70 s/it, plus load and three
+# checkpoint writes). Roughly double it if VARIANTS names more than one, since
+# the finetune loop is sequential. Empty means no --time, i.e. the partition
+# maximum; over the maximum pends forever with REASON=PartitionTimeLimit.
 TIME_LIMIT="${TIME_LIMIT:-9:00:00}"
-# Any format sbatch accepts works. Empty means no --time at all; over the
-# partition maximum means pending forever with REASON=PartitionTimeLimit
-# (`scontrol show partition <name> | grep MaxTime`).
 WCKEY="${WCKEY:-project-short-name:sub_4dpdata}"
 
-# One job per task, matching UniVTAC's ACT, which trains one policy per task.
-# Separate jobs also mean each is independently resumable, each fits a backfill
-# gap, and one task failing does not block the others. `TASK=x` still works.
+# One job per task, so each is independently resumable, fits a backfill gap, and
+# fails independently. `TASK=x` still works.
 TASKS="${TASKS:-${TASK:-insert_hole insert_tube pull_out_key}}"
-# Submitted last, and deliberately not one of the three reported tasks:
-# lift_bottle is the only task a hyperparameter sweep may touch without fitting
-# the reported numbers (docs/BENCHMARK.md#comparability-with-univtacs-act). No
-# --dependency holds it back any more, so it can still take a GPU a reported
-# task wants -- `scontrol hold <jobid>` is the remedy. EXTRA_TASKS="" skips it.
+# Submitted last. lift_bottle is the only task a hyperparameter sweep may touch
+# without fitting the reported numbers. Nothing holds it back from the queue, so
+# use `scontrol hold <jobid>` if it competes; EXTRA_TASKS="" skips it.
 #
-# `-` not `:-`, deliberately: with `:-`, the documented EXTRA_TASKS="" fell back
-# to lift_bottle and silently submitted a fourth job.
+# `-` not `:-`: with `:-`, EXTRA_TASKS="" fell back to lift_bottle.
 EXTRA_TASKS="${EXTRA_TASKS-lift_bottle}"
 ALL_TASKS="${TASKS} ${EXTRA_TASKS}"
 TASK_CONFIG="${TASK_CONFIG:-clean}"
-# 100, from the paper's "evaluated over 100 test rollouts". A 50-episode
-# interval against their 100-episode number is not like-for-like.
 EPISODES="${EPISODES:-100}"
-# Vision only for now. The tactile pipeline still works; set
-# VARIANTS="tactile baseline_finetuned" to run the full ablation again.
 VARIANTS="${VARIANTS:-baseline_finetuned}"
 
 MODE="${1:-submit}"
@@ -97,12 +76,8 @@ FAIL=0
 check_dir()  { [[ -d "$2" ]] || { echo "  MISSING dir   $1=$2" >&2; FAIL=1; }; }
 check_exec() { [[ -x "$2" ]] || { echo "  NOT EXECUTABLE $1=$2" >&2; FAIL=1; }; }
 
-# NOT `${WANDB_API_KEY:+online}${WANDB_API_KEY:-offline}`. That looks like a
-# neat one-liner and it PRINTS THE KEY: when the variable is set, `:+` yields
-# "online" and `:-` yields the VALUE, so the two concatenate into
-# "online<the-actual-api-key>" in the terminal, in the scrollback, and
-# anywhere that output gets pasted. Never render a secret through a
-# default-value expansion.
+# Not `${WANDB_API_KEY:+online}${WANDB_API_KEY:-offline}`: when the variable is
+# set, `:-` yields its VALUE, so that one-liner prints the key.
 if [[ -n "${WANDB_API_KEY:-}" ]]; then
   WANDB_STATE="online"
 else
@@ -140,11 +115,8 @@ check_dir  GROOT_ROOT     "${GROOT_ROOT}"
 check_exec GROOT_PYTHON   "${GROOT_PYTHON}"
 check_exec UNIVTAC_PYTHON "${UNIVTAC_PYTHON}"
 check_dir  DATA_ROOT      "${DATA_ROOT}"
-# Only the variants actually being trained -- demanding a tactile dataset we
-# deliberately are not training would block the submit for no reason.
-# A missing dataset for a PRIORITY task blocks the submit; a missing dataset
-# for an EXTRA task only drops that task. Otherwise an unconverted lift_bottle
-# would hold up the three tasks we actually report, which is backwards.
+# A missing dataset for a task in TASKS blocks the submit; for an EXTRA task it
+# just drops that task.
 EXTRA_TASKS_OK=""
 for task in ${ALL_TASKS}; do
   extra=0
@@ -177,30 +149,19 @@ done
 # Only the extra tasks that actually have data.
 EXTRA_TASKS="${EXTRA_TASKS_OK% }"
 ALL_TASKS="${TASKS} ${EXTRA_TASKS}"
-# The launcher owns the Slurm logs now (they land in the bundle), but
-# benchmark_task.sbatch still writes its per-stage logs under REPO_ROOT/logs.
-# Every GR00T checkpoint loads the gated nvidia/Cosmos-Reason2-2B, so no token
-# means a 401 about a minute into training -- after the job already holds a GPU.
-# Warn here, where it costs nothing. HF_HOME is redirected, which also moves
-# where a stored login is read from ($HF_HOME/token), so HF_TOKEN in the
-# environment is the reliable route; the job inherits it from this shell.
+# Every GR00T checkpoint loads the gated nvidia/Cosmos-Reason2-2B, so a missing
+# token is a 401 a minute into training, after the job holds a GPU. HF_TOKEN in
+# the environment is the reliable route, since HF_HOME is redirected and a
+# stored login would be read from $HF_HOME/token.
 if [[ -z "${HF_TOKEN:-}" && ! -s "${HF_HOME}/token" && ! -s "${HOME}/.cache/huggingface/token" ]]; then
   echo "  FAIL  no HF_TOKEN and no token file under HF_HOME=${HF_HOME}." >&2
   echo "        The job would fail loading nvidia/Cosmos-Reason2-2B (401)." >&2
   echo "        Fix: export HF_TOKEN=hf_...   then re-run this." >&2
   FAIL=1
 else
-  # PRESENCE IS NOT ACCESS. A token that exists but has not been granted the
-  # gated repo looks identical until the request is actually made, so probe it.
-  # This runs on a login node, needs no GPU, and takes a second -- the
-  # alternative is discovering it a minute into a job that already holds an A100.
-  #
-  # benchmark_task.sbatch probes the same thing at job start; that stays as the
-  # last line of defence, since a token can be revoked between submit and run.
-  #
-  # A probe that cannot RUN (no huggingface_hub, no network from the login node)
-  # is a warning, not a failure -- it says nothing about the token. Only a probe
-  # that runs and is refused fails the submission.
+  # Presence is not access: a token without the gated grant looks identical
+  # until the request is made. A probe that cannot run (no huggingface_hub, no
+  # network) only warns, since that says nothing about the token.
   HF_PROBE=$("${GROOT_PYTHON}" - <<'PYHF' 2>&1
 import sys
 try:
@@ -274,12 +235,9 @@ job_name_for() {
   esac
 }
 
-# The job's configuration travels in the ENVIRONMENT: bundle-sbatch owns
-# --export, and sbatch propagates the submitting environment by default.
-# env_for prints `NAME=VALUE` pairs for `env`, one per line.
-#
-# UNIVTAC_JOB_CONFIG is the canary -- if this environment ever stops reaching
-# the job, benchmark_task.sbatch stops instead of training TASK's default.
+# The job's configuration travels in the environment, since bundle-sbatch owns
+# --export. UNIVTAC_JOB_CONFIG is the canary: if it stops arriving, the job
+# stops rather than training TASK's default.
 env_for() {
   local task="$1" stage="$2"
   # `finetune` is the only stage this script submits. Evaluation moved out to
@@ -295,12 +253,9 @@ env_for() {
 ' "STAGES=finetune"
   printf '%s
 '     "UNIVTAC_JOB_CONFIG=1"     "UNIVTAC_ROOT=${UNIVTAC_ROOT}"     "UNIVTAC_PYTHON=${UNIVTAC_PYTHON}"     "GROOT_ROOT=${GROOT_ROOT}"     "GROOT_PYTHON=${GROOT_PYTHON}"     "HF_HOME=${HF_HOME}"     "DATA_ROOT=${DATA_ROOT}"     "TASK=${task}"     "TASK_CONFIG=${TASK_CONFIG}"     "EPISODES=${EPISODES}"     "VARIANTS=${VARIANTS// /:}"     "DRY_RUN=0"
-  # The recipe, forwarded only when explicitly set so benchmark_task.sbatch
-  # stays the single source of truth for the defaults (30000 / 10000 / 4).
-  # Naming them at all puts the recipe in `--print` output and in the bundle's
-  # evidence rather than leaving it to environment inheritance. GPUS is absent
-  # deliberately: the job derives NUM_GPUS from CUDA_VISIBLE_DEVICES, i.e. from
-  # the allocation it actually got.
+  # Forwarded only when explicitly set, so benchmark_task.sbatch stays the one
+  # source of truth for the defaults. GPUS is absent deliberately: the job
+  # derives NUM_GPUS from the allocation it actually got.
   local var
   for var in MAX_STEPS SAVE_STEPS SAVE_TOTAL_LIMIT \
              LEARNING_RATE WEIGHT_DECAY ALLOW_RECIPE_CHANGE; do
@@ -391,11 +346,7 @@ case "${MODE}" in
     cd "${REPO_ROOT}"
     bundle_require || exit 2
     submitted=() ; failed=0
-    # FINETUNES ONLY. The eval job cannot be queued alongside its finetune any
-    # more: bundle-sbatch wants --checkpoint to be an existing physical
-    # directory at submit time, and the checkpoint does not exist until the
-    # finetune has run. The --dependency=afterok chain went with it, since
-    # --parsable is the launcher's and there is no job id to depend on.
+    # Finetunes only: an eval job needs --checkpoint to exist at submit time.
     for task in ${TASKS} ${EXTRA_TASKS}; do
       submit_stage "${task}" finetune from_scratch "${task} finetune on ${PARTITION}"
     done

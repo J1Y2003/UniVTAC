@@ -119,24 +119,13 @@ else
   echo "[job] cuDNN check skipped (SKIP_CUDNN_CHECK=1)"
 fi
 
-# --------------------------------------------------------------------------- #
-# Experiment tracking
-# --------------------------------------------------------------------------- #
-# Worth enabling: launch_finetune.py exposes no eval metric, so the training
-# loss curve is the only evidence for whether --max-steps under- or over-trains,
-# and a multi-hour unattended run with no record is hard to reason about after
-# the fact.
+# Worth enabling: launch_finetune.py exposes no eval metric, so the loss curve
+# is the only record of a multi-hour run. Export WANDB_API_KEY; never run
+# `wandb login`, which writes a token into the account owner's ~/.netrc.
 #
-# Credentials, on a shared account: NEVER run `wandb login` -- it writes a token
-# into ~/.netrc for the account owner. Export WANDB_API_KEY instead, exactly as
-# with HF_TOKEN.
-#
-# The failure mode to avoid is a hang: with tracking on and no credentials,
-# wandb can block waiting on stdin, and in a batch job stdin never answers, so
-# the job burns its whole walltime having trained nothing. So resolve a mode
-# here rather than leaving it to chance -- offline when there is no key (the run
-# is recorded locally and `wandb sync` can upload it later), disabled only when
-# explicitly asked.
+# The mode is resolved here rather than left to chance: with tracking on and no
+# credentials wandb can block on stdin, which never answers in a batch job, and
+# the run would burn its walltime having trained nothing.
 WANDB_ARGS=()
 if [[ "${USE_WANDB:-1}" == "1" ]]; then
   export WANDB_DIR="${WANDB_DIR:-${OUTPUT_DIR}/wandb}"

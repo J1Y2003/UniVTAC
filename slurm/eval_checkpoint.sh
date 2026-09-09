@@ -40,13 +40,9 @@ RESULT_DIR="${RESULT_DIR:-${HOME}/jaewon/workspace/eval_results}"
 TASK_CONFIG="${TASK_CONFIG:-clean}"
 EXECUTION_HORIZON="${EXECUTION_HORIZON:-16}"
 PARTITION="${EVAL_PARTITION:-background}"
-# Unset, i.e. the partition maximum. NOT because a walltime kill would lose the
-# run -- eval_ablation.sbatch resumes from max(seed)+1 for exactly the episodes
-# still unscored, which `background`'s PreemptMode=REQUEUE already forced us to
-# build. It is unset because the cost of 100 rollouts has still never been
-# measured (docs/STATUS.md, "Open"), so any number here would be invented. Set
-# it once a finished eval log gives a real figure: a realistic --time is worth
-# real queue position on a contended partition.
+# Unset, i.e. the partition maximum, because the cost of 100 rollouts has never
+# been measured. Set it once a finished eval log gives a real figure -- the job
+# resumes from max(seed)+1, so a short limit costs a requeue, not the run.
 TIME_LIMIT="${EVAL_TIME_LIMIT:-}"
 WCKEY="${WCKEY:-project-short-name:sub_4dpdata}"
 GPUS="${GPUS:-1}"
@@ -117,18 +113,11 @@ if [[ ! -d "${RESOLVED}" ]]; then
   exit 2
 fi
 
-# The launcher accepts a checkpoint inside the MANAGED USER ROOT as-is; one
-# outside it must carry consistent Hugging Face download metadata under
-# .cache/huggingface/download/, which a trainer-written checkpoint has none of:
-#
-#   error: checkpoint outside managed user root requires consistent Hugging Face
-#          local-download metadata
-#
-# So a checkpoint copied to home storage cannot be evaluated from there, which
-# is one of several reasons nothing is copied out of a bundle any more. Warn
-# here, with the cause, rather than after a launcher round-trip. This is a WARNING
-# and not a hard failure because the root is inferred, and the launcher is the
-# authority on it -- override MANAGED_ROOT if the default guess is wrong.
+# A checkpoint outside the managed user root must carry Hugging Face download
+# metadata under .cache/huggingface/download/, which a trainer-written
+# checkpoint has none of -- so one copied to home storage cannot be evaluated
+# from there. A warning rather than a failure, since the root is inferred and
+# the launcher is the authority; override MANAGED_ROOT if the guess is wrong.
 MANAGED_ROOT="${MANAGED_ROOT:-/rlwrld-unified-checkpoints/${WHOAMI}/jaewon}"
 case "${RESOLVED}" in
   "${MANAGED_ROOT}"/*) ;;

@@ -88,16 +88,10 @@ def probe() -> dict:
     except Exception as exc:
         out["runtime"] = None
         out["dlopen"] = str(exc)[:300]
-    # A version match is necessary but not sufficient: run a real convolution
-    # through the cuDNN path, which is what actually failed on this cluster.
-    #
-    # Deliberately NOT wrapped in `torch.backends.cudnn.flags(enabled=True)`:
-    # that context manager reads the legacy TF32 settings internally, which
-    # torch 2.9 warns are deprecated after 2.9, so it would both noise up every
-    # job log and break on the next upgrade. Forcing the flag is redundant
-    # anyway -- cuDNN is enabled by default and this repo has no switch that
-    # turns it off. Report it instead of overriding it, so an outer process
-    # having disabled it shows up as the defect it now is.
+    # A version match is necessary but not sufficient, so run a real
+    # convolution. Deliberately not wrapped in `cudnn.flags(enabled=True)`:
+    # that reads the TF32 settings torch 2.9 deprecates, and cuDNN is on by
+    # default anyway -- report the flag rather than overriding it.
     out["enabled"] = bool(torch.backends.cudnn.enabled)
     if torch.cuda.is_available():
         try:

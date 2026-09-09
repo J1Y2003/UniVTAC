@@ -43,14 +43,10 @@ SAVE_STEPS="${SAVE_STEPS:-10}"
 SAVE_TOTAL_LIMIT="${SAVE_TOTAL_LIMIT:-1}"
 EPISODES="${EPISODES:-1}"
 
-# 1 GPU schedules soonest, and the recipe pinning is isolated under SMOKE_ROOT,
-# so this does not constrain the real run's GPU count.
-#
-# `background` rather than `debug`: this job EVALUATES as well as trains -- that
-# is the whole point of it -- and evaluation is only allowed on `background`.
-# The real run splits the two stages across two partitions; the smoke test
-# deliberately does not, because what it proves is that the chain holds inside
-# one job. 20 steps plus one episode fits either partition's limit.
+# `background`, not `debug`: this job evaluates as well as trains, and
+# evaluation is only allowed there. The real run splits the two stages across
+# partitions; the smoke test deliberately does not, since what it proves is
+# that the chain holds inside one job.
 PARTITION="${PARTITION:-background}"
 # Names must be longer than 50 characters or the submit filter rejects them;
 # this one is 57 plus the task. It moved here out of benchmark_task.sbatch's
