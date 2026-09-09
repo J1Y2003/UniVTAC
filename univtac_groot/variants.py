@@ -29,7 +29,7 @@ source rather than assumed:
 
     A like-for-like study therefore finetunes both variants with the same recipe and
     compares those two; the zero-shot baseline is a separate, useful reference
-    point, not the tactile variant's control. ``docs/ABLATION.md`` spells this out.
+    point, not the tactile variant's control. ``docs/BENCHMARK.md`` spells this out.
 """
 
 from __future__ import annotations
@@ -178,9 +178,12 @@ def tactile_spec(
     marker_pool: tuple[int, int] | None = (8, 6),
     language_key: str = NEW_EMBODIMENT_LANGUAGE_KEY,
     video_keys: dict[str, str] | None = None,
+    task: str | None = None,
     image_size: tuple[int, int] = (256, 256),
     tactile_image_size: tuple[int, int] = (256, 256),
 ) -> ObsSpec:
+    if video_keys is None:
+        video_keys = video_keys_for_task(task) if task else UNIVTAC_VIDEO_KEYS
     """Variant B -- the baseline plus the flattened UniVTAC tactile array in the state.
 
     Args:
@@ -211,14 +214,15 @@ def tactile_spec(
     )
 
 
-def finetuned_baseline_spec(**kwargs) -> ObsSpec:
+def finetuned_baseline_spec(*, task: str | None = None, **kwargs) -> ObsSpec:
     """Variant A under ``NEW_EMBODIMENT``, i.e. the tactile variant's true control.
 
     Same proprioception and video keys as :func:`tactile_spec`, tactile removed,
     so the only difference between the two finetunes is the tactile dimensions.
     """
     kwargs.setdefault("language_key", NEW_EMBODIMENT_LANGUAGE_KEY)
-    kwargs.setdefault("video_keys", UNIVTAC_VIDEO_KEYS)
+    if "video_keys" not in kwargs:
+        kwargs["video_keys"] = video_keys_for_task(task) if task else UNIVTAC_VIDEO_KEYS
     return baseline_spec(**kwargs)
 
 

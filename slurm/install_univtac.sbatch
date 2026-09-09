@@ -1,8 +1,6 @@
 #!/bin/bash
-# Install UniVTAC (Isaac Sim + Isaac Lab + cuRobo + TacEx + libuipc) as a batch job.
-#
-# Needed on clusters where `srun` is restricted to a short debug partition, so a
-# multi-hour interactive install is not possible.
+# Install UniVTAC (Isaac Sim, Isaac Lab, cuRobo, TacEx, libuipc) as a batch job,
+# for clusters where `srun` is limited to a short debug partition.
 #
 #   env UNIVTAC_ROOT=$HOME/jaewon/workspace/UniVTAC-sim \
 #     bundle-sbatch --job-kind other --code-git-root "$REPO_ROOT" -- \
@@ -10,49 +8,22 @@
 #     --wckey=project-short-name:sub_4dpdata --partition=sjw_alinlab -- \
 #     slurm/install_univtac.sbatch
 #
-# --job-kind other, and no --checkpoint: this job consumes no checkpoint and
-# the launcher rejects one for that kind.
+# Resumable: upstream's scripts/install.sh skips packages already installed, so
+# a walltime kill just needs resubmitting. --job-kind other takes no
+# --checkpoint.
 #
-# UniVTAC's own scripts/install.sh guards every step with
-# `if pip show <pkg>; then skip`, so this job is RESUMABLE: if it hits the
-# walltime, just submit it again and it continues where it stopped.
+# Three things in upstream's script do not survive a batch context; the PATCHES
+# section below works around all three without editing that repo.
 #
-# Three things in the upstream script do not survive a batch context; this
-# wrapper works around all three without editing the repo (see PATCHES below).
-#
-# SITE RULES (see CLAUDE.md, "Cluster rules"). Enforced here; do not "helpfully"
-# reintroduce any of them:
-#
-#   * --time is OPTIONAL and worth passing. Without it a job is assumed to want
-#     the partition maximum (2 days), so backfill can only start it in a 2-day
-#     gap; a realistic limit makes it eligible for far more gaps and it starts
-#     sooner. Two rules: never exceed the partition maximum, or the job sits
-#     pending forever with REASON=PartitionTimeLimit, and never set one below
-#     what the work needs unless that work is resumable.
-#   * NEVER pass --cpus-per-task or --mem. Jobs take the node's per-GPU
-#     defaults, and the submit filter rejects the job if either is specified.
-#   * ALWAYS pass --wckey=project-short-name:sub_4dpdata.
-#   * MODEL_OUTPUT_DIR is injected by bundle-sbatch and equals CODE_OUTPUT_DIR
-#     (<bundle>/code-output). Never set it, never pass it with --export, and do
-#     not expect it under /rlwrld-unified-checkpoints any more.
-#
-# Do pass --partition explicitly, or export SBATCH_PARTITION: `debug` is the
-# default here and is short-lived, so it is not where long training belongs.
+# Site rules (job name >50 chars, --wckey, no --cpus-per-task or --mem) and
+# the options the launcher owns: CLAUDE.md, "Cluster rules". MODEL_OUTPUT_DIR
+# is injected and equals <bundle>/code-output; never set it.
 #SBATCH --gres=gpu:1
-
 set -uo pipefail
 
-# --------------------------------------------------------------------------- #
-# The site wckey, checked at runtime
-# --------------------------------------------------------------------------- #
-# sbatch precedence is: command line > environment variable > #SBATCH directive.
-# So a stale SBATCH_WCKEY in the submitting shell (typically a copy of
-# env.example.sh from before the value was corrected) SILENTLY OVERRIDES the
-# `#SBATCH --wckey=project-short-name:sub_4dpdata` header above. That is exactly how a job once went
-# out under the wrong project. The header alone is not enough; check it.
-#
-# SLURM_WCKEY is only set inside the job when a wckey was applied, so an unset
-# value defaults to the right answer rather than failing a valid job.
+# The wckey, re-checked here because an exported SBATCH_WCKEY outranks what the
+# submitter passed, and a job once went out under the wrong project that way.
+# SLURM_WCKEY is set only when a wckey was applied, so unset means valid.
 if [[ -n "${SLURM_JOB_ID:-}" && "${SLURM_WCKEY:-project-short-name:sub_4dpdata}" != "project-short-name:sub_4dpdata" ]]; then
   echo "error: this job's wckey is '${SLURM_WCKEY}', not 'project-short-name:sub_4dpdata'." >&2
   echo "       Every job here must be accounted to 'project-short-name:sub_4dpdata'." >&2

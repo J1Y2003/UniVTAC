@@ -4,33 +4,7 @@
 > `python scripts/preflight.py`. This document explains the *why* behind each
 > prerequisite and lists failure modes.
 
-## What "a live GR00T server" means
-
-It is a **separate long-running OS process** that has already loaded the
-checkpoint into GPU memory and is listening on a TCP port for inference
-requests. Nothing in the UniVTAC-side code loads the model; it only sends
-observations over a socket and gets action chunks back.
-
-"Live" specifically means it answers the `ping` endpoint. A server that has been
-launched but is still pulling weights from Hugging Face is *not* live yet —
-`Gr00tClient.wait_until_ready()` exists precisely to block through that window,
-which takes minutes for a 3B checkpoint on a cold cache.
-
-```
-$ python -m univtac_groot.server.run_server \
-      --model-path nvidia/GR00T-N1.7-3B \
-      --embodiment-tag OXE_DROID_RELATIVE_EEF_RELATIVE_JOINT --port 5555
-
-[server] loading nvidia/GR00T-N1.7-3B as OXE_DROID_RELATIVE_EEF_RELATIVE_JOINT on cuda
-... minutes of weight loading ...
-[server] ready: state_keys=['eef_9d', 'gripper_position', 'joint_position'] ...
-Server is ready and listening on tcp://0.0.0.0:5555     <-- now it is "live"
-```
-
-From then on it sits idle until the evaluator connects. One server serves a
-whole evaluation run; it is not restarted per episode.
-
-### Why it is a separate process, not an import
+## Why it is a separate process, not an import
 
 This is not a stylistic choice — the two stacks **cannot share an interpreter**:
 
@@ -49,100 +23,6 @@ the same thing for the same reason (`policy/smolvla/smolvla_server.py` runs in
 `policy/smolvla/.venv`).
 
 ---
-
-## cuDNN: check the library, not the metadata
-
-**Requirement: the cuDNN on disk must match torch's pin.** `torch==2.9.0+cu128`
-pins `nvidia-cudnn-cu12==9.10.2.21`. Anything else fails with
-`CUDNN_STATUS_NOT_INITIALIZED`, which reads like a too-old driver and is not
-one.
-
-**Check it by asking the loaded library its own version.** Package metadata is
-not evidence: `uv pip list` reports the pinned version while the files on disk
-are a different release, and cuBLAS keeps working (CUDA minor-version
-compatibility covers the runtime but says nothing about a separate shared
-library).
-
-```bash
-$GROOT_PYTHON -c "import ctypes, torch; l=ctypes.CDLL('libcudnn.so.9'); \
-  l.cudnnGetVersion.restype=ctypes.c_size_t; print(l.cudnnGetVersion())"
-```
-
-Want `91002` (encoding is `MAJOR*10000 + MINOR*100 + PATCH`, so `91300` is
-9.13.0). `scripts/preflight.py --deep` performs exactly this check and fails on
-a mismatch.
-
-**Fix:**
-
-```bash
-cd $GROOT_ROOT
-env -u CONDA_PREFIX -u VIRTUAL_ENV uv cache clean nvidia-cudnn-cu12
-env -u CONDA_PREFIX -u VIRTUAL_ENV uv pip install --python .venv/bin/python \
-    --reinstall nvidia-cudnn-cu12==9.10.2.21
-```
-
-The `uv cache clean` is not optional. uv hardlinks these `.so` files out of its
-content-addressed cache -- `ls -la` shows a link count above 1 -- so a plain
-`--reinstall` can re-link the very files you are replacing.
-
-**If the pinned version still will not initialise**, in order of preference: an
-older pin-compatible cuDNN (`9.8.0.87`, `9.7.1.26`); the cluster's container
-path (`srun --container`, available here -- there is no module system and no
-`enroot`/`apptainer` binary); a driver upgrade to r570+ or `cuda-compat-12-8`
-from an admin.
-
-## Slow training steps
-
-**There is deliberately no way to run without cuDNN in this repo.** No
-`DISABLE_CUDNN` flag, no `--disable-cudnn` on the server, no
-`sitecustomize` hook. They existed, and removing them is the point: running
-without cuDNN costs ~86x and is the reason a training step once took 170 s
-instead of 1.89 s. Because the penalty is silent -- no error, just a job that
-never finishes -- an available switch is worse than no switch.
-
-(Both numbers come from the 20-step smoke test and the ratio between them is
-what matters here. Do not plan a walltime off the 1.89: production is
-**0.70 s/it** -- see docs/STATUS.md.)
-
-What replaces it: **`scripts/check_cudnn.py` runs automatically in every GPU
-job**, from `finetune.sbatch` and `eval_ablation.sbatch`, before any weights
-load. It asks the loaded library its own version, compares it against torch's
-pin, runs a real GPU convolution, and on a definite mismatch aborts the job
-printing the reinstall commands above. It fails only on evidence -- an
-unreadable pin or an absent GPU is a warning, never a block --- and
-`SKIP_CUDNN_CHECK=1` skips the check itself without changing how the job runs.
-`scripts/preflight.py --deep` performs the same check from a login node.
-
-Disabling cuDNN looks like a cheap trade -- only convolutions use cuDNN, and
-FlashAttention-2 and the DiT's SDPA path do not. But GR00T has one conv on the
-hot path: Qwen3-VL's vision patch embed. Qwen3VL reshapes every visual patch
-into its own batch element (`transformers/models/qwen3_vl/modeling_qwen3_vl.py`,
-class `Qwen3VLVisionPatchEmbed`), so
-`Conv3d(3, 1024, (2,16,16), stride=(2,16,16))` runs over ~32,768 batch elements
-per step -- 64 samples x 2 cameras x 256 patches at 256 px. Without cuDNN, ATen
-walks that batch with a per-element im2col loop driven from the main Python
-thread. GR00T's own `_apply_vision_patch_embed_channels_last` workaround exists
-precisely to select the fast *cuDNN* kernel here, so disabling cuDNN disables
-what that workaround reaches for.
-
-Measured on an A100 (sm_80), vision-tower forward+backward at 32 images:
-
-| Patch embed | Time | |
-| --- | --- | --- |
-| shipped `Conv3d`, cuDNN off | 46.16 s | 98.8% of the whole tower |
-| algebraically identical matmul | 0.53 s | **86x faster** |
-
-Scaled to the real 128-image batch that is ~185 s against an observed 170 s
-step: with cuDNN off this single conv is essentially the entire training step,
-and a 30,000-step finetune projects to over 1,400 hours.
-
-**The signature, if you meet it again.** GPU utilisation ~48% but power only
-~110 W of a 400 W limit, SM clocks pinned at ~1400 MHz, **~0% of time spent
-accessing memory**, and the main Python thread pegged at ~100% of one core with
-almost no system time while the dataloader workers sit idle. Kernels resident
-half the time while drawing no power and moving no memory is a tiny-kernel
-launch flood driven from Python, not data starvation. **Read power draw, not
-utilisation.**
 
 ## Prerequisites
 
@@ -198,7 +78,47 @@ uv run python -c "import gr00t; print('ok')"
   On those, `conda install -c conda-forge 'ffmpeg<8'` and put it on
   `LD_LIBRARY_PATH`.
 
-### 3. Hugging Face access to a gated model (required)
+### 3. cuDNN must match torch's pin
+
+`torch==2.9.0+cu128` pins `nvidia-cudnn-cu12==9.10.2.21`. Anything else either
+fails with `CUDNN_STATUS_NOT_INITIALIZED` — which reads like a too-old driver
+and is not one — or loads and runs **~86x slower** on GR00T's vision tower with
+no error at all.
+
+Check it by asking the loaded library its own version. Package metadata is not
+evidence: `uv pip list` reports the pin while the files on disk are a different
+release. Import `torch` first so the venv's copy is the one found:
+
+```bash
+$GROOT_PYTHON -c "import ctypes, torch; l=ctypes.CDLL('libcudnn.so.9'); \
+  l.cudnnGetVersion.restype=ctypes.c_size_t; print(l.cudnnGetVersion())"
+```
+
+You want `91002` (the encoding is `MAJOR*10000 + MINOR*100 + PATCH`, so `91300`
+is 9.13.0). If it is anything else:
+
+```bash
+cd $GROOT_ROOT
+env -u CONDA_PREFIX -u VIRTUAL_ENV uv cache clean nvidia-cudnn-cu12
+env -u CONDA_PREFIX -u VIRTUAL_ENV uv pip install --python .venv/bin/python \
+    --reinstall nvidia-cudnn-cu12==9.10.2.21
+```
+
+The `uv cache clean` is not optional: uv hardlinks these `.so` files out of its
+content-addressed cache, so a plain `--reinstall` can re-link the very files you
+are replacing. If `9.10.2.21` still will not initialise, try the pin-compatible
+`9.8.0.87` or `9.7.1.26`, then ask an admin about `cuda-compat-12-8` or a driver
+upgrade to r570+.
+
+**You should not have to remember any of this.** `scripts/preflight.py --deep`
+runs the check from a login node, and `scripts/check_cudnn.py` runs it inside
+every GPU job before any weights load, aborting with the commands above on a
+definite mismatch and only warning when it cannot tell. There is deliberately
+no way to disable cuDNN here: the penalty is silent, so an available switch is
+worse than none. (For why it costs 86x, and the wandb signature of the
+170 s/step run that found it: `git log --grep=cuDNN`.)
+
+### 4. Hugging Face access to a gated model (required)
 
 GR00T's VLM backbone is [`nvidia/Cosmos-Reason2-2B`](https://huggingface.co/nvidia/Cosmos-Reason2-2B),
 which is **gated**, and *every* GR00T checkpoint loads it on first use —
@@ -243,9 +163,10 @@ Two cautions:
   sidesteps this, and the job warns when neither is present.
 * **Never put the token in a tracked file or in an `#SBATCH` line** -- job
   scripts are often world-readable. Keep it in your environment
-  (`chmod 600` any file that holds it) and let `--export=ALL` carry it in.
+  (`chmod 600` any file that holds it); the job inherits it from the
+  submitting shell.
 
-### 4. UniVTAC assets and (optionally) demonstration data
+### 5. UniVTAC assets and (optionally) demonstration data
 
 The task scenes need UniVTAC's assets. Its dataset/assets come from ModelScope:
 
@@ -253,8 +174,9 @@ The task scenes need UniVTAC's assets. Its dataset/assets come from ModelScope:
 cd UniVTAC && bash data/download.sh    # installs modelscope, pulls byml2024/UniVTAC
 ```
 
-Demonstration data is only needed if you are going to finetune (i.e. for the
-tactile variant) — see [ABLATION.md](ABLATION.md).
+Demonstration data is needed for every task you intend to benchmark: the
+reported model is a finetune, so there is no data-free path — see
+[BENCHMARK.md](BENCHMARK.md#why-there-is-no-zero-shot-number).
 
 ---
 
@@ -341,24 +263,20 @@ checkpoint path here should look like, and bundle-sbatch will only accept a
 `--checkpoint` under the managed root anyway -- one outside it needs consistent
 `.cache/huggingface/download/` metadata, which we do not fabricate.
 
-**Retention still bites a multi-week study, and we now simply live with it.**
-Bundle storage is managed, not permanent: the guide says retention may migrate
-and later delete aged outputs. The old unified-folder window was 4 days
-untouched (§5.1 body; its table says 7 -- the document contradicts itself)
-before migration to Object Storage and deletion 90 days later; the bundle
-window is not documented.
+**Retention: evaluate a checkpoint while its bundle is live.** Bundle storage
+is managed, not permanent -- retention may migrate and later delete aged
+outputs, and the bundle window is undocumented (the old unified-folder one was
+4 days untouched before migration and 90 days to deletion).
 
-There used to be a `slurm/preserve_outputs.sh` that copied checkpoints out to a
-private directory. **It is gone deliberately.** It duplicated ~26 GB per
-checkpoint onto NFS, which is exactly the sprawl the storage policy exists to
-prevent, and it produced a second copy of the truth that then had to be kept
-consistent with the bundle. Play by the rules instead: evaluate a checkpoint
-while its bundle is live, and if one ages out, resubmit the finetune. At
-~6.2 h per task that is a cheaper answer than a shadow copy of everything.
+Nothing here copies checkpoints out to a private directory. Duplicating ~26 GB
+per checkpoint onto NFS is the sprawl the storage policy exists to prevent, and
+it creates a second copy of the truth to keep consistent. If a checkpoint ages
+out, resubmit the finetune: ~6.2 h per task is cheaper than a shadow copy of
+everything.
 
-One consequence to keep in mind: resuming a finetune needs its predecessor's
+The consequence to plan around: resuming a finetune needs its predecessor's
 physical checkpoint directory as `--checkpoint`, so a bundle that has aged out
-cannot be resumed either -- it has to start again.
+cannot be resumed either -- it starts again.
 
 ## Common failures
 
@@ -366,13 +284,13 @@ cannot be resumed either -- it has to start again.
 | --- | --- |
 | `GatedRepoError` / `401` on server start | No access to `nvidia/Cosmos-Reason2-2B`, or not logged in |
 | `wait_until_ready` times out after 900 s | Server died on load — **read the server log**, not the evaluator's |
-| `Embodiment tag 'NEW_EMBODIMENT' is not supported by this checkpoint` | Expected: `NEW_EMBODIMENT` needs a finetune, see [ABLATION.md](ABLATION.md) |
+| `Embodiment tag 'NEW_EMBODIMENT' is not supported by this checkpoint` | Expected: `NEW_EMBODIMENT` needs a finetune, see [BENCHMARK.md](BENCHMARK.md) |
 | `state key mismatch: the checkpoint's embodiment declares ...` | Variant and checkpoint disagree; wrong `--variant` or wrong `--model-path` |
 | `--tactile-mode depth_pool needs observations.tactile to include 'depth'` | Add it to `UniVTAC/task_config/<config>.yml` |
 | `Could not load libtorchcodec ... versions 4, 5, 6 and 7` | FFmpeg 8 installed; downgrade to <8 |
 | Parquet files in `demo_data/` unreadable | Cloned Isaac-GR00T without `git-lfs` |
 | `CUDA_HOME is unset` during finetune | Run GR00T's `scripts/deployment/dgpu/install_deps.sh` |
-| `CUDNN_STATUS_NOT_INITIALIZED`, cuDNN debug log says `cudaGetDeviceCount(&count) != cudaSuccess` with `GPU=NULL` and compute capability `0.0` | **The cuDNN in the GR00T venv is not the one torch pins.** Reads like a driver problem and is not. Run `python scripts/preflight.py --deep`, which checks it; fix per [cuDNN](#cudnn-check-the-library-not-the-metadata). |
+| `CUDNN_STATUS_NOT_INITIALIZED`, cuDNN debug log says `cudaGetDeviceCount(&count) != cudaSuccess` with `GPU=NULL` and compute capability `0.0` | **The cuDNN in the GR00T venv is not the one torch pins.** Reads like a driver problem and is not. Run `python scripts/preflight.py --deep`, which checks it; fix per [cuDNN](#3-cudnn-must-match-torchs-pin). |
 | `cuDNN error: CUDNN_STATUS_NOT_INITIALIZED` on the first `get_action` | The server inherited `LD_LIBRARY_PATH`/`CUDA_HOME` from the UniVTAC conda env (CUDA 12.4) while its torch is cu128. Launch it with `env -u LD_LIBRARY_PATH -u CUDA_HOME -u CUDA_PATH`; the job scripts do this automatically. Check free VRAM first, since genuine OOM reports the same error. |
 | `Arm motion planning failed on action 0` | cuRobo, not GR00T. Verify UniVTAC's own expert works: `bash collect_data.sh grasp_classify demo 0` |
 | `ValueError: Fast download using 'hf_transfer' is enabled (HF_HUB_ENABLE_HF_TRANSFER=1) but 'hf_transfer' package is not available` | The flag is a hard error, not a fallback, and it fires mid-download inside the *server* log so it reads like a checkpoint fault. `eval_ablation.sbatch` now probes `GROOT_PYTHON` for the package and only enables the flag when present. Override with `HF_HUB_ENABLE_HF_TRANSFER=0`, or install it: `$GROOT_PYTHON -m pip install hf_transfer` (worth it for the ~15 GB of weights). |
@@ -437,11 +355,8 @@ allocation.
 
 The eval job hosts Isaac Sim (scene plus offscreen rendering) *and* GR00T N1.7
 (~7 GB in bf16, plus activations) on the same allocation. Budget roughly 24 GB
-of VRAM for a single-GPU run. If your nodes are tighter than that, ask for two:
-
-```bash
-sbatch --wckey=project-short-name:sub_4dpdata --gres=gpu:2 --export=ALL,VARIANT=baseline,TASK=insert_hole slurm/eval_ablation.sbatch
-```
+of VRAM for a single-GPU run. If your nodes are tighter than that, ask for two
+with `GPUS=2 bash slurm/eval_checkpoint.sh ...`.
 
 `eval_ablation.sbatch` counts the GPUs SLURM allocated and puts the model on
 `cuda:1` and the simulator on `cuda:0` automatically; override with
@@ -456,28 +371,27 @@ job step, run the server as its own job and pass its node name as
 
 ### Ordering the whole thing
 
+[RUNBOOK.md](RUNBOOK.md) is the ordered path. In short:
+
 ```bash
-# on a compute node / interactive allocation, once
-bash scripts/install.sh && bash data/download.sh
-
-# on the login node — free, and catches configuration errors early
-pytest tests -q
-
-# batch, in order
-sbatch --wckey=project-short-name:sub_4dpdata --export=ALL,VARIANT=baseline,TASK=insert_hole slurm/eval_ablation.sbatch   # zero-shot variant
-
-# only if you need the tactile variant (it requires a finetune):
-sbatch --wckey=project-short-name:sub_4dpdata --partition=cpu --array=0-7 --export=ALL,VARIANT=tactile slurm/convert.sbatch
-sbatch --wckey=project-short-name:sub_4dpdata --export=ALL,VARIANT=tactile,DATASET=$DATA_ROOT/univtac-insert_hole-tactile slurm/finetune.sbatch
-sbatch --wckey=project-short-name:sub_4dpdata --export=ALL,VARIANT=tactile,TASK=insert_hole,GROOT_MODEL=<ckpt> slurm/eval_ablation.sbatch
-
-# login node again
-python scripts/compare_ablation.py --results-dir eval_result --json ablation.json
+python scripts/preflight.py --deep       # login node, free
+pytest tests -q                          # login node, free
+bash slurm/submit_benchmark.sh --dry     # full preflight, submits nothing
+bash slurm/submit_benchmark.sh           # one finetune per task
+# then, once a finetune finishes, one eval job per checkpoint:
+bash slurm/eval_checkpoint.sh --task insert_hole --seed-offset 1 \
+    --checkpoint <output_dir>/checkpoint-30000
 ```
+
+**Nothing here is submitted with plain `sbatch` any more.** Every job goes
+through `bundle-sbatch`, which owns `--export`, `--output`, `--error` and
+`--parsable`; `slurm/common.sh` encodes that contract and the submitters
+use it. A hand-rolled `sbatch --export=ALL ...` is rejected.
 
 Results are written to JSONL as each episode completes, so a job killed at its
 walltime still leaves a usable partial file — `compare_ablation.py` re-aggregates
-whatever is there.
+whatever is there, and `eval_ablation.sbatch` resumes from `max(seed)+1` rather
+than replaying the block.
 
 ## Note on video codecs
 

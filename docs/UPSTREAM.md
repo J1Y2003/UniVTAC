@@ -104,8 +104,6 @@ virtualenv exists — the split is forced, not chosen. See
 ## Easily-mistaken upstream facts
 
 Each of these is load-bearing and each contradicts a plausible first guess.
-`guideline.md` is the project's original brief and is superseded wherever it
-conflicts with this file.
 
 1. **Custom embodiments register through
    `gr00t/configs/data/embodiment_configs.py`**, which defines
@@ -130,10 +128,11 @@ conflicts with this file.
    `scripts/convert_univtac_to_lerobot.py` writes directly. Importing `lerobot`
    would add a torch dependency for no benefit.
 
-5. **The tactile variant cannot be evaluated zero-shot**, because
-   `FINETUNE_ONLY_TAGS` ships in no checkpoint. This is the single most
-   consequential constraint on the experiment's design — see
-   [ABLATION.md](ABLATION.md).
+5. **A custom state layout cannot be evaluated zero-shot.** Only
+   `NEW_EMBODIMENT` and the other `FINETUNE_ONLY_TAGS` carry one, and those
+   ship in no released checkpoint. UniVTAC's 17-D state is a custom layout, so
+   the reported model is necessarily a finetune — see
+   [BENCHMARK.md](BENCHMARK.md#why-there-is-no-zero-shot-number).
 
 ## Known environment constraints
 
@@ -149,7 +148,7 @@ that 9.13 fails on a driver older than r570 (it is the pin mismatch, not the
 driver), and that disabling cuDNN is a viable workaround (it costs ~86x on
 the vision tower). Verify by asking the loaded library, not pip metadata, and
 see
-[SETUP.md](SETUP.md#cudnn-check-the-library-not-the-metadata).
+[SETUP.md](SETUP.md#3-cudnn-must-match-torchs-pin).
 
 **Driver versions vary across this fleet.** Observed: `worker-node3` (A100
 80GB PCIe) on 550.54.14, `worker-node109` (A100-SXM4-80GB) on 550.163.01. Do
@@ -158,7 +157,7 @@ not write "the cluster's driver" as though it were one value.
 ## Things deliberately left to the operator
 
 * **Gripper sign and scale** for a zero-shot checkpoint — configurable and
-  documented, not guessed. See ABLATION.md, "Calibration you must check".
+  documented, not guessed. See BENCHMARK.md, "Calibration you must check".
 * **`marker` layout** — TacEx marker-motion arrays are commonly `(N, 4)` as
   `[x, y, dx, dy]` or `(N, 2)`; `MarkerLayout='auto'` infers from the trailing
   width, and `reduce_marker_field` can be pinned explicitly. The row/column
@@ -171,73 +170,31 @@ not write "the cluster's driver" as though it were one value.
   request both `head` and `wrist`; drop `wrist` from `video_keys` for
   head-only tasks if the stream turns out to be absent.
 
-## UniVTAC's own ACT baseline: path resolution is inconsistent
+## The download layout is not what the preprocessor reads
 
-Relevant if you run UniVTAC's baselines for comparison numbers. Every relative
-path in `policy/ACT` is resolved against the **process CWD**, and the intended
-CWD is `policy/ACT` (`one.sh` calls `bash train.sh` bare and tests
-`./data/sim-$task/...`; `eval.sh` opens with `cd ../..`). Three paths disagree,
-so no single CWD resolves everything.
+`data/download.sh` preserves the *published* layout, writing
+`data/isaac45/<task>/hdf5/*.hdf5`, while UniVTAC's `BaseDataPreprocessor` reads
+`data/<task>/<config>/`. No `<config>` level exists in the download and the task
+sits one directory deeper, so downloaded data is not directly consumable.
+Episodes are named `0.hdf5`…`99.hdf5`, which `find_episodes` sorts by
+`int(path.stem)`, so one directory symlink per task is enough and costs no disk.
+`slurm/download_data.sbatch` creates them after a successful download.
 
-| Path | Where | Resolved against | Actually at |
-| --- | --- | --- | --- |
-| `imitate_episodes.py`, `./<train_config>.yml`, `./act_ckpt/…` | `train.sh` | CWD | `policy/ACT` ✅ |
-| `./SIM_TASK_CONFIGS.json` (written) | `ACT/process_data.py:36` | CWD | `policy/ACT` ✅ |
-| `./SIM_TASK_CONFIGS.json` (read) | `ACT/imitate_episodes.py:39` | CWD | `policy/ACT` ✅ |
-| `./data/sim-<task>/…` → `dataset_dir` | `ACT/process_data.py:9` | CWD | `policy/ACT` ✅ |
-| raw `data/<task>/<config>/*.hdf5` | `policy/_base_data_preprocessor.py:11` | **absolute, repo root** | ✅ any CWD |
-| `task_settings.json` | `ACT/process_data.py:12`, `Path(__file__).parent` | `policy/ACT/` | **`policy/`** ❌ |
-| `SIM_TASK_CONFIGS.json` | `ACT/constants.py:6`, `dirname(__file__)` | `policy/ACT/` | **`policy/`** ❌ |
-| `encoder/checkpoints/…/best.pth` | all `ACT/train_config*.yml` | CWD → `policy/ACT/encoder/` | repo root ❌ |
+`<config>` is the collect-time config name; upstream's own
+`SIM_TASK_CONFIGS.json` entry (`sim-lift_bottle-clean-2`) says they used
+`clean`, which is why `TASK_CONFIG` defaults to it everywhere here.
 
-The committed `policy/SIM_TASK_CONFIGS.json` (`sim-lift_bottle-clean-2`, 2
-episodes) is a leftover from running `process_data.py` from `policy/`.
-`_base_data_preprocessor.py` still carries a duplicate `main()` in which the
-`__file__`-relative `task_settings.json` lookup *is* correct;
-`ACT/process_data.py` is a copy that did not adjust for the moved `__file__`.
-
-Four failures that are **silent** rather than loud:
-
-1. `camera_names: cam_high` in `train_config{,_all,_vision,_freeze,_scrach}.yml`
-   is an ALOHA leftover. The preprocessor saves `cam_head`/`cam_wrist` and
-   `ACT/utils.py` indexes `/observations/images/{cam_name}` with no aliasing, so
-   this raises `KeyError: cam_high` only once the first batch is drawn.
-2. `task_settings.json` is read under `if path.exists()`, so the miss above
-   silently defaults `camera_type` to `head` — dropping the wrist camera for
-   `lift_can` and `insert_tube`, the two tasks configured `all`.
-3. `ACT/detr/models/backbone.py:150` loads the tactile encoder under
-   `if ckpt and Path(ckpt).exists()`. A path that does not resolve leaves the
-   encoder **randomly initialised** with no warning — in an ablation asking
-   "does tactile help", that manufactures a plausible null result. The shipped
-   `encoder/checkpoints/resnet18/20251128-125750/best.pth` was never published;
-   the released encoder is `checkpoints/encoder.pth`.
-4. `data/download.sh` preserves the *published* layout, writing
-   `data/isaac45/<task>/hdf5/*.hdf5`, while `BaseDataPreprocessor` reads
-   `data/<task>/<config>/`. No `<config>` level exists in the download and the
-   task sits one directory deeper, so downloaded data is not directly
-   consumable. Episodes are named `0.hdf5`…`99.hdf5`, which `find_episodes`
-   sorts by `int(path.stem)`, so a directory symlink suffices.
-
-`tools/univtac_patches/fix_act.py` repairs all of the above against a checkout,
-idempotently and with `--revert`. It edits the UniVTAC checkout only — no
-dotfiles, no conda environments.
-
-### Entry-point signatures
+## Entry-point signatures
 
 Confirmed against the scripts, since the argument names are easy to mistake:
 
 ```
 bash eval_policy.sh   <task_name> <task_config> <policy_config> <gpu_id>
 bash collect_data.sh  <task_name> <task_config> [gpu_id] [start_seed] [max_seed] [episode_num]
-policy/ACT/train.sh   <task_name> <task_config> <expert_data_num> <seed> <gpu_id> [train_config]
-policy/ACT/eval.sh    <task_name> <task_config> <ckpt_setting> <expert_data_num> <seed> <gpu_id>
 ```
 
 Note that `collect_data.sh` takes a **gpu id** in position 3, not a seed — the
 seed range is positions 4 and 5, defaulting to `-1`. Root `eval_policy.sh`
 likewise takes a **gpu id** in position 4, not a seed,
-and a **policy config** in position 3 (e.g. `ACT/deploy`, `GR00T/deploy_baseline`)
-— not a task or checkpoint name. `policy/ACT/eval.sh` is stale: it invokes
-`script/eval_policy.py` (the directory is `scripts/`) and
-`policy/ACT/deploy_policy.yml` (the file is `deploy.yml`); `one.sh` bypasses it
-in favour of the root entry point.
+and a **policy config** in position 3 — not a task or checkpoint name. That is
+how `policy/GR00T/` is invoked: `GR00T/deploy_baseline`.

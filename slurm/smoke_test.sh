@@ -1,37 +1,25 @@
 #!/bin/bash
-# Prove the finetune -> evaluate chain works, in ~an hour, without touching the
-# real run's outputs.
+# Prove the finetune -> evaluate chain connects, in ~an hour: 20 training steps
+# and 1 evaluation episode. The success rate is meaningless at 20 steps; the
+# question is whether every interface works.
 #
 #   bash slurm/smoke_test.sh              # submit
-#   bash slurm/smoke_test.sh --print      # show the sbatch command
-#   bash slurm/smoke_test.sh --check      # report what a previous smoke run produced
+#   bash slurm/smoke_test.sh --print      # show the command
+#   bash slurm/smoke_test.sh --check      # report what a previous run produced
 #
-# Three interfaces in this pipeline have never actually executed:
-#
-#   1. launch_finetune.py accepting our modality config under NEW_EMBODIMENT
-#   2. a 113-D state vector surviving the trainer's validation
-#   3. Gr00tPolicy loading a *finetuned* checkpoint and answering get_action
-#
-# Everything else is verified, but those three only appear once training starts,
-# and a full run costs a day to find out. So: 20 training steps and 1 evaluation
-# episode. The success rate is meaningless at 20 steps -- the only question is
-# whether every interface connects.
-#
-# ISOLATION. This writes checkpoints, stage markers and results under
-# SMOKE_ROOT, never the real CKPT_ROOT or eval_result/. That matters for more
-# than tidiness: benchmark_task.sbatch keeps its stage markers and its
-# pinned training recipe in CKPT_ROOT/.stages, so a shared root would let a
-# 20-step smoke run mark the real finetune "complete" and pin the recipe to
-# 1 GPU / 20 steps. The dataset is the only thing shared, read-only.
-
+# Everything it writes goes under SMOKE_ROOT, never the real CKPT_ROOT or
+# eval_result/. benchmark_task.sbatch keeps its stage markers and pinned recipe
+# in CKPT_ROOT/.stages, so a shared root would let a 20-step run mark the real
+# finetune complete and pin the recipe to 20 steps. The dataset is the only
+# thing shared, read-only.
 set -uo pipefail
 
 WHOAMI="${USER:-$(id -un)}"
 
 WORKSPACE="${WORKSPACE:-${HOME}/jaewon/workspace}"
 REPO_ROOT="${REPO_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
-# shellcheck source=slurm/bundle_submit.sh
-. "${REPO_ROOT}/slurm/bundle_submit.sh"
+# shellcheck source=slurm/common.sh
+. "${REPO_ROOT}/slurm/common.sh"
 UNIVTAC_ROOT="${UNIVTAC_ROOT:-${WORKSPACE}/UniVTAC-sim}"
 GROOT_ROOT="${GROOT_ROOT:-${WORKSPACE}/Isaac-GR00T}"
 GROOT_PYTHON="${GROOT_PYTHON:-${GROOT_ROOT}/.venv/bin/python}"
@@ -216,7 +204,7 @@ fi
 
 cd "${REPO_ROOT}"
 # Never retried: once the launcher records a submission, a second invocation for
-# the same request is forbidden. See slurm/bundle_submit.sh.
+# the same request is forbidden. See slurm/common.sh.
 bundle_submit "${REPO_ROOT}/slurm/benchmark_task.sbatch" || exit $?
 jobid="${BUNDLE_JOBID:-<see the launcher output above>}"
 echo "Submitted smoke job ${jobid}"

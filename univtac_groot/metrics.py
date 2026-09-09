@@ -1,7 +1,7 @@
 """Episode accounting and result files for the ablation.
 
-Design constraints from the guideline: the cluster's login nodes have tight
-memory limits and heavy I/O is discouraged. So results are written as
+The cluster's login nodes have tight memory limits and heavy I/O is
+discouraged, so results are written as
 append-only JSONL — one line per episode, flushed as it completes — plus a
 single summary JSON at the end. Nothing is accumulated in memory beyond scalar
 per-episode records, and no frames are retained.

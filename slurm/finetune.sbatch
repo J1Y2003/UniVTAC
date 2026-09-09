@@ -1,58 +1,22 @@
 #!/bin/bash
-# Finetune GR00T N1.7 on UniVTAC demonstrations for one ablation variant.
+# Finetune GR00T N1.7 on a converted UniVTAC dataset. Normally invoked by
+# slurm/benchmark_task.sbatch rather than submitted directly.
 #
-# Required for the tactile variant (extra state dims => NEW_EMBODIMENT, which ships
-# in no released checkpoint) and recommended for the baseline variant too, so the
-# comparison is like-for-like. Convert the data first:
+#   env TASK=insert_hole VARIANT=baseline_finetuned \
+#     DATASET="$DATA_ROOT/univtac-insert_hole-baseline_finetuned" \
+#     UNIVTAC_JOB_CONFIG=1 \
+#     bundle-sbatch --job-kind train --checkpoint from_scratch \
+#     --code-git-root "$REPO_ROOT" -- \
+#     --job-name=univtac-groot-finetune-one-ablation-variant-under-new-embodiment-tag \
+#     --wckey=project-short-name:sub_4dpdata --partition=sjw_alinlab -- \
+#     slurm/finetune.sbatch
 #
-#   python scripts/convert_univtac_to_lerobot.py --task insert_hole \
-#       --raw-dir "${UNIVTAC_ROOT}/data/insert_hole/demo" \
-#       --out "${DATA_ROOT}/univtac-insert_hole-tactile" --variant tactile
-#
-#   env TASK=insert_hole VARIANT=tactile DATASET=/data/univtac-insert_hole-tactile \n#     UNIVTAC_JOB_CONFIG=1 bundle-sbatch --job-kind train --checkpoint from_scratch \n#     --code-git-root "$REPO_ROOT" -- \n#     --job-name=univtac-groot-finetune-one-ablation-variant-under-new-embodiment-tag \n#     --wckey=project-short-name:sub_4dpdata --partition=sjw_alinlab -- \n#     slurm/finetune.sbatch
-#
-# SITE RULES (see CLAUDE.md, "Cluster rules"). Enforced here; do not "helpfully"
-# reintroduce any of them:
-#
-#   * --time is OPTIONAL and worth passing. Without it a job is assumed to want
-#     the partition maximum (2 days), so backfill can only start it in a 2-day
-#     gap; a realistic limit makes it eligible for far more gaps and it starts
-#     sooner. Two rules: never exceed the partition maximum, or the job sits
-#     pending forever with REASON=PartitionTimeLimit, and never set one below
-#     what the work needs unless that work is resumable.
-#   * NEVER pass --cpus-per-task or --mem. Jobs take the node's per-GPU
-#     defaults, and the submit filter rejects the job if either is specified.
-#   * ALWAYS pass --wckey=project-short-name:sub_4dpdata.
-#   * MODEL_OUTPUT_DIR is injected by bundle-sbatch and equals CODE_OUTPUT_DIR
-#     (<bundle>/code-output). Never set it, never pass it with --export, and do
-#     not expect it under /rlwrld-unified-checkpoints any more.
-#
-# Do pass --partition explicitly, or export SBATCH_PARTITION: `debug` is the
-# default here and is short-lived, so it is not where long training belongs.
+# Site rules (job name >50 chars, --wckey, no --cpus-per-task or --mem) and
+# the options the launcher owns: CLAUDE.md, "Cluster rules". MODEL_OUTPUT_DIR
+# is injected and equals <bundle>/code-output; never set it.
 #SBATCH --gres=gpu:1
-
 set -euo pipefail
 
-# --------------------------------------------------------------------------- #
-# The site wckey, checked at runtime
-# --------------------------------------------------------------------------- #
-# sbatch precedence is: command line > environment variable > #SBATCH directive.
-# So a stale SBATCH_WCKEY in the submitting shell (typically a copy of
-# env.example.sh from before the value was corrected) SILENTLY OVERRIDES the
-# `#SBATCH --wckey=project-short-name:sub_4dpdata` header above. That is exactly how a job once went
-# out under the wrong project. The header alone is not enough; check it.
-#
-# SLURM_WCKEY is only set inside the job when a wckey was applied, so an unset
-# value defaults to the right answer rather than failing a valid job.
-if [[ -n "${SLURM_JOB_ID:-}" && "${SLURM_WCKEY:-project-short-name:sub_4dpdata}" != "project-short-name:sub_4dpdata" ]]; then
-  echo "error: this job's wckey is '${SLURM_WCKEY}', not 'project-short-name:sub_4dpdata'." >&2
-  echo "       Every job here must be accounted to 'project-short-name:sub_4dpdata'." >&2
-  echo "       Something in your environment overrode the #SBATCH header --" >&2
-  echo "       almost certainly a stale SBATCH_WCKEY in env.sh. Fix it with:" >&2
-  echo "         export SBATCH_WCKEY=project-short-name:sub_4dpdata SLURM_WCKEY=project-short-name:sub_4dpdata" >&2
-  echo "       then resubmit. 'python scripts/preflight.py' also checks this." >&2
-  exit 2
-fi
 
 
 # ARM= was the old name for this. Honour it rather than ignoring it: an
@@ -97,13 +61,10 @@ case "${OUTPUT_DIR}" in
 esac
 NUM_GPUS="${NUM_GPUS:-1}"
 
-# Locate the repo. `dirname "${BASH_SOURCE[0]}"` is NOT reliable here: under
-# sbatch, SLURM copies the batch script into a spool directory
-# (/var/spool/slurm/d/...), so it resolves to the spool, not the checkout --
-# every derived path then points somewhere unwritable. SLURM_SUBMIT_DIR is the
-# directory the job was submitted from, which is the right answer under sbatch;
-# BASH_SOURCE is the right answer under plain `bash`. Try both and accept only a
-# candidate that actually contains this repo.
+# sbatch copies this script into /var/spool/slurm/d/, so BASH_SOURCE resolves to
+# the spool and every derived path lands somewhere unwritable. SLURM_SUBMIT_DIR
+# is the right answer under sbatch, BASH_SOURCE under plain `bash`; accept
+# whichever actually contains this repo.
 if [[ -z "${REPO_ROOT:-}" ]]; then
   for _candidate in \
       "${SLURM_SUBMIT_DIR:-}" \
@@ -121,6 +82,11 @@ if [[ -z "${REPO_ROOT:-}" ]]; then
   echo "       REPO_ROOT=/path/to/UniVTAC explicitly." >&2
   exit 2
 fi
+
+# Both runtime guards -- the wckey and the configuration sentinel -- live in one
+# place. shellcheck source=slurm/common.sh
+. "${REPO_ROOT}/slurm/common.sh"
+univtac_job_guard
 GROOT_ROOT="${GROOT_ROOT:?set GROOT_ROOT to the Isaac-GR00T checkout}"
 GROOT_PYTHON="${GROOT_PYTHON:?set GROOT_PYTHON to the GR00T interpreter, e.g. Isaac-GR00T/.venv/bin/python}"
 
@@ -137,21 +103,12 @@ export TOKENIZERS_PARALLELISM=false
 export PYTHONUNBUFFERED=1
 export OMP_NUM_THREADS="${OMP_NUM_THREADS:-8}"
 
-# --------------------------------------------------------------------------- #
-# cuDNN, checked before anything expensive happens
-# --------------------------------------------------------------------------- #
-# There is deliberately NO option here to run without cuDNN. A mismatched cuDNN
-# reports CUDNN_STATUS_NOT_INITIALIZED, which reads like a too-old driver, and
-# the obvious workaround -- stop using cuDNN -- costs ~86x on GR00T's vision
-# tower with no error message at all: a step goes from 1.89 s to 170 s and the
-# job merely looks slow. So the only supported response is to fix the pin, and
-# this guard states the fix.
-#
-# It fails ONLY on a definite mismatch (wrong version loaded, cannot dlopen, or
-# a real convolution fails). Anything it cannot determine is a warning, so it
-# never blocks a job it cannot actually indict. SKIP_CUDNN_CHECK=1 skips the
-# check itself, for the case where the check is what is broken -- it does not
-# change how the job runs.
+# cuDNN, before anything expensive. A mismatched pin reads like a too-old driver
+# (CUDNN_STATUS_NOT_INITIALIZED) and the obvious workaround -- disable cuDNN --
+# costs ~86x on GR00T's vision tower with no error at all, so there is
+# deliberately no way to run without it. See CLAUDE.md, "cuDNN". The check fails
+# only on a definite mismatch and warns otherwise; SKIP_CUDNN_CHECK=1 skips the
+# check, not the requirement.
 if [[ "${SKIP_CUDNN_CHECK:-0}" != "1" ]]; then
   if ! "${GROOT_PYTHON}" "${REPO_ROOT}/scripts/check_cudnn.py"; then
     echo "error: aborting before spending GPU time. Fix cuDNN as printed above," >&2

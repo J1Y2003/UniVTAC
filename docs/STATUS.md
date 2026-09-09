@@ -56,25 +56,21 @@ tested against a stub, since Claude does not touch the cluster):
   100-per-camera across `observation.images.head` and `.wrist`. Raw side: 100
   HDF5 per task under `data/isaac45/<task>/hdf5`, with the `data/<task>/clean`
   symlink bridge that `convert.sbatch` reads.
-* **`lift_bottle`, both variants.** `state` 113-D (tactile) / 17-D (baseline),
-  `action` 8-D, **310 rows per episode** (311 frames minus 1, from the
-  `joint[:-1]`/`joint[1:]` shift). Converted datasets are ~31 MB.
+* **`lift_bottle` converts.** `state` 17-D, `action` 8-D, **310 rows per
+  episode** (311 frames minus 1, from the `joint[:-1]`/`joint[1:]` shift).
+  Converted datasets are ~31 MB.
 * **GR00T trains.** The 3B model loads, the modality config registers under
-  `NEW_EMBODIMENT`, both the 17-D and 113-D states are accepted, dataset stats
-  generate, checkpoints are written and a `final` symlink created. Trainable
-  1.62 B of 3.14 B params.
-* **Throughput: 0.70 s/it** -- 1 GPU, `--global-batch-size 64`, cuDNN live,
-  measured on the first real finetune: `insert_hole` did **10,000 steps in 117
+  `NEW_EMBODIMENT`, the 17-D state is accepted, dataset stats generate,
+  checkpoints are written and a `final` symlink created. Trainable 1.62 B of
+  3.14 B params.
+* **Throughput: 0.70 s/it** -- 1 GPU, `--global-batch-size 64`, cuDNN live.
+  Measured on a real finetune: `insert_hole` did **10,000 steps in 117
   minutes**. At `MAX_STEPS=30000` that is **~5.9 h** of stepping per task,
   ~6.2 h with model load, dataset statistics and three checkpoint writes.
-
-  The **1.89 s/it** figure this file used to carry, and which the cuDNN
-  comments still quote, came from the 20-step smoke test. Two of those 20 steps
-  wrote a checkpoint at ~9.82 s, which alone accounts for 19.6 s of the 37.8 s
-  total and puts the rest at ~1.0 s/it before warm-up -- so the two numbers are
-  not in conflict, but **1.89 is not the production rate and must not be used
-  to size a walltime.** The cuDNN penalty ratio (1.89 s vs 170 s) is a separate
-  measurement on that same smoke test and stands.
+  **Size walltimes from 0.70.** The 1.89 s/it that appears in the cuDNN
+  comments is a 20-step smoke-test average, two of whose steps wrote a
+  checkpoint; it is the correct baseline for the cuDNN penalty ratio and the
+  wrong one for a walltime.
 * **Evaluation loads a finetuned checkpoint** and answers `get_action` for a
   full episode: `Gr00tPolicy`, the ZeroMQ client and the receding-horizon loop
   work end to end.
@@ -90,9 +86,10 @@ tested against a stub, since Claude does not touch the cluster):
   sub-second steady state, most likely the step that wrote a checkpoint. Now
   largely moot: `SAVE_STEPS=10000` writes **three** checkpoints per task rather
   than ten, so even at 10 s each the total is ~30 s of a ~6 h run.
-* **Which camera set UniVTAC's published ACT numbers used.** Their paper
-  specifies per-task cameras; confirming it against their released configs
-  closes the last gap in the comparison. Ask the senior.
+* **Per-task camera sets.** The paper and `policy/task_settings.json`
+  disagree about which tasks are multi-view; we follow the paper. Confirming it
+  against UniVTAC's released configs would settle it -- see
+  [BENCHMARK.md](BENCHMARK.md#cameras-are-per-task).
 
 ## Decisions in force
 
@@ -113,7 +110,7 @@ enough. `SAVE_STEPS=10000` retains exactly `checkpoint-10000`,
 `checkpoint-20000` and `checkpoint-30000` -- three points of success rate
 against step count, which is the only instrument available. Which of the three
 becomes the reported model is decided on a dev seed block; see
-docs/ABLATION.md, "Choosing the step count".
+docs/BENCHMARK.md, "Choosing the step count".
 
 **Per-task, not multi-task.** One finetune per task, matching UniVTAC's ACT,
 which trains one policy per task. Multi-dataset training would be cheaper and
@@ -126,37 +123,35 @@ so each task is two jobs. Unverified and worth checking before a long eval
 lands there: whether `background` preempts, since `scripts/run_eval.py` has no
 resume and would restart from the first seed.
 
-**Vision only.** Only `baseline_finetuned` (17-D state) is trained. The tactile
-pipeline stays in the repo and stays working -- converter, 113-D modality
-config and `tactile` variant are all exercised -- it is simply not being
-trained. `VARIANTS="tactile baseline_finetuned"` runs the ablation again.
+**Observation: images, 17-D state, language instruction.** Only
+`baseline_finetuned` is trained. The `tactile` variant and its 113-D state path
+in `obs_adapter.py`, `spec.py`, `variants.py` and the converter are unused and
+pending removal.
 
 **Three reported tasks:** `insert_hole`, `insert_tube`, `pull_out_key`, the
 contact-rich insertion and extraction tasks. `lift_bottle` trains as a gated
 fourth: it is the only task a hyperparameter sweep may touch without fitting
 the reported numbers.
 
-**Training data: all 100 released episodes per task**, against the paper's 50.
-GR00T therefore sees twice the demonstrations ACT did -- **a real advantage
-that must be stated next to any number reported**. It does not affect the
-internal tactile ablation, only the external ACT comparison.
+**Training data: all 100 released episodes per task** (`0.hdf5`..`99.hdf5`),
+which is ~28,932 samples and ~66 epochs at 30,000 steps. State the episode
+count alongside any number, since published results on these tasks used 50.
 
-**Do not tune against the 100 evaluation rollouts.** Selecting a checkpoint or
-a hyperparameter on them fits the test set. Sweep on `lift_bottle`. See
-[ABLATION.md](ABLATION.md#comparability-with-univtacs-act).
+**Do not tune against the reported evaluation rollouts.** Selecting a
+checkpoint or a hyperparameter on seed offset 0 fits the test set. Use a
+disjoint seed block, or `lift_bottle`. See
+[BENCHMARK.md](BENCHMARK.md#choosing-the-step-count).
 
-**Comparison against UniVTAC's own models.** Their configs line up with ours:
-`train_config_vision.yml` maps to `baseline_finetuned`, `train_config.yml` to
-`tactile`. Their released checkpoints (`data/download.sh --checkpoint`) fill
-the ACT row without retraining. Confirm their episode count and seeds first --
-50 and 100 rollouts are not comparable intervals.
+**Published numbers for other methods** live in
+[BENCHMARK.md](BENCHMARK.md#published-numbers-on-these-tasks), for judging
+whether a result is plausible.
 
 ## Failure -> cause
 
 | Symptom | Cause |
 |---|---|
 | `CUDNN_STATUS_NOT_INITIALIZED` | cuDNN on disk does not match torch's pin (9.13.0 present, 9.10.2.21 required). Not the driver. `uv cache clean nvidia-cudnn-cu12`, reinstall the pin. `scripts/check_cudnn.py` runs in every GPU job and aborts on a mismatch; `preflight.py --deep` checks it from a login node. There is deliberately no way to run without cuDNN -- it costs ~86x, silently |
-| ~170 s/step; GPU at 48% but ~110 W of a 400 W limit and ~0% memory-access time | the above, via Qwen3-VL's patch-embed `Conv3d` falling off the cuDNN path. See [SETUP.md](SETUP.md#slow-training-steps) |
+| ~170 s/step; GPU at 48% but ~110 W of a 400 W limit and ~0% memory-access time | the above, via Qwen3-VL's patch-embed `Conv3d` falling off the cuDNN path. See [SETUP.md](SETUP.md#3-cudnn-must-match-torchs-pin) |
 | `module must have its parameters ... on device: cpu` | `--num-gpus 2` wraps the model in `nn.DataParallel`, which needs everything on `cuda:0`. **Use 1 GPU** |
 | `401` on `nvidia/Cosmos-Reason2-2B` | no `HF_TOKEN` in the job. Preflight probes read access |
 | `hf_transfer` `ValueError` | the flag is a hard error without the package. Probed before being set |
@@ -190,12 +185,11 @@ the ACT row without retraining. Confirm their episode count and seeds first --
 
 ~24 GB raw per task (~190 GB for all eight); converted datasets are negligible
 (~31 MB); **~26 GB per retained checkpoint** (measured: 25,547,974,206 bytes on
-the `insert_hole` checkpoints -- the ~40 GB previously recorded here was an
-estimate and was high). Three retained per variant is ~77 GB.
+the `insert_hole` checkpoints). Three retained per task is ~77 GB.
 
-Nothing is copied out of a bundle: there is no rescue step any more. A
-checkpoint that ages out of managed storage is retrained, which at ~6.2 h is
-cheaper than a private duplicate of every checkpoint on NFS.
+Nothing is copied out of a bundle. A checkpoint that ages out of managed storage
+is retrained: at ~6.2 h that is cheaper than keeping a private duplicate of
+every checkpoint on NFS.
 
 Training: ~6.2 h per task at 30,000 steps, so ~25 GPU-hours for four tasks.
 Evaluation is still unmeasured and is the open budget question.

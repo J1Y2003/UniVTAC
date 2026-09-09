@@ -1,41 +1,22 @@
 #!/bin/bash
 # Shared helper for submitting through `bundle-sbatch`, sourced by the
-# submitters in this directory. Not executable on its own.
+# submitters and the job scripts here. Not executable on its own.
 #
-# bundle-sbatch is a managed wrapper around file-based sbatch: it creates one
-# output bundle per submission, snapshots the script and git state, injects the
-# output/checkpoint/bundle environment, and then submits ONE Slurm request.
-# Its command line has three regions separated by `--`:
+# bundle-sbatch wraps file-based sbatch: one output bundle per submission, a
+# snapshot of the script and git state, injected output/checkpoint environment,
+# then one Slurm request. Its command line has three regions:
 #
 #   bundle-sbatch <wrapper options> -- <slurm options> -- <script> [args]
 #
-# The two regions follow OPPOSITE conventions, which is the easiest thing to
-# get wrong:
+# The two option regions take OPPOSITE forms, which is the easy mistake:
+# wrapper options are separate tokens (`--job-kind train`), Slurm options are
+# attached long form (`--partition=background`).
 #
-#   wrapper options   separate tokens      --job-kind train
-#   slurm options     attached long form   --partition=background
-#
-# `-x value` and `--name value` are both invalid in the Slurm region.
-#
-# What the launcher owns, and what we therefore must not pass anywhere:
-#
-#   --output --error --open-mode          log paths
-#   --export --export-file --get-user-env the job environment
-#   --parsable --quiet --wait --test-only result reporting
-#   --wrap --clusters --array=...         unsupported submission modes
-#
-# An array goes through the wrapper's own `--array SPEC` (separate tokens, once,
-# before the first `--`). We submit no arrays today.
-#
-# The launcher also owns five ENVIRONMENT variables, and refuses to run if it
-# finds any of them already set in the shell that invokes it:
-#
-#   error: inherited bundle path environment is unsupported
-#
-# That is easy to trip: the previous storage policy required exporting
-# MODEL_OUTPUT_DIR, so any env.sh written for it breaks every submission. env.sh
-# is gitignored, so the repo cannot fix anyone's copy -- instead every
-# submission here runs the launcher with all five scrubbed.
+# The launcher owns --output, --error, --open-mode, --export, --export-file,
+# --get-user-env, --parsable, --quiet, --wait, --test-only, --wrap, --clusters
+# and arrays (which go through its own `--array SPEC`). It also owns the five
+# environment variables below and refuses to run if it finds one already set,
+# so every submission here scrubs them.
 BUNDLE_OWNED_ENV=(
   OUTPUT_DIR
   JOB_OUTPUT_BUNDLE_DIR
@@ -222,4 +203,36 @@ bundle_require() {
   echo "  Every job here is submitted through it -- plain sbatch is no longer" >&2
   echo "  the supported path. See https://github.com/RLWRLD/bundle-sbatch" >&2
   return 2
+}
+
+# --------------------------------------------------------------------------- #
+# univtac_job_guard -- the two runtime checks every job script needs, in one
+# place rather than copied into six.
+#
+# Both are about configuration arriving intact, and both are no-ops outside
+# Slurm so a local `bash` dry run is unaffected.
+# --------------------------------------------------------------------------- #
+univtac_job_guard() {
+  # An exported SBATCH_WCKEY outranks what the submitter passed on the command
+  # line, and a job once went out under the wrong project exactly that way.
+  # SLURM_WCKEY is set only when a wckey was applied, so unset means valid.
+  local want="project-short-name:sub_4dpdata"
+  if [[ -n "${SLURM_JOB_ID:-}" && "${SLURM_WCKEY:-${want}}" != "${want}" ]]; then
+    echo "error: this job's wckey is '${SLURM_WCKEY}', not '${want}'." >&2
+    echo "       Almost certainly a stale SBATCH_WCKEY in env.sh. Fix with:" >&2
+    echo "         export SBATCH_WCKEY=${want}" >&2
+    echo "       and do NOT export SLURM_WCKEY. scripts/preflight.py checks this." >&2
+    exit 2
+  fi
+
+  # bundle-sbatch owns --export, so a job's configuration reaches it only by
+  # environment inheritance. If that ever stops holding, every variable would
+  # fall back to its default and the job would do the WRONG WORK while looking
+  # healthy. The submitters set this sentinel; a real job without it stops.
+  if [[ -n "${SLURM_JOB_ID:-}" && -z "${UNIVTAC_JOB_CONFIG:-}" ]]; then
+    echo "error: UNIVTAC_JOB_CONFIG is unset, so this job's environment did not" >&2
+    echo "       reach it and its configuration would silently take defaults." >&2
+    echo "       Submit through the scripts in slurm/, which set it." >&2
+    exit 2
+  fi
 }

@@ -1,7 +1,8 @@
 # Working on this repo
 
-Benchmark `nvidia/GR00T-N1.7-3B` on the UniVTAC visuo-tactile benchmark as a
-two-condition ablation. Read [docs/RUNBOOK.md](docs/RUNBOOK.md) for the
+Finetune `nvidia/GR00T-N1.7-3B` on the UniVTAC benchmark, one policy per task,
+and measure its success rate over 100 rollouts. The deliverable is one number
+per task. Read [docs/RUNBOOK.md](docs/RUNBOOK.md) for the
 end-to-end order, [docs/UPSTREAM.md](docs/UPSTREAM.md) before touching anything
 that talks to GR00T or UniVTAC, and [docs/STATUS.md](docs/STATUS.md) for where
 the work currently stands.
@@ -32,13 +33,22 @@ runs the commands.
 
 ## The experiment in one paragraph
 
-Two **variants**, same 100 episodes, same recipe, differing only in whether
-pooled tactile depth is appended to the state vector: `baseline_finetuned`
-(17-D state) and `tactile` (113-D state = 17 proprioception + 96 pooled
-GelSight depth). "Variant" means experimental condition; UniVTAC has exactly one
-robot arm (Franka Panda), and the word "arm" in this codebase always means the
-manipulator. A third variant `baseline` exists for zero-shot smoke tests only --
-it is not a fair comparator to a finetuned model.
+GR00T N1.7 is finetuned per task on the 100 released episodes. Its observation
+is the task's camera images (third-person, plus wrist on `insert_tube` and
+`lift_bottle`), the **17-D robot state** (`eef_9d` 9 + `joint_position` 7 +
+`gripper_position` 1), and the language instruction. It is evaluated over 100
+rollouts per task, and the success rate is the output.
+
+`baseline_finetuned` is the variant that produces that number and the only one
+run. `baseline` runs the released weights zero-shot under a pretrained tag, for
+smoke tests.
+
+`obs_adapter.py`, `spec.py`, `variants.py` and the converter also carry a
+`tactile` variant with a 113-D state and pooled GelSight depth. It is unused --
+nothing submits or evaluates it -- and is pending removal.
+
+UniVTAC has exactly one robot arm (Franka Panda), so "arm" in this codebase
+always means the manipulator.
 
 ## Non-obvious things that will cost you a day
 
@@ -81,11 +91,10 @@ on Qwen3-VL's patch-embed `Conv3d`, turning a 1.89 s step into 170 s with no
 error message, so do not reintroduce a switch for it.
 
 **Verify upstream, do not assume.** The facts most likely to be guessed wrong:
-the action horizon is **40**, not 16; tactile is **320x240 imagery**, not a
-small array; in the dataset's HDF5 images are **JPEG byte streams** and
-state/action are a **one-step shift of a single `embodiment/joint` array**; and
-the marker field's shape is not what its name suggests. `docs/UPSTREAM.md`
-records each with its source -- add to it rather than re-deriving.
+the action horizon is **40**, not 16; in the dataset's HDF5 images are **JPEG
+byte streams**; and state/action are a **one-step shift of a single
+`embodiment/joint` array**. `docs/UPSTREAM.md` records each with its source --
+add to it rather than re-deriving.
 
 ## Everything is submitted through `bundle-sbatch`
 
@@ -100,7 +109,9 @@ bundle-sbatch <wrapper options> -- <slurm options> -- <script> [args]
 
 with opposite conventions in the two option regions -- wrapper options are
 **separate tokens** (`--job-kind train`), Slurm options are **attached long
-form** (`--partition=background`). `slurm/bundle_submit.sh` encodes this once;
+form** (`--partition=background`). `slurm/common.sh` encodes this once, and
+also holds `univtac_job_guard`, the wckey and configuration-sentinel checks
+every `.sbatch` runs after resolving `REPO_ROOT`;
 the submitters use it and validate before anything is sent.
 
 What the launcher owns, and what therefore must not appear in any `#SBATCH`
@@ -178,8 +189,7 @@ unhelpful "Unspecified error":
   `SBATCH_WCKEY`.
 - **no** `--cpus-per-task` and **no** `--mem` — memory and CPUs are not
   specifiable here at all; a job takes the node's per-GPU defaults
-- `--time` is **allowed and usually worth setting** (it was banned here for a
-  while on the assumption it could only hurt; that was wrong). A job without
+- `--time` is **allowed and usually worth setting**. A job without
   one is assumed to want the partition maximum, so backfill can only start it
   in a 2-day gap -- a realistic limit makes it eligible for many more gaps and
   it starts sooner. Two ways to get it wrong: over-requesting past the
@@ -271,7 +281,7 @@ its three points. Which one becomes the reported model is decided on a
 **disjoint seed block** (`--seed-offset 1`), frozen, and applied uniformly to
 every task -- never a per-task argmax, which is both an asymmetric advantage
 over ACT's uniform 4,000 steps and a winner's curse at +/-10 points of noise.
-See docs/ABLATION.md, "Choosing the step count".
+See docs/BENCHMARK.md, "Choosing the step count".
 
 Do not size a walltime off the **1.89 s/it** in `docs/SETUP.md` and the cuDNN
 comments. That was a 20-step smoke test, two of whose steps wrote a checkpoint
@@ -318,7 +328,7 @@ where the next one looks. Stage markers live outside the bundle (in
 `--resume-from-checkpoint`. It also **pins the training recipe** on first run
 (GPU count and `MAX_STEPS`) and refuses a mismatch, because `--num-gpus`
 multiplies the effective batch size -- training the two variants at different
-batch sizes would confound the ablation. `ALLOW_RECIPE_CHANGE=1` overrides.
+batch sizes would confound the comparison. `ALLOW_RECIPE_CHANGE=1` overrides.
 
 ## Working style expected here
 

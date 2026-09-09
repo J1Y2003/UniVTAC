@@ -5,36 +5,24 @@
 #       --checkpoint /rlwrld-unified-checkpoints/jimin/jaewon/insert_hole-baseline_finetuned/checkpoint-10000 \
 #       --task insert_hole --seed-offset 1
 #
-# One invocation, one checkpoint, one job, one JSON file. Run it once per
-# (task, checkpoint) pair -- the recipe retains 10k/20k/30k, so 3 checkpoints x
-# 4 tasks is 12 invocations per seed block -- and the library builds up as:
+# One invocation, one checkpoint, one job, one JSON file at
+# `<result-dir>/<task>-<variant>/<task>-ckpt<N>-seed<offset>.json`. Each file is
+# self-describing: success rate with a Wilson 95% interval, error/skip/
+# truncation counts, mean steps and inference timings, plus the checkpoint,
+# seed block, git commit and Slurm job id that produced it.
 #
-#   <result-dir>/<task>-<variant>/<task>-ckpt<N>-seed<offset>.json
+# --seed-offset picks WHICH task instances you evaluate on: run_eval.py starts
+# at seed `1_000_000 * (1 + offset)`. Offset 0 is the reported block, so use a
+# non-zero one for anything you might select a checkpoint on, and keep it the
+# same across checkpoints you intend to compare.
 #
-# e.g. eval_results/insert_hole-baseline_finetuned/insert_hole-ckpt10000-seed1.json
-#
-# Each file is self-describing: success rate with a Wilson 95% interval, the
-# error/skip/truncation counts, mean steps and inference timings, plus the
-# checkpoint path, seed block, git commit and Slurm job id that produced it. The
-# per-episode JSONL stays beside it, so any of it can be recomputed.
-#
-# --seed-offset picks WHICH task instances you evaluate on: run_eval.py starts at
-# seed 1_000_000 * (1 + offset) and counts up, UniVTAC's own convention. Offset 0
-# is the block the reported numbers use, so use a non-zero one for anything you
-# might select a checkpoint on -- and keep it the same across every checkpoint
-# you intend to compare, since a different block means different object poses
-# and different difficulty.
-#
-# POLICY (see CLAUDE.md): submitted through bundle-sbatch as --job-kind eval with
-# the checkpoint declared; evaluation runs on `background`, never sjw_alinlab;
-# --wckey on the command line; no --cpus-per-task and no --mem; MODEL_OUTPUT_DIR
-# is the launcher's to inject, never ours to pass.
-
+# Submitted as --job-kind eval on `background`. Site rules: CLAUDE.md,
+# "Cluster rules".
 set -uo pipefail
 
 REPO_ROOT="${REPO_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
-# shellcheck source=slurm/bundle_submit.sh
-. "${REPO_ROOT}/slurm/bundle_submit.sh"
+# shellcheck source=slurm/common.sh
+. "${REPO_ROOT}/slurm/common.sh"
 
 WHOAMI="${USER:-$(id -un)}"
 
@@ -263,7 +251,7 @@ fi
 bundle_require || exit 2
 # Never retried: once the launcher records a submission, a second invocation for
 # the same request is forbidden even when the outcome is unclear. Read the
-# diagnostic and the retained bundle instead. See slurm/bundle_submit.sh.
+# diagnostic and the retained bundle instead. See slurm/common.sh.
 bundle_submit "slurm/eval_ablation.sbatch" || exit $?
 
 echo

@@ -1,120 +1,33 @@
 #!/bin/bash
-# One task's stages, unattended: finetune each variant, evaluate each, compare.
-# Resumable, so a walltime kill plus a plain resubmit continues where it stopped.
+# One task's stages: finetune each variant, evaluate each, compare. Resumable --
+# each stage records a marker in STAGE_DIR and is skipped if already done, and a
+# failed stage is recorded and stepped over rather than ending the run.
 #
-# NOT normally submitted as one job any more. Training and evaluation belong on
-# DIFFERENT PARTITIONS here -- training on sjw_alinlab, evaluation only on
-# `background` -- and one job holds one allocation on one partition. So
-# slurm/submit_benchmark.sh submits this script TWICE per task:
+# In practice only STAGES=finetune is submitted, by slurm/submit_benchmark.sh;
+# evaluation is slurm/eval_checkpoint.sh, one checkpoint per job. The eval and
+# compare stages still run for a local invocation or a smoke test.
 #
-#   STAGES=finetune        on the training partition, by submit_benchmark.sh
-#   STAGES="eval compare"  on `background` -- but nothing submits this any
-#                          more: evaluation is slurm/eval_checkpoint.sh, one
-#                          checkpoint per job, because bundle-sbatch needs
-#                          --checkpoint to exist at submit time and --parsable
-#                          is the launcher's, so there is no id to depend on.
+# Check it without spending GPU time:
 #
-# STAGES defaults to all three, so a single-partition run still works for a
-# smoke test or a local `bash` invocation.
-#
-# Submitted through bundle-sbatch, never plain sbatch:
-#
-#   env TASK=lift_bottle EPISODES=50 STAGES=finetune UNIVTAC_JOB_CONFIG=1 #     bundle-sbatch --job-kind train --checkpoint from_scratch #     --code-git-root "$REPO_ROOT" -- #     --job-name=univtac-groot-per-task-finetune-only-vision-only-lift_bottle #     --wckey=project-short-name:sub_4dpdata --partition=sjw_alinlab #     --time=10:00:00 -- slurm/benchmark_task.sbatch
-#
-# Prefer slurm/submit_benchmark.sh, which resolves every path and both regions
-# of that command line for you. Do not raise --gres above gpu:1 -- see the note
-# on the #SBATCH --gres line below.
-#
-# BEFORE submitting, verify it without spending GPU time. DRY_RUN=1 runs the
-# full preflight, prints the exact arguments every stage would use, checks the
-# aggregator imports, and exits -- cheap enough for a login node:
-#
-#   bash -n slurm/benchmark_task.sbatch            # syntax only, instant
+#   bash -n slurm/benchmark_task.sbatch            # syntax only
 #   DRY_RUN=1 bash slurm/benchmark_task.sbatch     # paths, datasets, plan
 #
-# There is no --test-only rehearsal any more: that flag belongs to the launcher
-# and cannot be passed through. DRY_RUN and `submit_benchmark.sh --print` are
-# what is left.
+# Site rules (job name >50 chars, --wckey, no --cpus-per-task or --mem) and the
+# options the launcher owns: CLAUDE.md, "Cluster rules". MODEL_OUTPUT_DIR is
+# injected and equals <bundle>/code-output; never set it.
 #
-# Stages, in order:
-#   1. preflight     -- every path and dataset checked BEFORE any GPU time is spent
-#   2. finetune      -- VARIANT=tactile, then VARIANT=baseline_finetuned (same recipe)
-#   3. evaluate      -- each finetuned checkpoint on TASK
-#   4. compare       -- success rates, Wilson intervals, delta
-#
-# Two properties that matter for an unattended run:
-#
-# * **Resumable.** Each stage records a marker and is skipped if its output
-#   already exists. A walltime kill, then a plain resubmit, continues where it
-#   stopped rather than redoing hours of training.
-# * **No single failure ends the night.** A failed stage is recorded and the
-#   run continues with everything still possible -- if the tactile finetune
-#   dies, the baseline still trains and evaluates, so the morning brings a
-#   diagnosis instead of an empty results directory.
-#
-# This cluster's submit filter requires a job name LONGER THAN 50 characters
-# and rejects the submission outright otherwise. Do not shorten these.
-# SITE RULES (see CLAUDE.md, "Cluster rules"). Enforced here; do not "helpfully"
-# reintroduce any of them:
-#
-#   * --time is OPTIONAL and worth passing. Without it a job is assumed to want
-#     the partition maximum (2 days), so backfill can only start it in a 2-day
-#     gap; a realistic limit makes it eligible for far more gaps and it starts
-#     sooner. Two rules: never exceed the partition maximum, or the job sits
-#     pending forever with REASON=PartitionTimeLimit, and never set one below
-#     what the work needs unless that work is resumable.
-#   * NEVER pass --cpus-per-task or --mem. Jobs take the node's per-GPU
-#     defaults, and the submit filter rejects the job if either is specified.
-#   * ALWAYS pass --wckey=project-short-name:sub_4dpdata.
-#   * MODEL_OUTPUT_DIR is INJECTED BY THE LAUNCHER and equals CODE_OUTPUT_DIR,
-#     i.e. <bundle>/code-output. Do not set it, do not pass it, and do not
-#     expect to choose a path under /rlwrld-unified-checkpoints/jimin/jaewon.
-#     Bundle storage is managed storage with its own retention, and nothing
-#     here copies checkpoints out of it.
-#
-# Everything the launcher owns has been removed from the directives below:
-# --job-name, --output, --error, --export, --wckey, --partition and --time all
-# live on the bundle-sbatch command line now. What remains is the resource
-# request, in attached long form.
-#
-# 1 GPU, deliberately: --num-gpus > 1 makes launch_finetune.py wrap the model
-# in nn.DataParallel, which dies with "module must have its parameters ... on
-# device: cpu". Overridden by slurm/submit_benchmark.sh's --gres.
+# 1 GPU, deliberately: --num-gpus > 1 makes launch_finetune.py wrap the model in
+# nn.DataParallel, which dies with "module must have its parameters ... on
+# device: cpu".
 #SBATCH --gres=gpu:1
-
-# Deliberately NOT `set -e`: a failing stage must be recorded and stepped over,
-# not abort the job. Stage failures are tracked explicitly instead.
 set -uo pipefail
 
-# --------------------------------------------------------------------------- #
-# The site wckey, checked at runtime
-# --------------------------------------------------------------------------- #
-# sbatch precedence is: command line > environment variable > #SBATCH directive.
-# So a stale SBATCH_WCKEY in the submitting shell (typically a copy of
-# env.example.sh from before the value was corrected) SILENTLY OVERRIDES the
-# `#SBATCH --wckey=project-short-name:sub_4dpdata` header above. That is exactly how a job once went
-# out under the wrong project. The header alone is not enough; check it.
-#
-# SLURM_WCKEY is only set inside the job when a wckey was applied, so an unset
-# value defaults to the right answer rather than failing a valid job.
-if [[ -n "${SLURM_JOB_ID:-}" && "${SLURM_WCKEY:-project-short-name:sub_4dpdata}" != "project-short-name:sub_4dpdata" ]]; then
-  echo "error: this job's wckey is '${SLURM_WCKEY}', not 'project-short-name:sub_4dpdata'." >&2
-  echo "       Every job here must be accounted to 'project-short-name:sub_4dpdata'." >&2
-  echo "       Something in your environment overrode the #SBATCH header --" >&2
-  echo "       almost certainly a stale SBATCH_WCKEY in env.sh. Fix it with:" >&2
-  echo "         export SBATCH_WCKEY=project-short-name:sub_4dpdata SLURM_WCKEY=project-short-name:sub_4dpdata" >&2
-  echo "       then resubmit. 'python scripts/preflight.py' also checks this." >&2
-  exit 2
-fi
 
 
-# Locate the repo. `dirname "${BASH_SOURCE[0]}"` is NOT reliable here: under
-# sbatch, SLURM copies the batch script into a spool directory
-# (/var/spool/slurm/d/...), so it resolves to the spool, not the checkout --
-# every derived path then points somewhere unwritable. SLURM_SUBMIT_DIR is the
-# directory the job was submitted from, which is the right answer under sbatch;
-# BASH_SOURCE is the right answer under plain `bash`. Try both and accept only a
-# candidate that actually contains this repo.
+# sbatch copies this script into /var/spool/slurm/d/, so BASH_SOURCE resolves to
+# the spool and every derived path lands somewhere unwritable. SLURM_SUBMIT_DIR
+# is the right answer under sbatch, BASH_SOURCE under plain `bash`; accept
+# whichever actually contains this repo.
 if [[ -z "${REPO_ROOT:-}" ]]; then
   for _candidate in \
       "${SLURM_SUBMIT_DIR:-}" \
@@ -133,27 +46,14 @@ if [[ -z "${REPO_ROOT:-}" ]]; then
   exit 2
 fi
 
+# Both runtime guards -- the wckey and the configuration sentinel -- live in one
+# place. shellcheck source=slurm/common.sh
+. "${REPO_ROOT}/slurm/common.sh"
+univtac_job_guard
+
 # --------------------------------------------------------------------------- #
 # Configuration
 # --------------------------------------------------------------------------- #
-# bundle-sbatch owns --export, so this job's configuration is NOT passed as an
-# explicit variable list any more -- it arrives only because the submitter
-# exported it and sbatch propagates the submitting environment by default. If
-# that ever stops being true the variables below would quietly fall back to
-# their defaults and the job would train the WRONG TASK while looking healthy.
-#
-# So the submitters set this sentinel, and a real job without it stops here.
-# (Plain `bash slurm/benchmark_task.sbatch` for a dry run is unaffected: the
-# check only applies inside a Slurm allocation.)
-if [[ -n "${SLURM_JOB_ID:-}" && -z "${UNIVTAC_JOB_CONFIG:-}" ]]; then
-  echo "error: UNIVTAC_JOB_CONFIG is unset, so this job's environment did not" >&2
-  echo "       reach it and TASK/VARIANTS/STAGES would silently take their" >&2
-  echo "       defaults. Submit through slurm/submit_benchmark.sh, which" >&2
-  echo "       exports the configuration before calling bundle-sbatch." >&2
-  echo "       If you are submitting by hand, export UNIVTAC_JOB_CONFIG=1" >&2
-  echo "       alongside the rest of the configuration." >&2
-  exit 2
-fi
 
 TASK="${TASK:-lift_bottle}"
 TASK_CONFIG="${TASK_CONFIG:-clean}"
@@ -180,21 +80,14 @@ VARIANTS="${VARIANTS:-tactile baseline_finetuned}"
 # to be safe. So the submitters send colons and this turns them back into words.
 VARIANTS="${VARIANTS//[,:]/ }"
 
-# Which stages this job runs. The default is all three, so a plain
-# `bash slurm/benchmark_task.sbatch` still does the whole task end to end.
+# Which stages to run; the default is all three, so a plain `bash
+# slurm/benchmark_task.sbatch` still does the whole task end to end. Splitting
+# exists because training and evaluation belong on different partitions and one
+# job holds one allocation on one. submit_benchmark.sh sends STAGES=finetune;
+# evaluation is slurm/eval_checkpoint.sh.
 #
-# It is split because THE TWO STAGES BELONG ON DIFFERENT PARTITIONS: training
-# runs on sjw_alinlab, evaluation is only allowed on `background`. One job
-# holds one allocation on one partition, so finetune-then-evaluate in a single
-# job would evaluate wherever it trained. slurm/submit_benchmark.sh therefore
-# submits two jobs per task -- STAGES=finetune on the training partition, then
-# STAGES="eval compare" on `background`, gated behind it with --dependency.
-#
-#   STAGES=finetune        train only, leave the checkpoint for a later job
-#   STAGES="eval compare"  evaluate an existing checkpoint and aggregate
-#
-# Unknown names are rejected rather than silently ignored: a typo'd
-# STAGES=finetne would otherwise run nothing and look like a clean success.
+# Unknown names are rejected rather than ignored: a typo'd STAGES=finetne would
+# otherwise run nothing and look like a clean success.
 STAGES="${STAGES:-finetune eval compare}"
 STAGES="${STAGES//[,:]/ }"   # same reason as VARIANTS above
 for _stage in ${STAGES}; do
@@ -211,43 +104,24 @@ stage_enabled() {
   return 1
 }
 
-# The training recipe: 30,000 steps at batch 64, retaining the 10k, 20k and 30k
-# checkpoints and nothing else.
+# The recipe: 30,000 steps at batch 64, retaining exactly checkpoint-10000,
+# -20000 and -30000. Those three are the only points of the success-rate curve
+# that decides the reported step count -- why 30,000 rather than GR00T's own
+# 10,000 default, and how one of the three gets chosen, are in
+# docs/BENCHMARK.md, "Choosing the step count". 30,000 is OUR choice, not a
+# GR00T default, so it is disclosed with the numbers.
 #
-# 30,000 is a DELIBERATE DEPARTURE from GR00T's own --max-steps 10000 default
-# and has to be disclosed alongside the numbers -- docs/ABLATION.md's recipe
-# table marks it as such. The reason: 10,000 steps over the full 100 released
-# episodes (~28.9k samples, 452 steps/epoch) is only ~22 epochs, and nothing in
-# this setup can tell us whether that is enough. There is no validation split
-# and launch_finetune.py exposes no eval metric, so the ONLY instrument is
-# success rate as a function of step count. 30,000 (~66 epochs) is far enough
-# out that the curve either turns or plainly does not.
+# SAVE_TOTAL_LIMIT is a ceiling, not a target: 4 leaves a spare slot so an extra
+# end-of-training save can never evict checkpoint-10000. Only three are written,
+# ~26 GB each (measured), so ~77 GB per variant.
 #
-# SAVE_STEPS=10000 makes the saves land exactly on 10000, 20000 and 30000 --
-# the three points of that curve, nothing else. Chosen, not incidental:
-#   * at SAVE_STEPS=1000 a limit of 3 deletes every early checkpoint long
-#     before training ends, which is what forced the hand-copying of
-#     checkpoints on the first insert_hole run;
-#   * a 3B checkpoint carries optimizer + scheduler + RNG state and measured
-#     ~26 GB (an earlier comment here estimated ~40 GB, which was high), so
-#     three of them is ~77 GB per variant and fits a bundle comfortably;
-#   * writing one stalls the step it lands on -- 9.82 s against a sub-second
-#     steady state -- so three writes rather than thirty is also the cheap
-#     setting.
-# SAVE_TOTAL_LIMIT is a ceiling, not a target: 4 leaves one slot spare so that
-# an extra end-of-training save could never evict checkpoint-10000, while only
-# three checkpoints are ever actually written.
+# The cost of sparse saves is resume granularity: a kill rolls back to the last
+# 10k boundary, ~1.9 h of redone work at 0.70 s/it. Taken knowingly.
 #
-# The cost of sparse saves is resume granularity. A walltime kill or node
-# failure now rolls back to the last 10k boundary -- up to ~1.9 h of redone
-# work at the measured 0.70 s/it. That is the trade being made knowingly.
-#
-# There is still no metric-based "best checkpoint" to select automatically:
-# launch_finetune.py exposes no eval metric or load-best-at-end option, so the
-# last checkpoint is the final model by definition, and this script points a
-# stable `<output_dir>/final` symlink at the highest-numbered one. Preferring
-# 10k or 20k over 30k is therefore an explicit act performed at EVALUATION
-# time, on a dev seed block -- see docs/ABLATION.md, "Choosing the step count".
+# launch_finetune.py exposes no eval metric or load-best-at-end, so the last
+# checkpoint is the final model by definition and `<output_dir>/final` points at
+# the highest-numbered one. Preferring 10k or 20k is an act performed at
+# EVALUATION time, on a dev seed block -- never here.
 MAX_STEPS="${MAX_STEPS:-30000}"
 SAVE_STEPS="${SAVE_STEPS:-10000}"
 SAVE_TOTAL_LIMIT="${SAVE_TOTAL_LIMIT:-4}"

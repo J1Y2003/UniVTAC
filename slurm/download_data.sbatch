@@ -1,106 +1,34 @@
 #!/bin/bash
-# Download UniVTAC demonstration data, targeted, via UniVTAC's own downloader.
+# Download UniVTAC demonstration data by delegating to the simulator's own
+# $UNIVTAC_ROOT/data/download.sh, which owns the include patterns, task-name
+# validation and the isaac45/isaac51 split.
 #
-# This delegates to $UNIVTAC_ROOT/data/download.sh rather than calling
-# modelscope directly. That script is authoritative about include patterns,
-# task-name validation and the isaac45/isaac51 split, and it lands files in the
-# published layout that the rest of UniVTAC expects.
+# The full dataset is ~400 GB. Only isaac45 is needed to finetune GR00T, at
+# ~24 GB per task; the default here is one task plus the checkpoints.
 #
-# The full dataset is ~400 GB. You almost certainly want a subset:
+#   env TASKS=lift_bottle UNIVTAC_JOB_CONFIG=1 \
+#     bundle-sbatch --job-kind data_process --code-git-root "$REPO_ROOT" -- \
+#     --job-name=univtac-groot-download-univtac-demonstration-data-from-modelscope \
+#     --wckey=project-short-name:sub_4dpdata --partition=cpu -- \
+#     slurm/download_data.sbatch
 #
-#   byml2024/UniVTAC
-#     isaac45/<task>/hdf5/{0..99}.hdf5   ~24 GB/task, 8 tasks ~190 GB  <- Isaac Sim 4.5 (what UniVTAC installs)
-#     isaac51/<task>/...                 ~190 GB                       <- Isaac Sim 5.1, NOT needed on `main`
-#     contact/<shape>/...                                              <- pretraining data for UniVTAC's own encoder
-#     checkpoints/<task>/, checkpoints/encoder.pth                     <- their baseline policies + tactile encoder
+# TASKS="a b" for several, TASKS=all for all eight (~190 GB), TASKS=none
+# CHECKPOINT=1 for the encoder alone. modelscope resumes, so resubmitting after
+# a walltime kill is safe.
 #
-# Only isaac45 is needed to finetune GR00T. The default here is ONE task plus
-# the checkpoints, so you can validate convert -> finetune -> eval before
-# committing ~190 GB.
-#
-#   env TASKS=lift_bottle UNIVTAC_JOB_CONFIG=1 bundle-sbatch #     --job-kind data_process --code-git-root "$REPO_ROOT" -- #     --job-name=univtac-groot-download-univtac-demonstration-data-from-modelscope #     --wckey=project-short-name:sub_4dpdata --partition=cpu -- #     slurm/download_data.sbatch
-#
-# TASKS="lift_bottle lift_can" for several, TASKS=all for all 8 (~190 GB),
-# TASKS=none CHECKPOINT=1 for the encoder alone (~minutes). The variables go in
-# the environment because bundle-sbatch owns --export; the job inherits them.
-#
-# No GPU. Network + disk bound. modelscope resumes, so a walltime kill is safe
-# to resubmit.
-#
-# SITE RULES (see CLAUDE.md, "Cluster rules"). Enforced here; do not "helpfully"
-# reintroduce any of them:
-#
-#   * --time is OPTIONAL and worth passing. Without it a job is assumed to want
-#     the partition maximum (2 days), so backfill can only start it in a 2-day
-#     gap; a realistic limit makes it eligible for far more gaps and it starts
-#     sooner. Two rules: never exceed the partition maximum, or the job sits
-#     pending forever with REASON=PartitionTimeLimit, and never set one below
-#     what the work needs unless that work is resumable.
-#   * NEVER pass --cpus-per-task or --mem. Jobs take the node's per-GPU
-#     defaults, and the submit filter rejects the job if either is specified.
-#   * ALWAYS pass --wckey=project-short-name:sub_4dpdata.
-#   * MODEL_OUTPUT_DIR is injected by bundle-sbatch and equals CODE_OUTPUT_DIR
-#     (<bundle>/code-output). Never set it, never pass it with --export, and do
-#     not expect it under /rlwrld-unified-checkpoints any more.
-#
-# Do pass --partition explicitly, or export SBATCH_PARTITION: `debug` is the
-# default here and is short-lived, so it is not where long training belongs.
-#
-# CPU-ONLY JOB: this must go to --partition=cpu. The GPU partitions reject any
-# job that does not request a GPU:
-#   ❌ ERROR: GPU 파티션에는 GPU를 요청한 잡만 제출할 수 있습니다.
-#      CPU 전용 잡은 --partition=cpu 를 사용하세요.
-# The header below sets it, but --partition precedence is
-# command line > SBATCH_PARTITION > #SBATCH directive, so an exported
-# SBATCH_PARTITION pointing at a GPU partition silently overrides it and the
-# submission is refused. Pass --partition=cpu on the command line too.
-
+# CPU-only, so --partition=cpu is required: the GPU partitions refuse a job that
+# requests no GPU. It must be on the command line, since the launcher owns
+# --partition and there is no #SBATCH directive to fall back on.
 set -uo pipefail
 
-# bundle-sbatch owns --export, so this job's configuration is not handed to it
-# as a variable list: it arrives only because the submitter exported it and the
-# launcher's environment is inherited. If that ever stops holding, the variables
-# below would quietly fall back to their defaults and the job would do the WRONG
-# WORK while looking healthy. The submitters set this sentinel; a real job
-# without it stops here. A local `bash` run for a dry run is unaffected.
-if [[ -n "${SLURM_JOB_ID:-}" && -z "${UNIVTAC_JOB_CONFIG:-}" ]]; then
-  echo "error: UNIVTAC_JOB_CONFIG is unset, so this job's environment did not" >&2
-  echo "       reach it and its configuration would silently take defaults." >&2
-  echo "       Submit through the scripts in slurm/, which export it, or set" >&2
-  echo "       UNIVTAC_JOB_CONFIG=1 alongside the rest of the configuration." >&2
-  exit 2
-fi
 
 
-# --------------------------------------------------------------------------- #
-# The site wckey, checked at runtime
-# --------------------------------------------------------------------------- #
-# sbatch precedence is: command line > environment variable > #SBATCH directive.
-# So a stale SBATCH_WCKEY in the submitting shell (typically a copy of
-# env.example.sh from before the value was corrected) SILENTLY OVERRIDES the
-# `#SBATCH --wckey=project-short-name:sub_4dpdata` header above. That is exactly how a job once went
-# out under the wrong project. The header alone is not enough; check it.
-#
-# SLURM_WCKEY is only set inside the job when a wckey was applied, so an unset
-# value defaults to the right answer rather than failing a valid job.
-if [[ -n "${SLURM_JOB_ID:-}" && "${SLURM_WCKEY:-project-short-name:sub_4dpdata}" != "project-short-name:sub_4dpdata" ]]; then
-  echo "error: this job's wckey is '${SLURM_WCKEY}', not 'project-short-name:sub_4dpdata'." >&2
-  echo "       Every job here must be accounted to 'project-short-name:sub_4dpdata'." >&2
-  echo "       Something in your environment overrode the #SBATCH header --" >&2
-  echo "       almost certainly a stale SBATCH_WCKEY in env.sh. Fix it with:" >&2
-  echo "         export SBATCH_WCKEY=project-short-name:sub_4dpdata SLURM_WCKEY=project-short-name:sub_4dpdata" >&2
-  echo "       then resubmit. 'python scripts/preflight.py' also checks this." >&2
-  exit 2
-fi
 
 
-# Locate the repo. `dirname "${BASH_SOURCE[0]}"` is NOT reliable here: under
-# sbatch, SLURM copies the batch script into a spool directory
-# (/var/spool/slurm/d/...), so it resolves to the spool, not the checkout --
-# every derived path then points somewhere unwritable. SLURM_SUBMIT_DIR is the
-# directory the job was submitted from, which is the right answer under sbatch;
-# BASH_SOURCE is the right answer under plain `bash`. Try both and accept only a
-# candidate that actually contains this repo.
+# sbatch copies this script into /var/spool/slurm/d/, so BASH_SOURCE resolves to
+# the spool and every derived path lands somewhere unwritable. SLURM_SUBMIT_DIR
+# is the right answer under sbatch, BASH_SOURCE under plain `bash`; accept
+# whichever actually contains this repo.
 if [[ -z "${REPO_ROOT:-}" ]]; then
   for _candidate in \
       "${SLURM_SUBMIT_DIR:-}" \
@@ -118,6 +46,11 @@ if [[ -z "${REPO_ROOT:-}" ]]; then
   echo "       REPO_ROOT=/path/to/UniVTAC explicitly." >&2
   exit 2
 fi
+
+# Both runtime guards -- the wckey and the configuration sentinel -- live in one
+# place. shellcheck source=slurm/common.sh
+. "${REPO_ROOT}/slurm/common.sh"
+univtac_job_guard
 UNIVTAC_ROOT="${UNIVTAC_ROOT:?set UNIVTAC_ROOT to the UniVTAC checkout}"
 
 TASKS="${TASKS:-lift_bottle}"        # space-separated, or "all", or "none"
@@ -220,22 +153,43 @@ for task in ${TASKS}; do
 done
 du -sh "${OUTPUT}" 2>/dev/null || true
 
-# download.sh preserves the published layout (isaac45/<task>/hdf5/), but
-# BaseDataPreprocessor reads data/<task>/<config>/. Bridge the two with the
-# symlinks fix_act.py manages -- idempotent, so re-running is free.
+# download.sh preserves the published layout (isaac45/<task>/hdf5/{0..99}.hdf5)
+# but BaseDataPreprocessor reads data/<task>/<config>/, and no <config> level
+# exists in the download. The episodes are already named 0.hdf5..99.hdf5, which
+# find_episodes sorts by int(stem), so one directory symlink per task bridges
+# the two and costs no disk. isaac45 wins where both exist: `main` installs
+# Isaac Sim 4.5 and the released checkpoints target that data.
 if [[ ${STATUS} -eq 0 && -n "${TASKS}" ]]; then
   echo "----------------------------------------------------------"
   echo "[job] linking downloaded episodes into data/<task>/${RAW_CONFIG}"
-  "${PYTHON}" "${REPO_ROOT}/tools/univtac_patches/fix_act.py" \
-    --univtac-root "${UNIVTAC_ROOT}" --raw-config "${RAW_CONFIG}" || true
+  for hdf5_dir in "${UNIVTAC_ROOT}"/data/isaac45/*/hdf5 \
+                  "${UNIVTAC_ROOT}"/data/isaac51/*/hdf5; do
+    [[ -d "${hdf5_dir}" ]] || continue
+    compgen -G "${hdf5_dir}/*.hdf5" >/dev/null || continue
+    task_dir="$(dirname "${hdf5_dir}")"
+    task="$(basename "${task_dir}")"
+    version="$(basename "$(dirname "${task_dir}")")"
+    link="${UNIVTAC_ROOT}/data/${task}/${RAW_CONFIG}"
+    if [[ -e "${link}" || -L "${link}" ]]; then
+      echo "[job]   ${task}: already linked"
+      continue
+    fi
+    mkdir -p "$(dirname "${link}")"
+    # Relative, so the tree survives being moved: from data/<task>/, `..` is
+    # data/, hence ../<version>/<task>/hdf5.
+    if ln -s "../${version}/${task}/hdf5" "${link}"; then
+      echo "[job]   ${task}: data/${task}/${RAW_CONFIG} -> ../${version}/${task}/hdf5"
+    else
+      # No symlinks on this filesystem. Copying 24 GB per task is not an
+      # acceptable fallback, so say so rather than silently duplicating.
+      echo "[job]   ${task}: SYMLINK FAILED -- bind-mount or move it by hand" >&2
+    fi
+  done
 fi
 
 echo "----------------------------------------------------------"
 echo "[job] next steps:"
 for task in ${TASKS}; do
-  echo "  # UniVTAC's own ACT baseline (its data step, then training):"
-  echo "  bash ${UNIVTAC_ROOT}/policy/ACT/process_data.sh ${task} ${RAW_CONFIG} 100"
-  echo "  # this repo's GR00T path:"
   echo "  env TASK=${task} VARIANT=tactile RAW_DIR=${OUTPUT}/isaac${VERSION}/${task}/hdf5 UNIVTAC_JOB_CONFIG=1 \\"
   echo "    bundle-sbatch --job-kind data_process --code-git-root ${REPO_ROOT} -- \\"
   echo "    --job-name=univtac-groot-convert-univtac-hdf5-demonstrations-to-lerobot-v2 \\"

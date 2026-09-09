@@ -1,95 +1,32 @@
 #!/bin/bash
-# Convert UniVTAC HDF5 demonstrations to the GR00T LeRobot v2 format.
+# Convert UniVTAC HDF5 demonstrations to the GR00T LeRobot v2 format, one job
+# per (task, variant).
 #
-# CPU-only and CPU-heavy: it decodes every demonstration frame and re-encodes
-# one H.264 stream per camera per episode, which takes minutes to hours. That is
-# firmly over the "run it on a login node" line, hence this wrapper. No GPU is
-# requested -- nothing here touches CUDA.
+# CPU-only and CPU-heavy: every demonstration frame is decoded and re-encoded as
+# one H.264 stream per camera per episode, which takes minutes to hours.
 #
-# One job per (task, variant). The state layout differs between variants, so each variant
-# needs its own dataset; see docs/ABLATION.md.
+#   env TASK=insert_hole VARIANT=baseline_finetuned UNIVTAC_JOB_CONFIG=1 \
+#     bundle-sbatch --job-kind data_process --code-git-root "$REPO_ROOT" -- \
+#     --job-name=univtac-groot-convert-univtac-hdf5-demonstrations-to-lerobot-v2 \
+#     --wckey=project-short-name:sub_4dpdata --partition=cpu -- \
+#     slurm/convert.sbatch
 #
-#   env TASK=insert_hole VARIANT=tactile UNIVTAC_JOB_CONFIG=1 bundle-sbatch #     --job-kind data_process --code-git-root "$REPO_ROOT" -- #     --job-name=univtac-groot-convert-univtac-hdf5-demonstrations-to-lerobot-v2 #     --wckey=project-short-name:sub_4dpdata --partition=cpu -- #     slurm/convert.sbatch
+# For every task at once, pass the array spec to the WRAPPER as separate tokens
+# (`#SBATCH --array` is rejected): `bundle-sbatch ... --array 0-7 ...`.
 #
-# Or sweep every task as an array (one task per array index). The SPEC goes to
-# the WRAPPER, as separate tokens, and `#SBATCH --array` is forbidden:
-#
-#   ... bundle-sbatch --job-kind data_process --array 0-7 --code-git-root ...
-#
-# SITE RULES (see CLAUDE.md, "Cluster rules"). Enforced here; do not "helpfully"
-# reintroduce any of them:
-#
-#   * --time is OPTIONAL and worth passing. Without it a job is assumed to want
-#     the partition maximum (2 days), so backfill can only start it in a 2-day
-#     gap; a realistic limit makes it eligible for far more gaps and it starts
-#     sooner. Two rules: never exceed the partition maximum, or the job sits
-#     pending forever with REASON=PartitionTimeLimit, and never set one below
-#     what the work needs unless that work is resumable.
-#   * NEVER pass --cpus-per-task or --mem. Jobs take the node's per-GPU
-#     defaults, and the submit filter rejects the job if either is specified.
-#   * ALWAYS pass --wckey=project-short-name:sub_4dpdata.
-#   * MODEL_OUTPUT_DIR is injected by bundle-sbatch and equals CODE_OUTPUT_DIR
-#     (<bundle>/code-output). Never set it, never pass it with --export, and do
-#     not expect it under /rlwrld-unified-checkpoints any more.
-#
-# Do pass --partition explicitly, or export SBATCH_PARTITION: `debug` is the
-# default here and is short-lived, so it is not where long training belongs.
-#
-# CPU-ONLY JOB: this must go to --partition=cpu. The GPU partitions reject any
-# job that does not request a GPU:
-#   ❌ ERROR: GPU 파티션에는 GPU를 요청한 잡만 제출할 수 있습니다.
-#      CPU 전용 잡은 --partition=cpu 를 사용하세요.
-# The header below sets it, but --partition precedence is
-# command line > SBATCH_PARTITION > #SBATCH directive, so an exported
-# SBATCH_PARTITION pointing at a GPU partition silently overrides it and the
-# submission is refused. Pass --partition=cpu on the command line too.
-
+# CPU-only, so --partition=cpu is required: the GPU partitions refuse a job that
+# requests no GPU. It must be on the command line, since the launcher owns
+# --partition and there is no #SBATCH directive to fall back on.
 set -euo pipefail
 
-# bundle-sbatch owns --export, so this job's configuration is not handed to it
-# as a variable list: it arrives only because the submitter exported it and the
-# launcher's environment is inherited. If that ever stops holding, the variables
-# below would quietly fall back to their defaults and the job would do the WRONG
-# WORK while looking healthy. The submitters set this sentinel; a real job
-# without it stops here. A local `bash` run for a dry run is unaffected.
-if [[ -n "${SLURM_JOB_ID:-}" && -z "${UNIVTAC_JOB_CONFIG:-}" ]]; then
-  echo "error: UNIVTAC_JOB_CONFIG is unset, so this job's environment did not" >&2
-  echo "       reach it and its configuration would silently take defaults." >&2
-  echo "       Submit through the scripts in slurm/, which export it, or set" >&2
-  echo "       UNIVTAC_JOB_CONFIG=1 alongside the rest of the configuration." >&2
-  exit 2
-fi
 
 
-# --------------------------------------------------------------------------- #
-# The site wckey, checked at runtime
-# --------------------------------------------------------------------------- #
-# sbatch precedence is: command line > environment variable > #SBATCH directive.
-# So a stale SBATCH_WCKEY in the submitting shell (typically a copy of
-# env.example.sh from before the value was corrected) SILENTLY OVERRIDES the
-# `#SBATCH --wckey=project-short-name:sub_4dpdata` header above. That is exactly how a job once went
-# out under the wrong project. The header alone is not enough; check it.
-#
-# SLURM_WCKEY is only set inside the job when a wckey was applied, so an unset
-# value defaults to the right answer rather than failing a valid job.
-if [[ -n "${SLURM_JOB_ID:-}" && "${SLURM_WCKEY:-project-short-name:sub_4dpdata}" != "project-short-name:sub_4dpdata" ]]; then
-  echo "error: this job's wckey is '${SLURM_WCKEY}', not 'project-short-name:sub_4dpdata'." >&2
-  echo "       Every job here must be accounted to 'project-short-name:sub_4dpdata'." >&2
-  echo "       Something in your environment overrode the #SBATCH header --" >&2
-  echo "       almost certainly a stale SBATCH_WCKEY in env.sh. Fix it with:" >&2
-  echo "         export SBATCH_WCKEY=project-short-name:sub_4dpdata SLURM_WCKEY=project-short-name:sub_4dpdata" >&2
-  echo "       then resubmit. 'python scripts/preflight.py' also checks this." >&2
-  exit 2
-fi
 
 
-# Locate the repo. `dirname "${BASH_SOURCE[0]}"` is NOT reliable here: under
-# sbatch, SLURM copies the batch script into a spool directory
-# (/var/spool/slurm/d/...), so it resolves to the spool, not the checkout --
-# every derived path then points somewhere unwritable. SLURM_SUBMIT_DIR is the
-# directory the job was submitted from, which is the right answer under sbatch;
-# BASH_SOURCE is the right answer under plain `bash`. Try both and accept only a
-# candidate that actually contains this repo.
+# sbatch copies this script into /var/spool/slurm/d/, so BASH_SOURCE resolves to
+# the spool and every derived path lands somewhere unwritable. SLURM_SUBMIT_DIR
+# is the right answer under sbatch, BASH_SOURCE under plain `bash`; accept
+# whichever actually contains this repo.
 if [[ -z "${REPO_ROOT:-}" ]]; then
   for _candidate in \
       "${SLURM_SUBMIT_DIR:-}" \
@@ -107,6 +44,11 @@ if [[ -z "${REPO_ROOT:-}" ]]; then
   echo "       REPO_ROOT=/path/to/UniVTAC explicitly." >&2
   exit 2
 fi
+
+# Both runtime guards -- the wckey and the configuration sentinel -- live in one
+# place. shellcheck source=slurm/common.sh
+. "${REPO_ROOT}/slurm/common.sh"
+univtac_job_guard
 UNIVTAC_ROOT="${UNIVTAC_ROOT:?set UNIVTAC_ROOT to the UniVTAC checkout}"
 # Same default as submit_benchmark.sh, smoke_test.sh and
 # benchmark_task.sbatch. This used to be a hard `:?` requirement while

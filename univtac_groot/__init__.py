@@ -14,7 +14,7 @@ interpreter never import torch or ``gr00t``:
 ``server``
     Runs in the *GR00T* environment and loads the model.
 
-See ``README.md`` for the two-process layout and ``docs/ABLATION.md`` for why
+See ``README.md`` for the two-process layout and ``docs/BENCHMARK.md`` for why
 the tactile variant needs a finetuned checkpoint.
 """
 

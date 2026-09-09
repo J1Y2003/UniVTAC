@@ -1,73 +1,72 @@
 # GR00T N1.7 on the UniVTAC benchmark
 
-An evaluation pipeline for benchmarking [`nvidia/GR00T-N1.7-3B`](https://huggingface.co/nvidia/GR00T-N1.7-3B)
-on the [UniVTAC](https://github.com/univtac/UniVTAC) visuo-tactile manipulation
-benchmark, set up as a two-variant ablation:
+Finetune [`nvidia/GR00T-N1.7-3B`](https://huggingface.co/nvidia/GR00T-N1.7-3B)
+on the [UniVTAC](https://github.com/univtac/UniVTAC) manipulation benchmark, one
+policy per task, and measure its success rate over 100 rollouts.
+
+The observation is the task's camera images (third-person, plus a wrist view on
+two tasks), the 17-D robot state, and the language instruction.
 
 **Current state, blockers and next actions: [docs/STATUS.md](docs/STATUS.md).**
 
-| Variant | Observation | Checkpoint |
-| --- | --- | --- |
-| **Baseline** | vision + language + 1-D proprioception + embodiment id | zero-shot on the released model |
-| **Tactile** | the same, with the flattened UniVTAC tactile array concatenated onto the state vector | **requires a finetune** — see [docs/ABLATION.md](docs/ABLATION.md) |
+| | |
+| --- | --- |
+| Model | `nvidia/GR00T-N1.7-3B`, finetuned per task |
+| Observation | images + 17-D state + language instruction |
+| Recipe | 30,000 steps at batch 64, retaining checkpoints 10k/20k/30k |
+| Protocol | 100 rollouts per task, UniVTAC's `1_000_000 * (1 + seed)` seeds |
+| Output | success rate per task, with a Wilson 95 % interval |
 
-Everything runs headlessly under `sbatch`. No script prompts, opens a GUI, or
-needs a login-node GPU.
+Everything runs headlessly through `bundle-sbatch`. No script prompts, opens a
+GUI, or needs a login-node GPU.
 
 ### Start here
 
 ```bash
-cp env.example.sh env.sh && chmod 600 env.sh   # paths + HF token; gitignored
+cp env.example.sh env.sh && chmod 600 env.sh   # paths + two tokens; gitignored
 source env.sh                                  # per session, not ~/.bashrc
+python scripts/preflight.py --deep             # checklist + the exact next command
 ```
-
 
 **[docs/RUNBOOK.md](docs/RUNBOOK.md) — the ordered sequence** from nothing to an
-evaluation number, each step labelled with where it runs and which conda env.
-Or just ask the repo where you are:
+evaluation number, each step labelled with where it runs and which environment.
 
-```bash
-python scripts/preflight.py --deep     # checklist + the exact next command
-```
-
-> **Read [docs/ABLATION.md](docs/ABLATION.md) before running the tactile variant.**
-> Adding tactile dimensions changes the state layout, and GR00T's state
-> projector is embodiment-conditioned, so the tactile variant only runs under the
-> `NEW_EMBODIMENT` tag — which ships in no released checkpoint. The baseline variant
-> runs zero-shot today; the tactile variant needs a finetune first. This is a
-> property of the model, not of this code.
+[docs/BENCHMARK.md](docs/BENCHMARK.md) is the one to read before quoting a
+number: the evaluation protocol, the settings that move it, what to state
+alongside it, and how the step count is chosen without fitting the reported
+rollouts.
 
 ---
 
 ## Architecture: two processes, one socket
 
-UniVTAC needs **Python 3.10** (Isaac Sim 4.5, Isaac Lab 2.1.1, TacEx, cuRobo,
+UniVTAC needs **Python 3.10** (Isaac Sim 4.5, Isaac Lab 2.1.1, cuRobo,
 torch 2.5.1+cu118); GR00T N1.7 needs **Python 3.12** (CUDA 12.8, transformers,
 flash-attn, and the gated `nvidia/Cosmos-Reason2-2B` backbone). Different minor
-Python versions means they cannot share a virtualenv at all, so the model is
-served over a loopback ZeroMQ socket rather than imported in-process — the same
-split UniVTAC uses for its own SmolVLA integration
-(`policy/smolvla/smolvla_server.py`).
+Python versions cannot share a virtualenv, so the model is served over a
+loopback ZeroMQ socket rather than imported in-process — the same split UniVTAC
+uses for its own SmolVLA integration (`policy/smolvla/smolvla_server.py`).
 
 ```
-┌─ GR00T env ─────────────────────────┐        ┌─ UniVTAC / Isaac Lab env ──────────────┐
+┌─ GR00T env (3.12) ──────────────────┐        ┌─ UniVTAC / Isaac Lab env (3.10) ───────┐
 │ univtac_groot.server.run_server     │        │ scripts/run_eval.py                    │
 │   Gr00tPolicy(GR00T-N1.7-3B)        │        │   UniVTACGr00tEnv  (Gym surface)       │
-│   Gr00tSimPolicyWrapper             │◄──────►│   ObsAdapter       (state + tactile)   │
+│   Gr00tSimPolicyWrapper             │◄──────►│   ObsAdapter       (images + state)     │
 │   PolicyServer  (ZMQ REP)           │  ZMQ   │   ObsHistory       (delta_indices)     │
 └─────────────────────────────────────┘ msgpack│   RecedingHorizonController            │
                                                │   Gr00tClient      (ZMQ REQ)           │
                                                └────────────────────────────────────────┘
 ```
 
+Both processes always live in the **same job on the same node**, talking over
+`127.0.0.1`: no cross-node networking, and when the job ends both die together.
 The UniVTAC-side client needs only `numpy`, `pyzmq`, `msgpack` and
 `msgpack-numpy` — it never imports `gr00t` or torch-heavy code.
 
 ## Install
 
-**[docs/SETUP.md](docs/SETUP.md) is the full prerequisite list**, including what
-"a live GR00T server" means, the preflight sequence, and a failure table. The
-short version:
+**[docs/SETUP.md](docs/SETUP.md) is the full prerequisite list.** The short
+version:
 
 ```bash
 # 1. UniVTAC, Python 3.10 (builds Isaac Sim, Isaac Lab, TacEx, cuRobo -- hours)
@@ -83,47 +82,56 @@ uv sync --python 3.12                       # needs ffmpeg 4-7, not 8
 conda activate UniVTAC && pip install -r requirements-client.txt
 ```
 
-Two things bite almost everyone: `nvidia/Cosmos-Reason2-2B` is **gated**, so
-request access and `huggingface-cli login` or the server dies at load with a
-401; and `torchcodec` cannot load **FFmpeg 8**, which recent Ubuntu ships.
+Three things bite almost everyone: `nvidia/Cosmos-Reason2-2B` is **gated**, so
+the server dies at load with a 401 unless `HF_TOKEN` has access — export it,
+never run `hf auth login`, which overwrites the shared account's stored token;
+`torchcodec` cannot load **FFmpeg 8**, which recent Ubuntu ships; and a cuDNN
+that is not the pinned `9.10.2.21` costs ~86x silently, which is why
+`scripts/check_cudnn.py` runs inside every GPU job.
 
 ## Quickstart
 
 ```bash
-export REPO_ROOT=$PWD
-export UNIVTAC_ROOT=~/UniVTAC
-export UNIVTAC_PYTHON=$(conda run -n UniVTAC which python)
-export GROOT_PYTHON=~/Isaac-GR00T/.venv/bin/python   # uv's venv, not a conda env
+source env.sh
 
-# The benchmark: finetune then evaluate, one job per task.
-# --dry runs the full preflight and submits nothing.
+# The benchmark: one finetune per task. --dry runs the full preflight,
+# probes the HF token against the gated repos, and submits nothing.
 bash slurm/submit_benchmark.sh --dry
 bash slurm/submit_benchmark.sh
 
-# Re-evaluate an existing checkpoint without retraining
-bash slurm/eval_checkpoint.sh --task insert_hole --seed-offset 1     --checkpoint /ckpt/univtac-insert_hole-baseline_finetuned/checkpoint-10000
+# Then, once a finetune finishes, one eval job per retained checkpoint.
+# Use a non-zero --seed-offset for anything you might select a checkpoint on.
+for N in 10000 20000 30000; do
+  bash slurm/eval_checkpoint.sh --task insert_hole --seed-offset 1 \
+      --checkpoint <output_dir>/checkpoint-$N
+done
 
 # Aggregate (safe on a login node: reads scalars only)
-python scripts/compare_ablation.py --results-dir eval_result --json ablation.json
+python scripts/compare_ablation.py --results-dir eval_result --json results.json
 ```
+
+Each eval writes `<result-dir>/<task>-<variant>/<task>-ckpt<N>-seed<offset>.json`
+— success rate with a Wilson 95 % interval, error/skip/truncation counts, mean
+steps, inference timings, and the checkpoint, seed block, git commit and job id
+that produced it. The per-episode JSONL sits beside it, so anything can be
+recomputed. It is requeue-safe, which `background` requires.
 
 Or run the two processes by hand:
 
 ```bash
 # terminal 1 — GR00T environment
 python -m univtac_groot.server.run_server \
-    --model-path nvidia/GR00T-N1.7-3B \
-    --embodiment-tag OXE_DROID_RELATIVE_EEF_RELATIVE_JOINT --port 5555
+    --model-path <checkpoint> --port 5555
 
 # terminal 2 — UniVTAC environment
-python scripts/run_eval.py --task insert_hole --variant baseline \
+python scripts/run_eval.py --task insert_hole --variant baseline_finetuned \
     --univtac-root "$UNIVTAC_ROOT" --port 5555 \
-    --episodes 50 --execution-horizon 8
+    --episodes 100 --execution-horizon 16
 ```
 
 `--dry-run` queries the running server and prints the resolved observation
 contract, then exits without starting Isaac Sim — the cheapest way to check that
-an variant and a checkpoint agree. The full preflight ladder is in
+a variant and a checkpoint agree. The full preflight ladder is in
 [docs/SETUP.md](docs/SETUP.md#preflight-cheapest-first).
 
 ### Using UniVTAC's own harness instead
@@ -141,8 +149,8 @@ bash eval_policy.sh insert_hole demo GR00T/deploy_baseline 0
 
 ```
 univtac_groot/
-  spec.py               Observation/tactile contracts + GR00T's hard limits
-  obs_adapter.py        UniVTAC obs -> flat video.*/state.* keys; tactile encoders
+  spec.py               Observation contracts + GR00T's hard limits
+  obs_adapter.py        UniVTAC obs -> flat video.*/state.* keys
   history.py            delta_indices stacking (mirrors GR00T's MultiStepWrapper)
   action_adapter.py     Action chunk -> take_action vectors; gripper convention
   receding_horizon.py   Chunk cache + execution horizon
@@ -162,10 +170,13 @@ scripts/
   convert_univtac_to_lerobot.py  UniVTAC HDF5 -> GR00T LeRobot v2
   wandb_report.py                Read a run's training + system metrics back
 slurm/
-  submit_benchmark.sh     THE ENTRY POINT: finetune + evaluate, one job per task
+  submit_benchmark.sh     THE ENTRY POINT: one finetune per task
   benchmark_task.sbatch   What it submits; resumable, recipe-pinned
-  eval_checkpoint.sh      Evaluate ONE checkpoint; files a JSON in the results library
-  eval_ablation.sbatch    Server + evaluator in one GPU job
+  eval_checkpoint.sh      Evaluate ONE checkpoint; files a JSON in the library
+  eval_ablation.sbatch    Server + evaluator in one GPU job; requeue-safe
+  common.sh               Shared: the bundle-sbatch contract for the
+                          submitters, and the wckey + config guard every
+                          job script runs
   download_data.sbatch    Fetch released demonstrations (CPU-only)
   convert.sbatch          Dataset conversion (CPU-only, array-capable)
   finetune.sbatch         GR00T finetune for one variant
@@ -174,10 +185,13 @@ slurm/
 docs/RUNBOOK.md         Ordered: nothing -> an evaluation number  <- start here
 docs/SETUP.md           Prerequisites, environments, common failures
 docs/STATUS.md          Current state, decisions in force, failure -> cause
-docs/ABLATION.md        Experimental design, constraints, calibration checks
+docs/BENCHMARK.md       The protocol and what moves the number
 docs/UPSTREAM.md        Every upstream fact this code relies on, with citations
 tests/                  No GPU, Isaac Sim, or gr00t needed
 ```
+
+`obs_adapter.py`, `spec.py`, `variants.py` and the converter also carry a
+`tactile` variant with a 113-D state. It is unused and pending removal.
 
 ## Tests
 
@@ -186,41 +200,5 @@ GPU allocation:
 
 ```bash
 pip install -r requirements-dev.txt
-pytest tests -q          # 94 passed
+pytest tests -q
 ```
-
-`tests/test_client_integration.py` runs the full adapter → history → batching →
-socket → chunk → action path against a stand-in server that performs the same
-validation as `Gr00tSimPolicyWrapper.check_observation`.
-
-## Design notes
-
-**Tactile is imagery, not a low-dimensional array.** UniVTAC's sensors are
-camera-based (`envs/sensors/tactile.py` wraps TacEx GelSight Mini / GF225 /
-XenseWS), so a raw reading is a 320×240 gel height map or a 64-marker motion
-field — not a small vector. `TactileSpec` average-pools it to a configurable
-grid (default 8×6 = 48 dims per sensor) before concatenation, giving a 113-D
-state against GR00T's 132-D cap. `--tactile-mode video` instead passes tactile
-RGB as extra video streams, which is the architecturally natural route for
-camera-based sensors.
-
-**Horizons come from the checkpoint, not from constants.** N1.7 predicts 40-step
-chunks by default (`GR00T_N1d7Config.action_horizon`), the shipped posttrain
-configs use 16 or 8, and the DROID tag wants a two-frame observation history
-(`video_delta_indices = [-15, 0]`). `resolve_spec_from_policy` reads the live
-`get_modality_config` and sizes the history buffer and controller from it, and
-fails with an actionable message when an variant and a checkpoint disagree.
-
-**Results survive a walltime kill.** Episodes are appended to JSONL as they
-finish and never held in memory beyond scalars; `summarize_jsonl` re-aggregates
-a partial file.
-
-## Sources
-
-- [NVIDIA/Isaac-GR00T](https://github.com/NVIDIA/Isaac-GR00T) — policy, server, embodiment tags, modality configs
-- [univtac/UniVTAC](https://github.com/univtac/UniVTAC) — environments, tactile sensors, deploy contract
-- [nvidia/GR00T-N1.7-3B](https://huggingface.co/nvidia/GR00T-N1.7-3B) · [GR00T N1.7 announcement](https://huggingface.co/blog/nvidia/gr00t-n1-7)
-- [UniVTAC paper](https://arxiv.org/abs/2602.10093) · [project page](https://univtac.github.io/)
-
-Exact file-and-line provenance for every assumption is in
-[docs/UPSTREAM.md](docs/UPSTREAM.md).

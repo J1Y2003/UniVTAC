@@ -208,7 +208,7 @@ version (it can only skip the GPU convolution), and every GPU job re-runs the
 same check via `scripts/check_cudnn.py` before loading weights, so a mismatch
 aborts the job in seconds instead of wasting a night. If it fails, the output
 prints the exact reinstall commands. Detail and rationale:
-[SETUP.md](SETUP.md#cudnn-check-the-library-not-the-metadata).
+[SETUP.md](SETUP.md#3-cudnn-must-match-torchs-pin).
 
 ## Step 4 — first evaluation, interactively `[compute]`
 
@@ -248,8 +248,8 @@ the pipeline works end to end and you can submit in bulk.
 ```bash
 cd $REPO_ROOT
 
-# The benchmark: TWO jobs per task -- a finetune on sjw_alinlab, then an
-# evaluation on background held behind it with --dependency=afterok.
+# The benchmark: one finetune per task on sjw_alinlab. Evaluation is separate
+# and submitted by hand afterwards, one job per checkpoint, on background.
 # --dry runs the full preflight and submits nothing, which is how to check
 # paths and datasets without spending queue time.
 bash slurm/submit_benchmark.sh --dry
@@ -313,12 +313,11 @@ after a walltime kill.
 
 ---
 
-## Steps 7-9 — the tactile variant (only if you need the ablation)
+## Steps 7-10 — the data pipeline, for a task you have not trained yet
 
-The tactile variant **cannot run zero-shot**: extra state dimensions require the
-`NEW_EMBODIMENT` tag, which ships in no released checkpoint. See
-[ABLATION.md](ABLATION.md) for why. It needs demonstrations, a conversion, and a
-finetune first — days of work, not minutes.
+Step 5 assumes a converted dataset already exists. These are the steps that
+produce one: download the released demonstrations, convert them to GR00T's
+LeRobot v2 layout, finetune, evaluate. Days of work per task, not minutes.
 
 ```bash
 # 7. Get demonstrations. The released data (100 episodes per task) is the
@@ -331,28 +330,28 @@ env TASKS=insert_hole VERSION=45 RAW_CONFIG=clean UNIVTAC_JOB_CONFIG=1 \
     --wckey=project-short-name:sub_4dpdata --partition=cpu -- \
     slurm/download_data.sbatch
 
-# 8. Convert to GR00T LeRobot v2, once per variant -- the state layout differs.
-#    CPU-only, minutes. Runs under $CONVERT_PYTHON, not the simulator's Python.
-for v in tactile baseline_finetuned; do
-  env TASK=insert_hole VARIANT=$v TASK_CONFIG=clean UNIVTAC_JOB_CONFIG=1 \
-      bundle-sbatch --job-kind data_process --code-git-root $REPO_ROOT -- \
-      --job-name=univtac-groot-convert-univtac-hdf5-demonstrations-to-lerobot-v2 \
-      --wckey=project-short-name:sub_4dpdata --partition=cpu -- \
-      slurm/convert.sbatch
+# 8. Convert to GR00T LeRobot v2. CPU-only, minutes. Runs under
+#    $CONVERT_PYTHON, not the simulator's Python.
+env TASK=insert_hole VARIANT=baseline_finetuned TASK_CONFIG=clean \
+    UNIVTAC_JOB_CONFIG=1 \
+    bundle-sbatch --job-kind data_process --code-git-root $REPO_ROOT -- \
+    --job-name=univtac-groot-convert-univtac-hdf5-demonstrations-to-lerobot-v2 \
+    --wckey=project-short-name:sub_4dpdata --partition=cpu -- \
+    slurm/convert.sbatch
+
+# 9. Finetune. EXTRA_TASKS="" skips lift_bottle.
+TASKS=insert_hole EXTRA_TASKS="" bash slurm/submit_benchmark.sh
+
+# 10. WHEN THAT HAS FINISHED, evaluate each retained checkpoint. Separate
+#     submissions: an eval job must declare an existing physical checkpoint,
+#     and there is no job id to hang a dependency on.
+for N in 10000 20000 30000; do
+  bash slurm/eval_checkpoint.sh --task insert_hole --seed-offset 1 \
+      --checkpoint <output_dir>/checkpoint-$N
 done
 
-# 9a. Finetune both variants, same recipe.  EXTRA_TASKS="" skips lift_bottle.
-VARIANTS="tactile baseline_finetuned" TASKS=insert_hole EXTRA_TASKS="" \
-    bash slurm/submit_benchmark.sh
-
-# 9b. WHEN THAT HAS FINISHED, evaluate the checkpoints it produced. Separate
-#     submission: an eval job must declare an existing physical checkpoint, and
-#     there is no job id to hang a dependency on.
-VARIANTS="tactile baseline_finetuned" TASKS=insert_hole EXTRA_TASKS="" \
-    bash slurm/eval_checkpoint.sh --task insert_hole --seed-offset 1         --checkpoint <output_dir>/checkpoint-10000
-
-# 10. Compare them against each other.
-python scripts/compare_ablation.py --baseline-variant baseline_finetuned --tactile-variant tactile
+# 11. Table.
+python scripts/compare_ablation.py --results-dir eval_result
 ```
 
 Every submission needs `--wckey`, and every CPU-only job needs
@@ -361,9 +360,6 @@ Slurm region of the `bundle-sbatch` command line, after the first `--`.
 `submit_benchmark.sh` adds them for you and validates the whole three-region
 command before anything is sent, which is the main reason to prefer it over a
 hand-written launcher line.
-
-Compare the tactile variant against `baseline_finetuned`, not against the zero-shot
-baseline — otherwise the whole finetuning effect gets credited to touch.
 
 ## If something fails
 
