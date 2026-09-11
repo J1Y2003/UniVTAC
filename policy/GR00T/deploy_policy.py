@@ -4,12 +4,11 @@ Copy (or symlink) this directory to ``UniVTAC/policy/GR00T/`` and evaluate with
 UniVTAC's own harness::
 
     bash eval_policy.sh insert_hole demo GR00T/deploy_baseline 0
-    bash eval_policy.sh insert_hole demo GR00T/deploy_tactile  0
 
 It implements the three-part contract from ``UniVTAC/docs/Deploy.md``
 (``__init__(args)`` / ``encode_obs`` / ``eval(task, observation)`` / ``reset``)
 and delegates everything substantive to :mod:`univtac_groot`, so the same
-adapters, tactile encoders and receding-horizon controller are used whether the
+adapters and receding-horizon controller are used whether the
 run is driven by UniVTAC's ``scripts/eval_policy.py`` or by this repo's
 ``scripts/run_eval.py``.
 
@@ -87,17 +86,8 @@ class Policy(BasePolicy):
     ``policy_name``
         Must be ``GR00T`` -- UniVTAC uses it to import ``policy/GR00T``.
     ``variant``
-        ``baseline`` (zero-shot DROID tag), ``baseline_finetuned`` or
-        ``tactile``. Selects the observation spec from
-        :data:`univtac_groot.variants.VARIANTS`.
-    ``tactile_mode``
-        ``depth_pool`` | ``marker`` | ``video``, for the ``tactile`` variant.
-    ``tactile_sensors``
-        Sensor names in ``observation['tactile']``; defaults to
-        ``[left_tactile, right_tactile]``.
-    ``tactile_pool_grid``
-        ``[rows, cols]`` pooling grid. Must agree with the modality config the
-        checkpoint was finetuned with.
+        ``baseline`` (zero-shot DROID tag) or ``baseline_finetuned``. Selects
+        the observation spec from :data:`univtac_groot.variants.VARIANTS`.
     ``execution_horizon``
         Actions executed per chunk before re-planning. Defaults to the full
         chunk the policy declares.
@@ -124,16 +114,6 @@ class Policy(BasePolicy):
         # -- observation spec ---------------------------------------------
         variant = str(self.args.get("variant", "baseline"))
         spec_kwargs: dict[str, Any] = {}
-        if variant == "tactile":
-            spec_kwargs["mode"] = str(self.args.get("tactile_mode", "depth_pool"))
-            sensors = self.args.get("tactile_sensors")
-            if sensors:
-                spec_kwargs["sensor_names"] = tuple(str(s) for s in sensors)
-            grid = self.args.get("tactile_pool_grid")
-            if grid:
-                grid = (int(grid[0]), int(grid[1]))
-                spec_kwargs["pool_grid"] = grid
-                spec_kwargs["marker_pool"] = grid
         if self.args.get("language_key"):
             spec_kwargs["language_key"] = str(self.args["language_key"])
         self.spec = build_spec(variant, **spec_kwargs)

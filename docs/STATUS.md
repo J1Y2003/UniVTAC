@@ -7,10 +7,13 @@ Last updated 2026-09-09.
 
 ## In flight
 
-**Everything must be resubmitted through `bundle-sbatch`.** Plain `sbatch` is
-no longer the supported path (server policy, 2026-09-09), and the whole
-`slurm/` tree was converted for it. Jobs 166346-166349 predate both this and
-the partition split, so they are wrong twice over: cancel them.
+**`slurm/` was rewritten around plain `sbatch`.** The infrastructure team's
+`bundle-sbatch` wrapper is still supported in `slurm/common.sh` but nothing
+submits through it: it names output directories by ULID under the shared
+account root, and we keep our work under `OUTPUT_ROOT`
+(`/rlwrld-unified-checkpoints/$USER/jaewon`) instead. Jobs 166346-166349
+predate both this and the partition split, so they are wrong twice over:
+cancel them.
 
 The shape is now **finetune first, evaluate later**, not two jobs chained:
 
@@ -37,11 +40,8 @@ tested against a stub, since Claude does not touch the cluster):
 * that the submitting shell's environment reaches the job. Every job script now
   refuses to run without `UNIVTAC_JOB_CONFIG=1` rather than silently taking
   default values, so the failure mode is loud.
-* that `readlink -f` on a `final` symlink satisfies `--checkpoint`. The
-  symlink-rejection rule is documented; resolving it could not be exercised on
-  a Windows checkout, which cannot create symlinks.
-* whether `bundle-sbatch` prints a job id this repo can parse. If it does not,
-  submissions still work -- the id is only used for display.
+* the `--after <jobid>` dependency path, which has not been exercised against
+  a real finetune job id.
 * the resume-after-requeue arithmetic against a real preemption. It is tested
   against synthesised partial, duplicated and truncated result files, but not
   yet against Slurm actually requeueing a job.
@@ -93,7 +93,8 @@ tested against a stub, since Claude does not touch the cluster):
 
 ## Decisions in force
 
-**Benchmark, not controlled ablation.** Hold the observation space (per-task
+**A benchmark number, not a controlled experiment.** Hold the observation
+space (per-task
 cameras) and the evaluation protocol (100 rollouts, their
 `1_000_000 * (1 + seed)` convention) fixed; run GR00T N1.7 on **its own
 defaults** for everything else -- batch 64, `ACTION_HORIZON=40`,
@@ -124,9 +125,8 @@ lands there: whether `background` preempts, since `scripts/run_eval.py` has no
 resume and would restart from the first seed.
 
 **Observation: images, 17-D state, language instruction.** Only
-`baseline_finetuned` is trained. The `tactile` variant and its 113-D state path
-in `obs_adapter.py`, `spec.py`, `variants.py` and the converter are unused and
-pending removal.
+`baseline_finetuned` is trained; `baseline` runs the released weights zero-shot
+for smoke tests.
 
 **Three reported tasks:** `insert_hole`, `insert_tube`, `pull_out_key`, the
 contact-rich insertion and extraction tasks. `lift_bottle` trains as a gated
@@ -187,9 +187,9 @@ whether a result is plausible.
 (~31 MB); **~26 GB per retained checkpoint** (measured: 25,547,974,206 bytes on
 the `insert_hole` checkpoints). Three retained per task is ~77 GB.
 
-Nothing is copied out of a bundle. A checkpoint that ages out of managed storage
-is retrained: at ~6.2 h that is cheaper than keeping a private duplicate of
-every checkpoint on NFS.
+Nothing is copied out of managed storage. A checkpoint that ages out is
+retrained: at ~6.2 h that is cheaper than keeping a private duplicate of every
+checkpoint on NFS.
 
 Training: ~6.2 h per task at 30,000 steps, so ~25 GPU-hours for four tasks.
 Evaluation is still unmeasured and is the open budget question.

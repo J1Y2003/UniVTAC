@@ -17,19 +17,19 @@ two tasks), the 17-D robot state, and the language instruction.
 | Protocol | 100 rollouts per task, UniVTAC's `1_000_000 * (1 + seed)` seeds |
 | Output | success rate per task, with a Wilson 95 % interval |
 
-Everything runs headlessly through `bundle-sbatch`. No script prompts, opens a
+Everything runs headlessly as Slurm batch jobs. No script prompts, opens a
 GUI, or needs a login-node GPU.
 
 ### Start here
 
 ```bash
-cp env.example.sh env.sh && chmod 600 env.sh   # paths + two tokens; gitignored
-source env.sh                                  # per session, not ~/.bashrc
-python scripts/preflight.py --deep             # checklist + the exact next command
+$EDITOR env.sh && chmod 600 env.sh   # paths + two tokens; gitignored
+source env.sh                        # per session, not ~/.bashrc
+mkdir -p logs                        # #SBATCH --output does not create it
 ```
 
-**[docs/RUNBOOK.md](docs/RUNBOOK.md) — the ordered sequence** from nothing to an
-evaluation number, each step labelled with where it runs and which environment.
+**[docs/USAGE.md](docs/USAGE.md) — a runnable example for each of the six
+scripts**, plus the site rules you have to satisfy yourself.
 
 [docs/BENCHMARK.md](docs/BENCHMARK.md) is the one to read before quoting a
 number: the evaluation protocol, the settings that move it, what to state
@@ -94,20 +94,27 @@ that is not the pinned `9.10.2.21` costs ~86x silently, which is why
 ```bash
 source env.sh
 
-# The benchmark: one finetune per task. --dry runs the full preflight,
-# probes the HF token against the gated repos, and submits nothing.
-bash slurm/submit_benchmark.sh --dry
-bash slurm/submit_benchmark.sh
+export TASK=insert_hole
 
-# Then, once a finetune finishes, one eval job per retained checkpoint.
-# Use a non-zero --seed-offset for anything you might select a checkpoint on.
-for N in 10000 20000 30000; do
-  bash slurm/eval_checkpoint.sh --task insert_hole --seed-offset 1 \
-      --checkpoint <output_dir>/checkpoint-$N
-done
+# Finetune. Every flag is yours to pass; see docs/USAGE.md for the full line.
+sbatch --job-name=univtac-groot-per-task-finetune-vision-only-$TASK \
+       --partition=sjw_alinlab --time=9:00:00 \
+  slurm/train.sbatch --dataset-path $DATA_ROOT/univtac-$TASK-baseline_finetuned \
+    --output-dir $OUTPUT_ROOT/$TASK-baseline_finetuned --num-gpus 1 \
+    --max-steps 30000 --save-steps 10000 --save-total-limit 4
+
+# Evaluate one checkpoint, on `background`. Use a non-zero --seed-offset for
+# anything you might select a checkpoint on.
+export GROOT_MODEL=$OUTPUT_ROOT/$TASK-baseline_finetuned/checkpoint-30000
+export EMBODIMENT_TAG=NEW_EMBODIMENT PORT=25555
+sbatch --job-name=univtac-groot-evaluate-one-checkpoint-$TASK-ckpt30000 \
+       --partition=background \
+  slurm/eval.sbatch --task $TASK --variant baseline_finetuned \
+    --univtac-root $UNIVTAC_ROOT --seed-offset 1 \
+    --output eval_result/$TASK-ckpt30000.jsonl
 
 # Aggregate (safe on a login node: reads scalars only)
-python scripts/compare_ablation.py --results-dir eval_result --json results.json
+python scripts/results_table.py eval_result
 ```
 
 Each eval writes `<result-dir>/<task>-<variant>/<task>-ckpt<N>-seed<offset>.json`
@@ -166,32 +173,21 @@ scripts/
   preflight.py                   Setup checklist; prints the next command
   check_cudnn.py                 cuDNN pin guard; runs inside every GPU job
   run_eval.py                    Headless eval driver
-  compare_ablation.py            Results table
+  results_table.py               Success rate per task, from the library
   convert_univtac_to_lerobot.py  UniVTAC HDF5 -> GR00T LeRobot v2
   wandb_report.py                Read a run's training + system metrics back
 slurm/
-  submit_benchmark.sh     THE ENTRY POINT: one finetune per task
-  benchmark_task.sbatch   What it submits; resumable, recipe-pinned
-  eval_checkpoint.sh      Evaluate ONE checkpoint; files a JSON in the library
-  eval_ablation.sbatch    Server + evaluator in one GPU job; requeue-safe
-  common.sh               Shared: the bundle-sbatch contract for the
-                          submitters, and the wckey + config guard every
-                          job script runs
-  download_data.sbatch    Fetch released demonstrations (CPU-only)
-  convert.sbatch          Dataset conversion (CPU-only, array-capable)
-  finetune.sbatch         GR00T finetune for one variant
-  smoke_test.sh           20 steps + 1 eval episode, isolated from real runs
-  install_univtac.sbatch  Batch-safe wrapper for UniVTAC's install.sh
-docs/RUNBOOK.md         Ordered: nothing -> an evaluation number  <- start here
+  train.sbatch            exec launch_finetune.py with your flags
+  train_bundle.sh         the same, through bundle-sbatch
+  eval.sbatch             server + evaluator in one GPU job
+  eval_bundle.sh          the same, through bundle-sbatch
+docs/USAGE.md           A runnable example for each script  <- start here
 docs/SETUP.md           Prerequisites, environments, common failures
 docs/STATUS.md          Current state, decisions in force, failure -> cause
 docs/BENCHMARK.md       The protocol and what moves the number
 docs/UPSTREAM.md        Every upstream fact this code relies on, with citations
 tests/                  No GPU, Isaac Sim, or gr00t needed
 ```
-
-`obs_adapter.py`, `spec.py`, `variants.py` and the converter also carry a
-`tactile` variant with a 113-D state. It is unused and pending removal.
 
 ## Tests
 

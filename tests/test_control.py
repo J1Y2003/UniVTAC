@@ -18,7 +18,6 @@ from univtac_groot.action_adapter import (
 from univtac_groot.metrics import (
     EpisodeResult,
     ResultWriter,
-    compare,
     read_jsonl,
     summarize,
     wilson_interval,
@@ -359,7 +358,7 @@ def test_wilson_interval_stays_inside_the_unit_range():
 
 def test_result_writer_roundtrips_jsonl_and_writes_a_summary(tmp_path):
     path = tmp_path / "r.jsonl"
-    with ResultWriter(path, {"variant": "tactile"}) as writer:
+    with ResultWriter(path, {"variant": "baseline_finetuned"}) as writer:
         writer.add(result(1, True))
         writer.add(result(2, False))
 
@@ -370,7 +369,7 @@ def test_result_writer_roundtrips_jsonl_and_writes_a_summary(tmp_path):
     assert recovered[0].success is True
 
     summary = (path.with_suffix(".summary.json")).read_text(encoding="utf-8")
-    assert '"variant": "tactile"' in summary
+    assert '"variant": "baseline_finetuned"' in summary
 
 
 def test_summarize_jsonl_recovers_a_partial_run(tmp_path):
@@ -382,18 +381,6 @@ def test_summarize_jsonl_recovers_a_partial_run(tmp_path):
         for i in range(4):
             writer.add(result(i, i % 2 == 0))
     assert summarize_jsonl(path)["successes"] == 2
-
-
-def test_compare_reports_delta_and_interval_overlap():
-    low = summarize([result(i, False) for i in range(40)])
-    high = summarize([result(i, True) for i in range(40)])
-    verdict = compare(low, high)
-    assert verdict["delta_pct_points"] == pytest.approx(100.0)
-    assert verdict["ci95_overlap"] is False
-
-    same = compare(low, low)
-    assert same["delta"] == 0.0
-    assert same["ci95_overlap"] is True
 
 
 # --------------------------------------------------------------------------- #

@@ -1,6 +1,6 @@
 # Setup: what must exist before you run anything
 
-> For the **ordered sequence** of commands, see [RUNBOOK.md](RUNBOOK.md), or run
+> For the **ordered sequence** of commands, see [USAGE.md](USAGE.md), or run
 > `python scripts/preflight.py`. This document explains the *why* behind each
 > prerequisite and lists failure modes.
 
@@ -157,7 +157,7 @@ hf auth login                       # writes $HF_HOME/token
 
 Two cautions:
 
-* **`HF_HOME` moves the token file too.** `slurm/eval_ablation.sbatch` defaults
+* **`HF_HOME` moves the token file too.** `slurm/eval_task.sbatch` defaults
   `HF_HOME` to scratch, so a token stored under the default
   `~/.cache/huggingface` is not visible inside the job. Exporting `HF_TOKEN`
   sidesteps this, and the job warns when neither is present.
@@ -192,7 +192,7 @@ export GROOT_PYTHON=/path/to/Isaac-GR00T/.venv/bin/python   # uv's venv
 ```
 
 `GROOT_PYTHON` is the **uv venv's** interpreter, not a system python — that is
-where `uv sync` installed `gr00t`. `slurm/eval_ablation.sbatch` sets
+where `uv sync` installed `gr00t`. `slurm/eval_task.sbatch` sets
 `PYTHONPATH=$REPO_ROOT` when launching the server so `univtac_groot.server` is
 importable alongside `gr00t`.
 
@@ -240,16 +240,7 @@ steps 5 and 6 — reloading the checkpoint per attempt is the main time sink.
 
 ## Training-outputs policy (Kakao cluster)
 
-**Superseded by `bundle-sbatch`.** Checkpoints no longer go to a path we
-choose. The launcher creates one output bundle per submission and injects
-
-```
-MODEL_OUTPUT_DIR = CODE_OUTPUT_DIR = <bundle>/code-output
-```
-
-and the guide is explicit that we must not supply `MODEL_OUTPUT_DIR`
-ourselves. The unified-folder roots below are what the previous policy
-required, kept only so an old path in someone's `env.sh` is recognisable:
+Checkpoints belong in the cluster's unified folder:
 
 | Cluster | NFS root |
 | --- | --- |
@@ -258,25 +249,21 @@ required, kept only so an old path in someone's `env.sh` is recognisable:
 | AWS (SKT) | `/fsx/rlwrld-unified-checkpoints` |
 
 Our area under the Kakao root is **`/rlwrld-unified-checkpoints/jimin/jaewon`**
-(`jimin` is the shared account, `jaewon` is ours within it). That is what a
-checkpoint path here should look like, and bundle-sbatch will only accept a
-`--checkpoint` under the managed root anyway -- one outside it needs consistent
-`.cache/huggingface/download/` metadata, which we do not fabricate.
+(`jimin` is the shared account, `jaewon` is ours within it). That is what
+`univtac_output_root` in `slurm/common.sh` resolves to, overridable with
+`OUTPUT_ROOT`, and `finetune.sbatch` refuses an `OUTPUT_DIR` outside
+`/rlwrld-unified-checkpoints` unless `ALLOW_NONSTANDARD_OUTPUT=1`.
 
-**Retention: evaluate a checkpoint while its bundle is live.** Bundle storage
-is managed, not permanent -- retention may migrate and later delete aged
-outputs, and the bundle window is undocumented (the old unified-folder one was
-4 days untouched before migration and 90 days to deletion).
+One directory per `<task>-<variant>`, the same path on every submission, which
+is what lets a resubmitted finetune find its own previous checkpoints and
+resume. See [USAGE.md](USAGE.md).
 
-Nothing here copies checkpoints out to a private directory. Duplicating ~26 GB
-per checkpoint onto NFS is the sprawl the storage policy exists to prevent, and
-it creates a second copy of the truth to keep consistent. If a checkpoint ages
-out, resubmit the finetune: ~6.2 h per task is cheaper than a shadow copy of
-everything.
-
-The consequence to plan around: resuming a finetune needs its predecessor's
-physical checkpoint directory as `--checkpoint`, so a bundle that has aged out
-cannot be resumed either -- it starts again.
+**Retention.** Managed storage is not permanent: retention may migrate and
+later delete aged outputs (the documented window was 4 days untouched before
+migration, 90 days to deletion). Nothing here copies checkpoints out to a
+private directory -- duplicating ~26 GB per checkpoint is the sprawl the
+storage policy exists to prevent. If a checkpoint ages out, resubmit the
+finetune: ~6.2 h per task is cheaper than a shadow copy of everything.
 
 ## Common failures
 
@@ -286,17 +273,16 @@ cannot be resumed either -- it starts again.
 | `wait_until_ready` times out after 900 s | Server died on load — **read the server log**, not the evaluator's |
 | `Embodiment tag 'NEW_EMBODIMENT' is not supported by this checkpoint` | Expected: `NEW_EMBODIMENT` needs a finetune, see [BENCHMARK.md](BENCHMARK.md) |
 | `state key mismatch: the checkpoint's embodiment declares ...` | Variant and checkpoint disagree; wrong `--variant` or wrong `--model-path` |
-| `--tactile-mode depth_pool needs observations.tactile to include 'depth'` | Add it to `UniVTAC/task_config/<config>.yml` |
 | `Could not load libtorchcodec ... versions 4, 5, 6 and 7` | FFmpeg 8 installed; downgrade to <8 |
 | Parquet files in `demo_data/` unreadable | Cloned Isaac-GR00T without `git-lfs` |
 | `CUDA_HOME is unset` during finetune | Run GR00T's `scripts/deployment/dgpu/install_deps.sh` |
 | `CUDNN_STATUS_NOT_INITIALIZED`, cuDNN debug log says `cudaGetDeviceCount(&count) != cudaSuccess` with `GPU=NULL` and compute capability `0.0` | **The cuDNN in the GR00T venv is not the one torch pins.** Reads like a driver problem and is not. Run `python scripts/preflight.py --deep`, which checks it; fix per [cuDNN](#3-cudnn-must-match-torchs-pin). |
 | `cuDNN error: CUDNN_STATUS_NOT_INITIALIZED` on the first `get_action` | The server inherited `LD_LIBRARY_PATH`/`CUDA_HOME` from the UniVTAC conda env (CUDA 12.4) while its torch is cu128. Launch it with `env -u LD_LIBRARY_PATH -u CUDA_HOME -u CUDA_PATH`; the job scripts do this automatically. Check free VRAM first, since genuine OOM reports the same error. |
 | `Arm motion planning failed on action 0` | cuRobo, not GR00T. Verify UniVTAC's own expert works: `bash collect_data.sh grasp_classify demo 0` |
-| `ValueError: Fast download using 'hf_transfer' is enabled (HF_HUB_ENABLE_HF_TRANSFER=1) but 'hf_transfer' package is not available` | The flag is a hard error, not a fallback, and it fires mid-download inside the *server* log so it reads like a checkpoint fault. `eval_ablation.sbatch` now probes `GROOT_PYTHON` for the package and only enables the flag when present. Override with `HF_HUB_ENABLE_HF_TRANSFER=0`, or install it: `$GROOT_PYTHON -m pip install hf_transfer` (worth it for the ~15 GB of weights). |
+| `ValueError: Fast download using 'hf_transfer' is enabled (HF_HUB_ENABLE_HF_TRANSFER=1) but 'hf_transfer' package is not available` | The flag is a hard error, not a fallback, and it fires mid-download inside the *server* log so it reads like a checkpoint fault. `eval_task.sbatch` now probes `GROOT_PYTHON` for the package and only enables the flag when present. Override with `HF_HUB_ENABLE_HF_TRANSFER=0`, or install it: `$GROOT_PYTHON -m pip install hf_transfer` (worth it for the ~15 GB of weights). |
 | `GPU 파티션에는 GPU를 요청한 잡만 제출할 수 있습니다` | A CPU-only job went to a GPU partition. Add `--partition=cpu`. Applies to `download_data.sbatch` and `convert.sbatch`; both set it in their headers, but an exported `SBATCH_PARTITION` beats a `#SBATCH` directive, so pass it on the command line too. |
-| `sbatch: error: ... Batch job submission failed: Unspecified error` | This cluster's submit filter enforces site rules and rejects the job before it queues. Known rules: a job name **longer than 50 characters**, `--wckey=project-short-name:sub_4dpdata` (the `project-short-name:` prefix is **literal**, not a placeholder -- without it the filter answers `WCKey를 project-short-name:<name> 형식으로 지정해야 합니다`), and **no** `--cpus-per-task` or `--mem` (jobs take the node's per-GPU defaults). `--time` is allowed, but must not exceed the partition maximum. `MODEL_OUTPUT_DIR` is still required but bundle-sbatch injects it -- do not set it yourself. There is no `--test-only` rehearsal any more (the launcher owns that flag); `bash slurm/submit_benchmark.sh --print` shows the exact command instead. |
-| Port already in use with concurrent jobs | `eval_ablation.sbatch` derives a per-job port from `SLURM_JOB_ID`; pass `PORT=` to override |
+| `sbatch: error: ... Batch job submission failed: Unspecified error` | This cluster's submit filter enforces site rules and rejects the job before it queues. Known rules: a job name **longer than 50 characters**, `--wckey=project-short-name:sub_4dpdata` (the `project-short-name:` prefix is **literal**, not a placeholder -- without it the filter answers `WCKey를 project-short-name:<name> 형식으로 지정해야 합니다`), and **no** `--cpus-per-task` or `--mem` (jobs take the node's per-GPU defaults). `--time` is allowed, but must not exceed the partition maximum. `bash slurm/submit_benchmark.sh --print` shows the exact command without submitting, and `sbatch --test-only` rehearses one. |
+| Port already in use with concurrent jobs | `eval_task.sbatch` derives a per-job port from `SLURM_JOB_ID`; pass `PORT=` to override |
 
 ---
 
@@ -309,13 +295,13 @@ that. What runs where:
 | Stage | Where | Cost |
 | --- | --- | --- |
 | `pytest tests -q` | **login node** | ~2 s, pure numpy, no GPU |
-| `scripts/compare_ablation.py` | **login node** | seconds; reads scalar JSONL only |
+| `scripts/results_table.py` | **login node** | seconds; reads the result JSONs only |
 | `--help`, editing, git | **login node** | free |
 | UniVTAC install (`scripts/install.sh`) | **compute node** | builds libuipc/cuRobo from source — hours of `nvcc`/CMake |
 | `data/download.sh` (assets) | **compute or transfer node** | large download + unpack |
 | Dataset conversion | **`slurm/convert.sbatch`** | CPU-only, minutes–hours (video re-encode) |
 | Finetuning | **`slurm/finetune.sbatch`** | GPU, hours |
-| Evaluation (server + Isaac Sim) | **`slurm/eval_ablation.sbatch`** | GPU, both processes in one job |
+| Evaluation (server + Isaac Sim) | **`slurm/eval_task.sbatch`** | GPU, both processes in one job |
 | `run_eval.py --dry-run` | **compute node** | needs the live server, so it is GPU work |
 
 Two entries deserve emphasis:
@@ -358,7 +344,7 @@ The eval job hosts Isaac Sim (scene plus offscreen rendering) *and* GR00T N1.7
 of VRAM for a single-GPU run. If your nodes are tighter than that, ask for two
 with `GPUS=2 bash slurm/eval_checkpoint.sh ...`.
 
-`eval_ablation.sbatch` counts the GPUs SLURM allocated and puts the model on
+`eval_task.sbatch` counts the GPUs SLURM allocated and puts the model on
 `cuda:1` and the simulator on `cuda:0` automatically; override with
 `SERVER_DEVICE=` / `SIM_DEVICE=` if you want a different split.
 
@@ -371,7 +357,7 @@ job step, run the server as its own job and pass its node name as
 
 ### Ordering the whole thing
 
-[RUNBOOK.md](RUNBOOK.md) is the ordered path. In short:
+[USAGE.md](USAGE.md) is the ordered path. In short:
 
 ```bash
 python scripts/preflight.py --deep       # login node, free
@@ -380,17 +366,18 @@ bash slurm/submit_benchmark.sh --dry     # full preflight, submits nothing
 bash slurm/submit_benchmark.sh           # one finetune per task
 # then, once a finetune finishes, one eval job per checkpoint:
 bash slurm/eval_checkpoint.sh --task insert_hole --seed-offset 1 \
-    --checkpoint <output_dir>/checkpoint-30000
+    --checkpoint $OUTPUT_ROOT/insert_hole-baseline_finetuned/checkpoint-30000
 ```
 
-**Nothing here is submitted with plain `sbatch` any more.** Every job goes
-through `bundle-sbatch`, which owns `--export`, `--output`, `--error` and
-`--parsable`; `slurm/common.sh` encodes that contract and the submitters
-use it. A hand-rolled `sbatch --export=ALL ...` is rejected.
+Jobs are submitted with plain `sbatch`. `slurm/common.sh` encodes the site
+rules -- the wckey, the job-name floor, the rejected options -- and validates
+before anything is sent. Submitting a job script by hand works too, as long as
+you pass `UNIVTAC_JOB_CONFIG=1` and the job's configuration; see the header of
+each script. [USAGE.md](USAGE.md) is the reference.
 
 Results are written to JSONL as each episode completes, so a job killed at its
-walltime still leaves a usable partial file — `compare_ablation.py` re-aggregates
-whatever is there, and `eval_ablation.sbatch` resumes from `max(seed)+1` rather
+walltime still leaves a usable partial file — `results_table.py` re-aggregates
+whatever is there, and `eval_task.sbatch` resumes from `max(seed)+1` rather
 than replaying the block.
 
 ## Note on video codecs

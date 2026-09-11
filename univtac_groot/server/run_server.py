@@ -14,10 +14,10 @@ Compared with ``python -m gr00t.eval.run_gr00t_server`` this adds one thing:
 ``--modality-config-path`` is honoured for a *model* policy, not only for the
 replay policy. That matters when a finetuned checkpoint was trained before its
 modality config was registered, or when the config lives in this repo
-(``configs/modality/univtac_tactile_config.py``) rather than in the checkpoint.
+(``configs/modality/univtac_baseline_config.py``) rather than in the checkpoint.
 If the checkpoint already carries the config, the flag is unnecessary.
 
-Usage (see ``slurm/eval_ablation.sbatch`` for the batch form)::
+Usage (see ``slurm/eval_task.sbatch`` for the batch form)::
 
     python -m univtac_groot.server.run_server \
         --model-path nvidia/GR00T-N1.7-3B \
@@ -25,9 +25,9 @@ Usage (see ``slurm/eval_ablation.sbatch`` for the batch form)::
         --port 5555
 
     python -m univtac_groot.server.run_server \
-        --model-path /ckpt/univtac-tactile/checkpoint-20000 \
+        --model-path /ckpt/insert_hole-baseline_finetuned/checkpoint-30000 \
         --embodiment-tag NEW_EMBODIMENT \
-        --modality-config-path configs/modality/univtac_tactile_config.py \
+        --modality-config-path configs/modality/univtac_baseline_config.py \
         --port 5556
 """
 

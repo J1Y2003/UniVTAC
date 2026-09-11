@@ -12,20 +12,9 @@ is not evidence of a problem, and this guard must never block a job it cannot
 actually indict.
 
 WHY THIS RUNS AUTOMATICALLY. A mismatched cuDNN reports
-CUDNN_STATUS_NOT_INITIALIZED, which reads exactly like a too-old driver. The
-tempting workaround is to stop using cuDNN, and that costs ~86x on GR00T's
-vision tower: Qwen3-VL's patch embed reshapes every visual patch into its own
-batch element, so its Conv3d runs over ~32,768 batch elements per step and
-without cuDNN ATen walks them with a per-element im2col loop from the main
-Python thread. A training step goes from 1.89 s to 170 s, and nothing in the
-stack complains -- it is merely slow. There is deliberately no flag in this
-repo to disable cuDNN, so this check plus the fix below is the whole story.
-
-Nothing here is cheap to check indirectly: `uv pip list` reports the pinned
-version even when the files on disk are a different release, and
-`torch.backends.cudnn.version()` reports the header it was built against, not
-the library that got loaded. Only asking the loaded library its own version
-distinguishes them.
+CUDNN_STATUS_NOT_INITIALIZED, which reads exactly like a too-old driver.
+A training step goes from 1.89 s to 170 s, and nothing in the stack complains;
+it is merely slow.
 """
 
 from __future__ import annotations

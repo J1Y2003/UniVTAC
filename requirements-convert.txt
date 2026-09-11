@@ -17,7 +17,7 @@
 h5py>=3.9              # reading UniVTAC's collection dumps
 pyarrow>=14.0          # writing LeRobot parquet shards
 imageio[ffmpeg]>=2.31  # writing the per-episode mp4s (opencv-python also works)
-# Required, not optional: UniVTAC stores camera and tactile RGB as one JPEG
+# Required, not optional: UniVTAC stores camera RGB as one JPEG
 # buffer per frame (HDF5Handler.img_to_stream uses cv2.imencode), so decoding
 # them back needs the same codec. See decode_image_stream in the converter.
 opencv-python-headless>=4.8

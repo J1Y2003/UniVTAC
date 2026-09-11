@@ -22,7 +22,7 @@ zmq = pytest.importorskip("zmq")
 msgpack = pytest.importorskip("msgpack")
 mnp = pytest.importorskip("msgpack_numpy")
 
-from univtac_groot.variants import tactile_spec  # noqa: E402
+from univtac_groot.variants import finetuned_baseline_spec  # noqa: E402
 from univtac_groot.client import Gr00tClient, PolicyServerError  # noqa: E402
 from univtac_groot.metrics import ResultWriter  # noqa: E402
 from univtac_groot.obs_adapter import ObsAdapter  # noqa: E402
@@ -47,8 +47,6 @@ MODALITY_CONFIGS = {
             "eef_9d",
             "joint_position",
             "gripper_position",
-            "tactile_left_tactile",
-            "tactile_right_tactile",
         ],
     },
     "action": {
@@ -188,11 +186,11 @@ def test_ping_and_modality_config_round_trip():
             assert client.ping() is True
             config = client.get_modality_config()
             assert len(config["action"]["delta_indices"]) == ACTION_HORIZON
-            assert "tactile_left_tactile" in config["state"]["modality_keys"]
+            assert "eef_9d" in config["state"]["modality_keys"]
 
 
 def test_get_action_returns_arrays_with_shapes_preserved():
-    spec = tactile_spec()
+    spec = finetuned_baseline_spec()
     frame = ObsAdapter(spec)(make_observation(), "insert the tube")
     stacked = ObsHistory(spec.video_delta_indices, spec.state_delta_indices).reset(frame)
 
@@ -308,7 +306,7 @@ class ScriptedEnv:
 
 def test_full_pipeline_over_the_socket(tmp_path):
     """Adapter -> history -> batching -> socket -> chunk -> action, for real."""
-    spec = tactile_spec()
+    spec = finetuned_baseline_spec()
 
     with FakePolicyServer() as server:
         with Gr00tClient(port=server.port, timeout_ms=20_000) as client:
@@ -319,7 +317,7 @@ def test_full_pipeline_over_the_socket(tmp_path):
             assert horizons["execution_horizon"] == 4
 
             env = ScriptedEnv(aligned, succeed_at=6)
-            writer = ResultWriter(tmp_path / "r.jsonl", {"variant": "tactile"})
+            writer = ResultWriter(tmp_path / "r.jsonl", {"variant": "baseline_finetuned"})
             summary = evaluate(
                 env,
                 BatchingPolicy(client, aligned),
@@ -337,19 +335,20 @@ def test_full_pipeline_over_the_socket(tmp_path):
 
 
 def test_resolve_spec_rejects_a_state_key_mismatch():
-    """The classic tactile-variant error: a baseline checkpoint cannot take tactile dims."""
-    from univtac_groot.variants import baseline_spec
+    """A checkpoint whose state layout differs from the spec must not silently run."""
+    from univtac_groot.spec import ObsSpec, StateField
 
     with FakePolicyServer() as server:
         with Gr00tClient(port=server.port, timeout_ms=5000) as client:
-            # The fake server advertises the tactile state keys; the baseline variant
-            # supplies only proprioception.
+            # The fake server advertises all three proprioception keys; this spec
+            # supplies only the end-effector pose.
+            partial = ObsSpec(
+                video_keys={"head": "head", "wrist": "wrist"},
+                state_fields=(StateField("eef_9d", "eef_9d", 9),),
+                language_key="annotation.human.task_description",
+            )
             with pytest.raises(ValueError, match="state key mismatch"):
-                resolve_spec_from_policy(
-                    client,
-                    baseline_spec(video_keys={"head": "head", "wrist": "wrist"}),
-                    log=lambda _m: None,
-                )
+                resolve_spec_from_policy(client, partial, log=lambda _m: None)
 
 
 def test_modality_config_envelope_is_unwrapped():

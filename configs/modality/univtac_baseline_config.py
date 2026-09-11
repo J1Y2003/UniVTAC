@@ -1,10 +1,9 @@
-"""GR00T modality config -- UniVTAC Franka Panda, **no tactile** (ablation variant A).
+"""GR00T modality config -- UniVTAC Franka Panda.
 
-Registered against ``EmbodimentTag.NEW_EMBODIMENT``, so this is the config for
-the *finetuned* baseline: the true control for the tactile variant, identical to it
-in every respect except the tactile state dimensions. (The zero-shot baseline
-uses the shipped ``oxe_droid_relative_eef_relative_joint`` config instead and
-needs no file here.)
+Registered against ``EmbodimentTag.NEW_EMBODIMENT``, so this is the config the
+reported model is finetuned under. (The zero-shot baseline uses the shipped
+``oxe_droid_relative_eef_relative_joint`` config instead and needs no file
+here.)
 
 Import path convention follows ``examples/SO100/so100_config.py``: importing
 this module registers the config as a side effect, which is what

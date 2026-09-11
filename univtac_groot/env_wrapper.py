@@ -9,10 +9,7 @@ can step it. This wrapper puts the standard surface back on top:
 * ``reset(seed=...) -> (obs, info)`` and ``step(action) -> (obs, reward, terminated, truncated, info)``;
 * a ``gymnasium.spaces.Dict`` observation space over GR00T's flat keys
   (``video.*``, ``state.*``, plus the language key) with the temporal axis
-  already folded in;
-* one ``use_tactile`` switch — really the :class:`~univtac_groot.spec.TactileSpec`
-  carried by the :class:`~univtac_groot.spec.ObsSpec` — that decides whether the
-  flattened tactile array is concatenated onto the state vector.
+  already folded in.
 
 ``gymnasium`` is imported lazily so the pure-numpy adapters stay importable on a
 login node with no RL stack installed; the wrapper degrades to a duck-typed
@@ -61,14 +58,10 @@ def build_observation_space(spec: ObsSpec):
     video_t = len(spec.video_delta_indices)
     state_t = len(spec.state_delta_indices)
     h, w = spec.image_size
-    th, tw = spec.tactile_image_size
 
     entries: dict[str, Any] = {}
     for key in spec.video_keys:
         entries[f"video.{key}"] = spaces.Box(0, 255, (video_t, h, w, 3), dtype=np.uint8)
-    if spec.tactile.mode == "video":
-        for key in spec.tactile_video_keys:
-            entries[f"video.{key}"] = spaces.Box(0, 255, (video_t, th, tw, 3), dtype=np.uint8)
     for f in spec.state_fields:
         entries[f"state.{f.key}"] = spaces.Box(
             -np.inf, np.inf, (state_t, f.dim), dtype=np.float32
@@ -139,11 +132,6 @@ class UniVTACGr00tEnv:
     def instruction(self) -> str:
         """The instruction sampled for the current episode."""
         return self._instruction
-
-    @property
-    def use_tactile(self) -> bool:
-        """Whether tactile is contributing to this variant's observations."""
-        return self.spec.tactile.enabled
 
     # -- gym API -----------------------------------------------------------
     def reset(

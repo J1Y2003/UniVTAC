@@ -14,8 +14,8 @@ interpreter never import torch or ``gr00t``:
 ``server``
     Runs in the *GR00T* environment and loads the model.
 
-See ``README.md`` for the two-process layout and ``docs/BENCHMARK.md`` for why
-the tactile variant needs a finetuned checkpoint.
+See ``README.md`` for the two-process layout and ``docs/BENCHMARK.md`` for the
+evaluation protocol.
 """
 
 from __future__ import annotations
@@ -23,9 +23,9 @@ from __future__ import annotations
 __version__ = "0.1.0"
 
 from .action_adapter import ActionAdapter, GripperConvention
-from .variants import VARIANTS, baseline_spec, build_spec, tactile_spec
+from .variants import VARIANTS, baseline_spec, build_spec
 from .history import ObsHistory
-from .metrics import EpisodeResult, ResultWriter, compare, summarize
+from .metrics import EpisodeResult, ResultWriter, summarize
 from .obs_adapter import ObsAdapter
 from .receding_horizon import RecedingHorizonController, resolve_horizons
 from .spec import (
@@ -33,7 +33,6 @@ from .spec import (
     MAX_STATE_DIM,
     ObsSpec,
     StateField,
-    TactileSpec,
 )
 
 __all__ = [
@@ -49,11 +48,8 @@ __all__ = [
     "RecedingHorizonController",
     "ResultWriter",
     "StateField",
-    "TactileSpec",
     "baseline_spec",
     "build_spec",
-    "compare",
     "resolve_horizons",
     "summarize",
-    "tactile_spec",
 ]

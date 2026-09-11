@@ -1,47 +1,30 @@
-"""The two ablation variants, as observation specs the whole pipeline shares.
+"""Observation specs, as the whole pipeline shares them.
 
-Both variants keep vision, language, proprioception and the embodiment id identical;
-they differ only in whether the UniVTAC tactile stream is folded into the 1-D
-state vector. That is the comparison the study is after, so the specs are built
-from one common proprioception layout to make accidental divergence impossible.
+Every spec carries vision, language, proprioception and the embodiment id. The
+17-D proprioception layout (``eef_9d`` 9 + ``joint_position`` 7 +
+``gripper_position`` 1) is built once, below, so the converter, the trainer and
+the evaluator cannot drift apart.
 
-Two things constrain what an variant may declare, both verified in the upstream
-source rather than assumed:
+The embodiment tag decides which spec applies, and GR00T's state projector is
+embodiment-conditioned:
 
-1.  **State width.** ``GR00T_N1d7Config.max_state_dim`` is 132. Proprioception
-    here is 17-D (``eef_9d`` 9 + ``joint_position`` 7 + ``gripper_position`` 1),
-    leaving 115 dims for tactile across all sensors. The default 8x6 pooling
-    grid spends 48 per sensor, 96 for the two-finger GelSight Mini setup, for a
-    113-D state.
-2.  **Embodiment tag.** Adding tactile dimensions changes the state layout, and
-    GR00T's state projector is embodiment-conditioned. Only ``NEW_EMBODIMENT``
-    (and the other ``FINETUNE_ONLY_TAGS``) can carry a custom layout, and those
-    tags ship in no released checkpoint — see
-    ``gr00t/data/embodiment_tags.py::FINETUNE_ONLY_TAGS``. So:
+* ``baseline`` runs zero-shot on ``nvidia/GR00T-N1.7-3B`` under
+  ``OXE_DROID_RELATIVE_EEF_RELATIVE_JOINT``, whose state keys (``eef_9d``,
+  ``gripper_position``, ``joint_position``) the UniVTAC Franka Panda maps onto
+  directly -- DROID is itself a Franka Panda. Smoke tests only.
+* ``baseline_finetuned`` is the reported model: the same layout finetuned under
+  ``NEW_EMBODIMENT`` with ``configs/modality/univtac_baseline_config.py``.
+  ``NEW_EMBODIMENT`` and the other ``FINETUNE_ONLY_TAGS`` ship in no released
+  checkpoint -- see ``gr00t/data/embodiment_tags.py``.
 
-    * the *baseline* variant runs zero-shot on ``nvidia/GR00T-N1.7-3B`` under
-      ``OXE_DROID_RELATIVE_EEF_RELATIVE_JOINT``, whose state keys
-      (``eef_9d``, ``gripper_position``, ``joint_position``) the UniVTAC Franka
-      Panda maps onto directly — DROID is itself a Franka Panda;
-    * the *tactile* variant requires a checkpoint finetuned under
-      ``NEW_EMBODIMENT`` with a matching modality config
-      (``configs/modality/univtac_tactile_config.py``).
-
-    A like-for-like study therefore finetunes both variants with the same recipe and
-    compares those two; the zero-shot baseline is a separate, useful reference
-    point, not the tactile variant's control. ``docs/BENCHMARK.md`` spells this out.
+``docs/BENCHMARK.md`` spells out the protocol.
 """
 
 from __future__ import annotations
 
 from dataclasses import replace
 
-from .spec import (
-    MAX_STATE_DIM,
-    ObsSpec,
-    StateField,
-    TactileSpec,
-)
+from .spec import ObsSpec, StateField
 
 # --------------------------------------------------------------------------- #
 # Language / video keys per embodiment tag
@@ -105,13 +88,6 @@ def video_keys_for_task(task: str) -> dict[str, str]:
         return dict(UNIVTAC_VIDEO_KEYS)
     return dict(HEAD_ONLY_VIDEO_KEYS)
 
-TACTILE_VIDEO_KEYS = {
-    "tactile_left": "left_tactile",
-    "tactile_right": "right_tactile",
-}
-"""Extra video streams for ``TactileSpec(mode='video')``."""
-
-
 # --------------------------------------------------------------------------- #
 # Proprioception layout, shared by both variants
 # --------------------------------------------------------------------------- #
@@ -124,27 +100,10 @@ PROPRIO_FIELDS: tuple[StateField, ...] = (
 """End-effector pose (xyz + rot6d), the 7 arm joints, and the gripper scalar."""
 
 PROPRIO_DIM = sum(f.dim for f in PROPRIO_FIELDS)  # 17
-TACTILE_BUDGET = MAX_STATE_DIM - PROPRIO_DIM  # 115
-
-
-def tactile_state_fields(tactile: TactileSpec) -> tuple[StateField, ...]:
-    """One state field per tactile sensor, named ``tactile_<sensor>``.
-
-    Keeping the sensors as separate modality keys (rather than one wide
-    ``tactile`` key) mirrors how the shipped configs split proprioception, and
-    lets ``meta/modality.json`` describe each sensor's slice independently.
-    """
-    if not tactile.in_state:
-        return ()
-    per_sensor = tactile.dims_per_sensor()
-    return tuple(
-        StateField(key=f"tactile_{name}", kind="tactile", dim=per_sensor)
-        for name in tactile.sensor_names
-    )
 
 
 # --------------------------------------------------------------------------- #
-# Variant builders
+# Spec builders
 # --------------------------------------------------------------------------- #
 
 
@@ -154,7 +113,7 @@ def baseline_spec(
     video_keys: dict[str, str] | None = None,
     image_size: tuple[int, int] = (256, 256),
 ) -> ObsSpec:
-    """Variant A -- vision + language + proprioception + embodiment id. No tactile.
+    """Vision + language + proprioception + embodiment id.
 
     Defaults target the zero-shot ``OXE_DROID_RELATIVE_EEF_RELATIVE_JOINT`` tag.
     ``video_delta_indices`` is left at ``(0,)`` here and overwritten from the
@@ -165,60 +124,15 @@ def baseline_spec(
         video_keys=dict(video_keys or DROID_VIDEO_KEYS),
         state_fields=PROPRIO_FIELDS,
         language_key=language_key,
-        tactile=TactileSpec(mode="none"),
         image_size=image_size,
-    )
-
-
-def tactile_spec(
-    *,
-    mode: str = "depth_pool",
-    sensor_names: tuple[str, ...] = ("left_tactile", "right_tactile"),
-    pool_grid: tuple[int, int] = (8, 6),
-    marker_pool: tuple[int, int] | None = (8, 6),
-    language_key: str = NEW_EMBODIMENT_LANGUAGE_KEY,
-    video_keys: dict[str, str] | None = None,
-    task: str | None = None,
-    image_size: tuple[int, int] = (256, 256),
-    tactile_image_size: tuple[int, int] = (256, 256),
-) -> ObsSpec:
-    if video_keys is None:
-        video_keys = video_keys_for_task(task) if task else UNIVTAC_VIDEO_KEYS
-    """Variant B -- the baseline plus the flattened UniVTAC tactile array in the state.
-
-    Args:
-        mode: ``'depth_pool'`` (pooled gel height map, the default),
-            ``'marker'`` (pooled marker-motion displacements), or ``'video'``
-            (tactile RGB as extra video streams, leaving the state untouched).
-        pool_grid: pooling grid for ``depth_pool``.
-        marker_pool: pooling grid for ``marker``.
-
-    Raises:
-        ValueError: the resulting state would exceed ``max_state_dim``; the
-            message reports the remaining budget.
-    """
-    tactile = TactileSpec(
-        mode=mode,  # type: ignore[arg-type]
-        sensor_names=sensor_names,
-        pool_grid=pool_grid,
-        marker_pool=marker_pool,
-    )
-    return ObsSpec(
-        video_keys=dict(video_keys or UNIVTAC_VIDEO_KEYS),
-        state_fields=PROPRIO_FIELDS + tactile_state_fields(tactile),
-        language_key=language_key,
-        tactile=tactile,
-        tactile_video_keys=dict(TACTILE_VIDEO_KEYS) if mode == "video" else {},
-        image_size=image_size,
-        tactile_image_size=tactile_image_size,
     )
 
 
 def finetuned_baseline_spec(*, task: str | None = None, **kwargs) -> ObsSpec:
-    """Variant A under ``NEW_EMBODIMENT``, i.e. the tactile variant's true control.
+    """The reported model: :func:`baseline_spec` under ``NEW_EMBODIMENT``.
 
-    Same proprioception and video keys as :func:`tactile_spec`, tactile removed,
-    so the only difference between the two finetunes is the tactile dimensions.
+    Same proprioception, but the per-task camera set and the language key our
+    finetune configs declare.
     """
     kwargs.setdefault("language_key", NEW_EMBODIMENT_LANGUAGE_KEY)
     if "video_keys" not in kwargs:
@@ -229,7 +143,6 @@ def finetuned_baseline_spec(*, task: str | None = None, **kwargs) -> ObsSpec:
 VARIANTS = {
     "baseline": baseline_spec,
     "baseline_finetuned": finetuned_baseline_spec,
-    "tactile": tactile_spec,
 }
 """Registry used by ``scripts/run_eval.py --variant`` and the deploy YAMLs."""
 

@@ -29,9 +29,7 @@ from .spec import (
     DEFAULT_GRIPPER_MAX_QPOS,
     N_EE_STATE,
     N_JOINT_STATE,
-    MarkerLayout,
     ObsSpec,
-    TactileSpec,
 )
 
 
@@ -102,35 +100,6 @@ def resize_nearest(image: np.ndarray, size: tuple[int, int]) -> np.ndarray:
     return np.ascontiguousarray(image[rows[:, None], cols[None, :]])
 
 
-def pool_2d(values: np.ndarray, grid: tuple[int, int]) -> np.ndarray:
-    """Average-pool a 2-D array down to ``grid`` = ``(rows, cols)``.
-
-    Uses ``np.add.reduceat`` over uneven bin edges, so any input resolution maps
-    onto any grid without requiring divisibility (a GelSight Mini height map is
-    320x240 or 480x480 depending on sensor type).
-    """
-    rows, cols = int(grid[0]), int(grid[1])
-    if rows <= 0 or cols <= 0:
-        raise ValueError(f"invalid pool grid {grid}")
-    arr = np.asarray(values, dtype=np.float32)
-    if arr.ndim != 2:
-        raise ValueError(f"pool_2d expects a 2-D array, got shape {arr.shape}")
-    src_h, src_w = arr.shape
-    if src_h < rows or src_w < cols:
-        # Upsample first so every output cell is backed by at least one source cell.
-        arr = resize_nearest(arr[..., None], (max(rows, src_h), max(cols, src_w)))[..., 0]
-        src_h, src_w = arr.shape
-
-    row_edges = np.linspace(0, src_h, rows + 1).astype(np.intp)
-    col_edges = np.linspace(0, src_w, cols + 1).astype(np.intp)
-    row_counts = np.diff(row_edges).astype(np.float32)
-    col_counts = np.diff(col_edges).astype(np.float32)
-
-    summed = np.add.reduceat(arr, row_edges[:-1], axis=0)
-    summed = np.add.reduceat(summed, col_edges[:-1], axis=1)
-    return (summed / row_counts[:, None] / col_counts[None, :]).astype(np.float32)
-
-
 def quat_wxyz_to_rot6d(quat: np.ndarray) -> np.ndarray:
     """Convert a ``(w, x, y, z)`` quaternion to the 6-D rotation representation.
 
@@ -151,175 +120,6 @@ def quat_wxyz_to_rot6d(quat: np.ndarray) -> np.ndarray:
     col0 = np.array([1 - 2 * (y * y + z * z), 2 * (x * y + w * z), 2 * (x * z - w * y)])
     col1 = np.array([2 * (x * y - w * z), 1 - 2 * (x * x + z * z), 2 * (y * z + w * x)])
     return np.concatenate([col0, col1]).astype(np.float32)
-
-
-# --------------------------------------------------------------------------- #
-# Tactile encoding
-# --------------------------------------------------------------------------- #
-
-
-def _resolve_sensor(tactile_obs: Mapping[str, Any], name: str) -> Mapping[str, Any]:
-    """Look up a tactile sensor, tolerating UniVTAC's naming variants.
-
-    ``policy/_base_data_preprocessor.py`` shows the same key existing as
-    ``left_tactile`` in current envs and ``left_gsmini`` in older HDF5 dumps;
-    ``envs/sensors/tactile.py`` names the sensor from ``TactileCfg.name``, which
-    tasks set per-sensor.
-    """
-    if name in tactile_obs:
-        return tactile_obs[name]
-    for alias in (
-        name.replace("_tactile", "_gsmini"),
-        name.replace("_gsmini", "_tactile"),
-        f"{name}_tactile",
-        f"{name}_gsmini",
-    ):
-        if alias in tactile_obs:
-            return tactile_obs[alias]
-    raise KeyError(
-        f"tactile sensor {name!r} not in observation['tactile'] "
-        f"(available: {sorted(tactile_obs)}). Set TactileSpec.sensor_names to match "
-        f"the names this task registers in envs/<task>.py."
-    )
-
-
-def reduce_marker_field(marker: np.ndarray, layout: MarkerLayout = "auto") -> np.ndarray:
-    """Reduce a TacEx marker-motion array to ``(n_markers, 2)`` displacements.
-
-    ``auto`` treats a trailing axis of width 4 as ``[x, y, dx, dy]`` and keeps
-    the last two columns, passes width 2 through unchanged, and otherwise keeps
-    the array as-is (``raw``).
-
-    One shape needs special handling. UniVTAC's released ``isaac45`` dumps store
-    ``tactile/<sensor>/marker`` as ``(N, 2, M, 2)`` -- per frame, a *pair* of
-    ``(M, 2)`` marker rasters. Flattening that to ``(2M, 2)`` would treat the
-    two rasters as twice as many markers and quietly destroy the signal, so a
-    leading axis of exactly 2 is differenced instead: ``arr[1] - arr[0]``.
-
-    That difference is an assumption about ordering (initial raster first,
-    current second) which UniVTAC does not document. It only affects
-    ``TactileMode='marker'``; the default ``depth_pool`` path does not use this
-    function. If you rely on marker mode, verify the sign against a frame where
-    the gripper is known to be in contact.
-    """
-    arr = to_numpy(marker).astype(np.float32)
-    if arr.ndim == 3 and arr.shape[0] == 2 and arr.shape[-1] == 2:
-        arr = arr[1] - arr[0]
-    arr = arr.reshape(-1, arr.shape[-1]) if arr.ndim > 1 else arr.reshape(-1, 1)
-    width = arr.shape[-1]
-
-    if layout == "auto":
-        layout = "dxdy" if width == 4 else ("dxdy" if width == 2 else "raw")
-    if layout == "dxdy":
-        if width == 4:
-            return np.ascontiguousarray(arr[:, 2:4])
-        if width == 2:
-            return np.ascontiguousarray(arr)
-        raise ValueError(
-            f"marker layout 'dxdy' needs a trailing axis of width 2 or 4, got {width}"
-        )
-    if layout == "xydxdy":
-        if width != 4:
-            raise ValueError(f"marker layout 'xydxdy' needs width 4, got {width}")
-        return np.ascontiguousarray(arr)
-    return np.ascontiguousarray(arr)
-
-
-def _marker_to_grid(displacements: np.ndarray, grid: tuple[int, int]) -> np.ndarray:
-    """Pool an ``(n_markers, 2)`` displacement field onto a ``grid`` of 2-D cells.
-
-    The marker set is a raster (GelSight Mini is ``marker_shape=(9, 7)``), but
-    the exact row/column order is not part of UniVTAC's public contract, so the
-    markers are laid out row-major onto a square-ish raster before pooling.
-    Pooling is order-tolerant in the sense that it always produces a fixed-width
-    vector; it is *not* a claim about which marker sits in which cell.
-    """
-    rows, cols = int(grid[0]), int(grid[1])
-    n = displacements.shape[0]
-    side_r = int(np.ceil(np.sqrt(n)))
-    side_c = int(np.ceil(n / side_r))
-    padded = np.zeros((side_r * side_c, 2), dtype=np.float32)
-    padded[:n] = displacements
-    raster = padded.reshape(side_r, side_c, 2)
-    pooled = np.stack(
-        [pool_2d(raster[..., 0], (rows, cols)), pool_2d(raster[..., 1], (rows, cols))],
-        axis=-1,
-    )
-    return pooled.reshape(-1).astype(np.float32)
-
-
-def encode_tactile_state(
-    tactile_obs: Mapping[str, Any],
-    spec: TactileSpec,
-) -> np.ndarray:
-    """Flatten UniVTAC tactile readings into the 1-D vector appended to the state.
-
-    Returns an empty array when tactile does not enter the state
-    (``mode`` in ``{'none', 'video'}``).
-
-    Raises:
-        KeyError: a configured sensor or data type is absent from the
-            observation. UniVTAC only populates the data types listed under
-            ``observations.tactile`` in the task config, so ``depth_pool``
-            requires ``'depth'`` and ``marker`` requires ``'marker'`` there.
-    """
-    if not spec.in_state:
-        return np.zeros((0,), dtype=np.float32)
-
-    chunks: list[np.ndarray] = []
-    for name in spec.sensor_names:
-        sensor = _resolve_sensor(tactile_obs, name)
-
-        if spec.mode == "depth_pool":
-            if "depth" not in sensor:
-                raise KeyError(
-                    f"tactile sensor {name!r} has no 'depth' entry (available: "
-                    f"{sorted(sensor)}). Add 'depth' to observations.tactile in the "
-                    f"UniVTAC task config to enable TactileSpec(mode='depth_pool')."
-                )
-            depth = to_numpy(sensor["depth"]).astype(np.float32)
-            depth = np.squeeze(depth)
-            if depth.ndim != 2:
-                raise ValueError(
-                    f"tactile depth for {name!r} must be a 2-D height map, got shape "
-                    f"{depth.shape}"
-                )
-            depth = np.nan_to_num(depth, nan=0.0, posinf=0.0, neginf=0.0)
-            lo, hi = spec.depth_clip
-            depth = np.clip(depth, lo, hi)
-            pooled = pool_2d(depth, spec.pool_grid).reshape(-1)
-            if spec.normalize and hi > lo:
-                pooled = 2.0 * (pooled - lo) / (hi - lo) - 1.0
-            chunks.append(pooled.astype(np.float32))
-
-        elif spec.mode == "marker":
-            if "marker" not in sensor:
-                raise KeyError(
-                    f"tactile sensor {name!r} has no 'marker' entry (available: "
-                    f"{sorted(sensor)}). Add 'marker' to observations.tactile in the "
-                    f"UniVTAC task config to enable TactileSpec(mode='marker')."
-                )
-            disp = reduce_marker_field(sensor["marker"], spec.marker_layout)
-            disp = np.nan_to_num(disp, nan=0.0, posinf=0.0, neginf=0.0)
-            if spec.marker_pool is None:
-                raise ValueError("TactileSpec(mode='marker') requires marker_pool.")
-            flat = _marker_to_grid(disp, spec.marker_pool)
-            if spec.normalize:
-                # Marker displacements are in pixels; tanh keeps the scale bounded
-                # without needing a calibration constant per sensor type.
-                flat = np.tanh(flat / 8.0)
-            chunks.append(flat.astype(np.float32))
-
-        else:  # pragma: no cover - guarded by TactileSpec.in_state
-            raise ValueError(f"unexpected tactile mode {spec.mode!r}")
-
-    out = np.concatenate(chunks) if chunks else np.zeros((0,), dtype=np.float32)
-    expected = spec.total_state_dims()
-    if out.shape[0] != expected:
-        raise ValueError(
-            f"tactile encoder produced {out.shape[0]} dims but TactileSpec expects {expected}"
-        )
-    return out
 
 
 # --------------------------------------------------------------------------- #
@@ -419,23 +219,9 @@ class ObsAdapter:
             gripper_max_qpos=self.gripper_max_qpos,
             normalize_gripper=self.normalize_gripper,
         )
-        tactile_vec: np.ndarray | None = None
-        if self.spec.tactile.in_state:
-            tactile_vec = encode_tactile_state(
-                observation.get("tactile", {}), self.spec.tactile
-            )
-
         out: dict[str, np.ndarray] = {}
-        tactile_cursor = 0
         for f in self.spec.state_fields:
-            if f.kind == "tactile":
-                assert tactile_vec is not None
-                chunk = tactile_vec[tactile_cursor : tactile_cursor + f.dim]
-                tactile_cursor += f.dim
-                value = chunk
-            else:
-                value = parts[f.kind]
-            value = np.asarray(value, dtype=np.float32).reshape(-1)
+            value = np.asarray(parts[f.kind], dtype=np.float32).reshape(-1)
             if value.shape[0] != f.dim:
                 raise ValueError(
                     f"state field {f.key!r} expects {f.dim} dims, produced {value.shape[0]}"
@@ -446,7 +232,6 @@ class ObsAdapter:
     def build_video(self, observation: Mapping[str, Any]) -> dict[str, np.ndarray]:
         """Build ``{video key: (H, W, 3) uint8}`` for one timestep."""
         cameras = observation.get("observation", {})
-        tactile = observation.get("tactile", {})
 
         out: dict[str, np.ndarray] = {}
         for gr00t_key, cam_name in self.spec.video_keys.items():
@@ -463,20 +248,6 @@ class ObsAdapter:
                 )
             img = as_uint8_hwc(cameras[cam_name]["rgb"])
             out[gr00t_key] = resize_nearest(img, self.spec.image_size)
-
-        if self.spec.tactile.mode == "video":
-            for gr00t_key, sensor_name in self.spec.tactile_video_keys.items():
-                sensor = _resolve_sensor(tactile, sensor_name)
-                # Prefer the marker overlay when present: it makes shear visible
-                # to an RGB encoder, which a bare gel image largely hides.
-                source = "rgb_marker" if "rgb_marker" in sensor else "rgb"
-                if source not in sensor:
-                    raise KeyError(
-                        f"tactile sensor {sensor_name!r} has neither 'rgb_marker' nor "
-                        f"'rgb' (available: {sorted(sensor)})."
-                    )
-                img = as_uint8_hwc(sensor[source])
-                out[gr00t_key] = resize_nearest(img, self.spec.tactile_image_size)
 
         return out
 
@@ -497,8 +268,7 @@ class ObsAdapter:
         fields = ", ".join(f"{f.key}({f.dim})" for f in self.spec.state_fields)
         return (
             f"video={sorted(self.spec.all_video_keys)} "
-            f"state_dim={self.spec.state_dim} [{fields}] "
-            f"tactile={self.spec.tactile.mode}"
+            f"state_dim={self.spec.state_dim} [{fields}]"
         )
 
 

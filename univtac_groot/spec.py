@@ -11,8 +11,6 @@ UniVTAC (``univtac/UniVTAC``)
 
           {
             'observation': {'head': {'rgb': HWC uint8}, 'wrist': {...}},
-            'tactile':     {'<name>': {'rgb':..., 'rgb_marker':..., 'depth':...,
-                                       'marker':..., 'pose':...}},
             'embodiment':  {'joint': (9,), 'ee': (7,)},
             'actor': {...}, 'step': int, 'atom': {...},
           }
@@ -38,7 +36,7 @@ GR00T N1.7 (``NVIDIA/Isaac-GR00T``)
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Literal
 
 import numpy as np
@@ -91,99 +89,10 @@ UNIVTAC_TASKS = (
 
 
 # --------------------------------------------------------------------------- #
-# Tactile handling
-# --------------------------------------------------------------------------- #
-
-TactileMode = Literal["none", "depth_pool", "marker", "video"]
-"""How the UniVTAC tactile stream enters the GR00T observation.
-
-``none``
-    Baseline. Tactile is dropped entirely; state is proprioception only.
-``depth_pool``
-    Ablation (default). The per-sensor ``depth`` height map is average-pooled to
-    a small grid, flattened, and concatenated onto the 1-D state vector.
-``marker``
-    Ablation. The per-sensor ``marker`` (marker-motion) field is reduced to 2-D
-    displacements, optionally pooled, flattened and concatenated onto the state.
-``video``
-    Ablation. Tactile RGB images are passed as *additional video streams*
-    instead of touching the state vector. This is the architecturally natural
-    route for UniVTAC's camera-based sensors (GelSight Mini / GF225 / XenseWS)
-    but it changes the video modality keys, so it needs its own finetune.
-"""
-
-MarkerLayout = Literal["auto", "dxdy", "xydxdy", "raw"]
-"""Interpretation of the trailing axis of the ``marker`` observation.
-
-TacEx marker-motion arrays are commonly ``(N, 4)`` as ``[x, y, dx, dy]`` or
-``(N, 2)`` as ``[dx, dy]``; ``auto`` picks ``dxdy`` for width 4 (taking the last
-two columns), passes width 2 through, and otherwise falls back to ``raw``.
-"""
-
-
-@dataclass(frozen=True)
-class TactileSpec:
-    """How to turn UniVTAC tactile observations into state dimensions.
-
-    Attributes:
-        mode: see :data:`TactileMode`.
-        sensor_names: tactile sensor keys to read, in this exact order, from
-            ``observation['tactile']``. UniVTAC names them per task; the
-            defaults cover the two-finger GelSight Mini setup and are matched
-            with the ``*_gsmini`` aliases seen in the HDF5 dumps.
-        pool_grid: ``(rows, cols)`` average-pool target for ``depth_pool`` (and
-            for ``marker`` when ``marker_pool`` is set).
-        marker_layout: see :data:`MarkerLayout`.
-        marker_pool: optional ``(rows, cols)`` pooling of the marker field,
-            which is needed because a full GelSight Mini marker grid is 9x7=64
-            markers x 2 = 128 dims and would not fit the state budget.
-        depth_clip: ``(lo, hi)`` clip applied to the raw height map before
-            normalisation, in the sensor's native units.
-        normalize: scale pooled tactile values into roughly ``[-1, 1]``.
-    """
-
-    mode: TactileMode = "none"
-    sensor_names: tuple[str, ...] = ("left_tactile", "right_tactile")
-    pool_grid: tuple[int, int] = (8, 6)
-    marker_layout: MarkerLayout = "auto"
-    marker_pool: tuple[int, int] | None = (8, 6)
-    depth_clip: tuple[float, float] = (-1.0, 1.0)
-    normalize: bool = True
-
-    @property
-    def enabled(self) -> bool:
-        """Whether tactile contributes anything at all."""
-        return self.mode != "none"
-
-    @property
-    def in_state(self) -> bool:
-        """Whether tactile is concatenated onto the 1-D state vector."""
-        return self.mode in ("depth_pool", "marker")
-
-    def dims_per_sensor(self) -> int:
-        """Number of state dimensions contributed by a single sensor."""
-        if not self.in_state:
-            return 0
-        rows, cols = self.pool_grid if self.mode == "depth_pool" else (self.marker_pool or (0, 0))
-        if self.mode == "marker":
-            if self.marker_pool is None:
-                raise ValueError(
-                    "TactileSpec(mode='marker') needs marker_pool to be set so the "
-                    "flattened marker field has a statically known width; got None."
-                )
-            return int(rows * cols * 2)  # 2 displacement components per cell
-        return int(rows * cols)
-
-    def total_state_dims(self) -> int:
-        """Number of state dimensions contributed by all sensors."""
-        return self.dims_per_sensor() * len(self.sensor_names)
-
-
-# --------------------------------------------------------------------------- #
 # Observation / state layout
 # --------------------------------------------------------------------------- #
 
-StateKind = Literal["eef_9d", "joint_position", "gripper_position", "tactile"]
+StateKind = Literal["eef_9d", "joint_position", "gripper_position"]
 
 
 @dataclass(frozen=True)
@@ -206,14 +115,10 @@ class ObsSpec:
     Attributes:
         video_keys: mapping ``gr00t video key -> UniVTAC camera name``, e.g.
             ``{"exterior_image_1_left": "head", "wrist_image_left": "wrist"}``.
-        tactile_video_keys: mapping ``gr00t video key -> tactile sensor name``,
-            only used when ``tactile.mode == 'video'``.
         state_fields: ordered state slices.
         language_key: the GR00T language modality key, e.g.
             ``annotation.language.language_instruction``.
-        tactile: see :class:`TactileSpec`.
         image_size: ``(height, width)`` every RGB stream is resized to.
-        tactile_image_size: ``(height, width)`` for tactile RGB streams.
         video_delta_indices: per-step frame offsets the policy expects
             (e.g. ``(-15, 0)`` for the DROID pretrain tag, ``(0,)`` typically
             for a fresh finetune). Resolved from the server at runtime.
@@ -223,10 +128,7 @@ class ObsSpec:
     video_keys: dict[str, str]
     state_fields: tuple[StateField, ...]
     language_key: str
-    tactile: TactileSpec = field(default_factory=TactileSpec)
-    tactile_video_keys: dict[str, str] = field(default_factory=dict)
     image_size: tuple[int, int] = (256, 256)
-    tactile_image_size: tuple[int, int] = (256, 256)
     video_delta_indices: tuple[int, ...] = (0,)
     state_delta_indices: tuple[int, ...] = (0,)
 
@@ -236,11 +138,8 @@ class ObsSpec:
     # -- derived -----------------------------------------------------------
     @property
     def all_video_keys(self) -> dict[str, str]:
-        """Visual plus (when enabled) tactile video streams."""
-        merged = dict(self.video_keys)
-        if self.tactile.mode == "video":
-            merged.update(self.tactile_video_keys)
-        return merged
+        """The video streams this spec declares."""
+        return dict(self.video_keys)
 
     @property
     def state_dim(self) -> int:
@@ -274,24 +173,8 @@ class ObsSpec:
         if self.state_dim > MAX_STATE_DIM:
             raise ValueError(
                 f"Concatenated state is {self.state_dim}-D but GR00T N1.7 caps it at "
-                f"max_state_dim={MAX_STATE_DIM} "
-                f"(gr00t/configs/model/gr00t_n1d7.py). Shrink TactileSpec.pool_grid / "
-                f"marker_pool: proprioception here is "
-                f"{self.state_dim - self.tactile.total_state_dims()}-D, leaving "
-                f"{MAX_STATE_DIM - (self.state_dim - self.tactile.total_state_dims())} "
-                f"dims for tactile across {len(self.tactile.sensor_names)} sensor(s)."
+                f"max_state_dim={MAX_STATE_DIM} (gr00t/configs/model/gr00t_n1d7.py)."
             )
-
-        tactile_declared = sum(f.dim for f in self.state_fields if f.kind == "tactile")
-        tactile_expected = self.tactile.total_state_dims()
-        if tactile_declared != tactile_expected:
-            raise ValueError(
-                f"ObsSpec declares {tactile_declared} tactile state dims but "
-                f"TactileSpec(mode={self.tactile.mode!r}) produces {tactile_expected}."
-            )
-
-        if self.tactile.mode == "video" and not self.tactile_video_keys:
-            raise ValueError("TactileSpec(mode='video') needs tactile_video_keys.")
 
         for name, deltas in (
             ("video_delta_indices", self.video_delta_indices),

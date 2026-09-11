@@ -6,11 +6,9 @@
 # The full dataset is ~400 GB. Only isaac45 is needed to finetune GR00T, at
 # ~24 GB per task; the default here is one task plus the checkpoints.
 #
-#   env TASKS=lift_bottle UNIVTAC_JOB_CONFIG=1 \
-#     bundle-sbatch --job-kind data_process --code-git-root "$REPO_ROOT" -- \
+#   env TASKS=lift_bottle sbatch --partition=cpu \
 #     --job-name=univtac-groot-download-univtac-demonstration-data-from-modelscope \
-#     --wckey=project-short-name:sub_4dpdata --partition=cpu -- \
-#     slurm/download_data.sbatch
+#     --wckey=project-short-name:sub_4dpdata slurm/download_data.sbatch
 #
 # TASKS="a b" for several, TASKS=all for all eight (~190 GB), TASKS=none
 # CHECKPOINT=1 for the encoder alone. modelscope resumes, so resubmitting after
@@ -47,10 +45,6 @@ if [[ -z "${REPO_ROOT:-}" ]]; then
   exit 2
 fi
 
-# Both runtime guards -- the wckey and the configuration sentinel -- live in one
-# place. shellcheck source=slurm/common.sh
-. "${REPO_ROOT}/slurm/common.sh"
-univtac_job_guard
 UNIVTAC_ROOT="${UNIVTAC_ROOT:?set UNIVTAC_ROOT to the UniVTAC checkout}"
 
 TASKS="${TASKS:-lift_bottle}"        # space-separated, or "all", or "none"
@@ -184,9 +178,9 @@ fi
 echo "----------------------------------------------------------"
 echo "[job] next steps:"
 for task in ${TASKS}; do
-  echo "  env TASK=${task} VARIANT=tactile RAW_DIR=${OUTPUT}/isaac${VERSION}/${task}/hdf5 UNIVTAC_JOB_CONFIG=1 \\"
-  echo "    bundle-sbatch --job-kind data_process --code-git-root ${REPO_ROOT} -- \\"
-  echo "    --job-name=univtac-groot-convert-univtac-hdf5-demonstrations-to-lerobot-v2 \\"
-  echo "    --wckey=project-short-name:sub_4dpdata --partition=cpu -- slurm/convert.sbatch"
+  echo "  \$UNIVTAC_PYTHON scripts/convert_univtac_to_lerobot.py --task ${task} \\"
+  echo "      --raw-dir ${OUTPUT}/${task}/${RAW_CONFIG} \\"
+  echo "      --out \$DATA_ROOT/univtac-${task}-baseline_finetuned \\"
+  echo "      --variant baseline_finetuned --univtac-root ${UNIVTAC_ROOT} --fps 20"
 done
 exit ${STATUS}

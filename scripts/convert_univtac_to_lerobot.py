@@ -1,11 +1,7 @@
 """Convert UniVTAC demonstration HDF5 into the GR00T LeRobot v2 format.
 
-Needed because the tactile ablation variant cannot run zero-shot: extra state
-dimensions require the ``NEW_EMBODIMENT`` tag, which ships in no released
-checkpoint (``gr00t/data/embodiment_tags.py::FINETUNE_ONLY_TAGS``). Run this on
-UniVTAC's collected demonstrations, then finetune both variants with the same recipe
-(``slurm/finetune.sbatch``) so the only difference between them is the tactile
-state dimensions.
+Run this on UniVTAC's collected demonstrations, then finetune with
+``slurm/finetune.sbatch``.
 
 Input — UniVTAC's raw collection dumps, keyed as in
 ``policy/_base_data_preprocessor.py``::
@@ -13,9 +9,6 @@ Input — UniVTAC's raw collection dumps, keyed as in
     data/<task>/<config>/<episode>.hdf5
       observation/head/rgb             (N,)  |S<max>  JPEG-encoded per frame
       observation/wrist/rgb            (N,)  |S<max>  JPEG-encoded per frame
-      tactile/<left|right>_gsmini/rgb_marker   (N,) |S<max>  JPEG-encoded
-      tactile/<left|right>_gsmini/depth        (N, 240, 320) float32
-      tactile/<left|right>_gsmini/marker       (N, 2, M, 2)  float32
       embodiment/joint                 (N, 9)  float32
       embodiment/ee                    (N, 7)  float32
 
@@ -36,9 +29,6 @@ must be matched exactly, or training and evaluation disagree silently:
   N-1 transitions. Every other per-frame array is truncated with ``[:-1]`` to
   stay aligned. Dumps that do carry the explicit pair are still accepted.
 
-(Older dumps name the sensors ``*_gsmini``, newer ones ``*_tactile``; both are
-accepted. The released ``isaac45`` data uses ``*_gsmini``.)
-
 Output — the layout in ``getting_started/data_preparation.md``::
 
     <out>/
@@ -53,8 +43,7 @@ evaluation agree dimension for dimension — the converter imports the same
 :class:`~univtac_groot.spec.ObsSpec` rather than restating the layout.
 
 Requires ``pyarrow`` and ``imageio[ffmpeg]`` (or ``opencv-python``) in whichever
-environment runs it; this is offline preprocessing, so run it as its own batch
-job, not on a login node.
+environment runs it.
 """
 
 from __future__ import annotations
@@ -71,15 +60,14 @@ _REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
 
-from univtac_groot.action_adapter import GripperConvention  # noqa: E402
-from univtac_groot.variants import build_spec, video_keys_for_task  # noqa: E402
-from univtac_groot.obs_adapter import (  # noqa: E402
+from univtac_groot.action_adapter import GripperConvention
+from univtac_groot.variants import build_spec, video_keys_for_task
+from univtac_groot.obs_adapter import ( 
     as_uint8_hwc,
-    encode_tactile_state,
     quat_wxyz_to_rot6d,
     resize_nearest,
 )
-from univtac_groot.spec import ObsSpec  # noqa: E402
+from univtac_groot.spec import ObsSpec
 
 CHUNK_SIZE = 1000
 """``info.json``'s ``chunks_size``; episodes are grouped ``chunk-{index // 1000}``."""
@@ -100,7 +88,7 @@ def _first_present(group: Any, candidates: Sequence[str]) -> str | None:
 def decode_image_stream(raw: Any, *, bgr_to_rgb: bool = True) -> list[np.ndarray]:
     """Decode a UniVTAC image dataset into a list of ``(H, W, 3)`` uint8 frames.
 
-    UniVTAC stores camera and tactile RGB as one JPEG buffer per frame
+    UniVTAC stores camera RGB as one JPEG buffer per frame
     (``HDF5Handler.img_to_stream``), so the dataset is ``(N,)`` of ``|S<max>``
     rather than an ``(N, H, W, 3)`` array. Mirrors ``stream_to_img``, with one
     deliberate difference: ``cv2.imdecode`` returns BGR, and GR00T's backbone
@@ -225,52 +213,12 @@ def read_episode(path: Path, spec: ObsSpec) -> dict[str, np.ndarray]:
                 [resize_nearest(img, spec.image_size) for img in frames]
             )
 
-        if spec.tactile.mode == "video":
-            for gr00t_key, sensor in spec.tactile_video_keys.items():
-                group = _tactile_group(f, sensor, path.name)
-                source = _first_present(group, ["rgb_marker", "rgb"])
-                if source is None:
-                    raise KeyError(
-                        f"{path.name}: tactile sensor {sensor!r} has no rgb_marker/rgb; "
-                        f"found {sorted(group.keys())}"
-                    )
-                frames = decode_image_stream(group[source][:n_frames])
-                out[f"video.{gr00t_key}"] = np.stack(
-                    [resize_nearest(img, spec.tactile_image_size) for img in frames]
-                )
-
-        # -- tactile state -------------------------------------------------
-        tactile_frames: np.ndarray | None = None
-        if spec.tactile.in_state:
-            needed = "depth" if spec.tactile.mode == "depth_pool" else "marker"
-            per_sensor = {}
-            for sensor in spec.tactile.sensor_names:
-                group = _tactile_group(f, sensor, path.name)
-                if needed not in group:
-                    raise KeyError(
-                        f"{path.name}: tactile sensor {sensor!r} has no {needed!r} "
-                        f"(found {sorted(group.keys())}). Re-collect with "
-                        f"'{needed}' in observations.tactile."
-                    )
-                per_sensor[sensor] = np.asarray(group[needed][:n_frames])
-            tactile_frames = np.stack(
-                [
-                    encode_tactile_state(
-                        {s: {needed: per_sensor[s][i]} for s in per_sensor},
-                        spec.tactile,
-                    )
-                    for i in range(n_frames)
-                ]
-            )
-
     # -- assemble the concatenated state / action --------------------------
     gripper = GripperConvention(invert=False)
     states, actions = [], []
     for i in range(n_frames):
         eef_9d = np.concatenate([ee[i][:3], quat_wxyz_to_rot6d(ee[i][3:7])])
         state = [eef_9d, joint_state[i][:7], [gripper.from_univtac(joint_state[i][7])]]
-        if tactile_frames is not None:
-            state.append(tactile_frames[i])
         states.append(np.concatenate([np.asarray(p, dtype=np.float32).reshape(-1) for p in state]))
         actions.append(
             np.concatenate(
@@ -290,18 +238,6 @@ def read_episode(path: Path, spec: ObsSpec) -> dict[str, np.ndarray]:
             f"ObsSpec declares {spec.state_dim}-D"
         )
     return out
-
-
-def _tactile_group(f: Any, sensor: str, filename: str) -> Any:
-    """Resolve a tactile sensor group, tolerating the ``*_gsmini`` alias."""
-    for name in (sensor, sensor.replace("_tactile", "_gsmini"), f"{sensor}_tactile"):
-        key = f"tactile/{name}"
-        if key in f:
-            return f[key]
-    available = sorted(f["tactile"].keys()) if "tactile" in f else []
-    raise KeyError(
-        f"{filename}: tactile sensor {sensor!r} not found (available: {available})"
-    )
 
 
 # --------------------------------------------------------------------------- #
@@ -438,9 +374,7 @@ def build_info_json(
         "task_index": {"dtype": "int64", "shape": [1], "names": None},
     }
     for key in spec.all_video_keys:
-        h, w = (
-            spec.tactile_image_size if key in spec.tactile_video_keys else spec.image_size
-        )
+        h, w = spec.image_size
         features[f"observation.images.{key}"] = {
             "dtype": "video",
             "shape": [h, w, 3],
@@ -541,16 +475,10 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--out", required=True, help="output dataset root")
     parser.add_argument(
         "--variant",
-        default="tactile",
-        choices=["baseline_finetuned", "tactile"],
+        default="baseline_finetuned",
+        choices=["baseline_finetuned"],
         help="state layout to emit; must match the variant you will finetune",
     )
-    parser.add_argument("--tactile-mode", default="depth_pool",
-                        choices=["depth_pool", "marker", "video"])
-    parser.add_argument("--tactile-sensors", nargs="+",
-                        default=["left_tactile", "right_tactile"])
-    parser.add_argument("--tactile-pool-grid", nargs=2, type=int, default=[8, 6],
-                        metavar=("ROWS", "COLS"))
     parser.add_argument("--episodes", type=int, default=None,
                         help="cap the number of episodes converted")
     parser.add_argument("--cameras", nargs="+", default=None, metavar="CAM",
@@ -576,7 +504,6 @@ def main(argv: list[str] | None = None) -> int:
     if args.episodes:
         episodes = episodes[: args.episodes]
 
-    grid = (int(args.tactile_pool_grid[0]), int(args.tactile_pool_grid[1]))
     spec_kwargs: dict[str, Any] = {"image_size": (args.image_size[0], args.image_size[1])}
     # Cameras are per task: two views for insert_tube and lift_bottle,
     # third-person only otherwise. Decided from the task rather than defaulted,
@@ -585,13 +512,6 @@ def main(argv: list[str] | None = None) -> int:
         spec_kwargs["video_keys"] = {c: c for c in args.cameras}
     else:
         spec_kwargs["video_keys"] = video_keys_for_task(args.task)
-    if args.variant == "tactile":
-        spec_kwargs.update(
-            mode=args.tactile_mode,
-            sensor_names=tuple(args.tactile_sensors),
-            pool_grid=grid,
-            marker_pool=grid,
-        )
     spec = build_spec(args.variant, **spec_kwargs)
 
     out_root = Path(args.out)

@@ -36,11 +36,9 @@ smoke tests.
 
 ```bash
 # Convert (RUNBOOK.md covers the download first). Once per task.
-env TASK=insert_hole VARIANT=baseline_finetuned TASK_CONFIG=clean \
-  UNIVTAC_JOB_CONFIG=1 bundle-sbatch --job-kind data_process \
-  --code-git-root $REPO_ROOT -- \
-  --job-name=univtac-groot-convert-univtac-hdf5-demonstrations-to-lerobot-v2 \
-  --wckey=project-short-name:sub_4dpdata --partition=cpu -- slurm/convert.sbatch
+env TASK=insert_hole TASK_CONFIG=clean UNIVTAC_JOB_CONFIG=1 \
+  sbatch --job-name=univtac-groot-convert-univtac-hdf5-demonstrations-to-lerobot-v2 \
+         --wckey=project-short-name:sub_4dpdata slurm/convert.sbatch
 
 # Finetune: 30,000 steps, retaining checkpoints 10k/20k/30k.
 TASKS=insert_hole EXTRA_TASKS="" bash slurm/submit_benchmark.sh
@@ -52,7 +50,7 @@ for N in 10000 20000 30000; do
 done
 
 # Table
-python scripts/compare_ablation.py --results-dir eval_result
+python scripts/results_table.py
 ```
 
 `benchmark_task.sbatch` pins the recipe (GPU count, `MAX_STEPS`, lr, weight
@@ -202,7 +200,7 @@ learns the deployment rate from the data.
 ## Reading the results
 
 Each eval writes `<result-dir>/<task>-<variant>/<task>-ckpt<N>-seed<offset>.json`,
-and `scripts/compare_ablation.py` aggregates a directory of them into per-task
+and `scripts/results_table.py` aggregates a directory of them into per-task
 and pooled success rates with Wilson 95 % intervals.
 
 At 100 episodes an interval is roughly ±10 points near 20 % and ±10 near 50 %,

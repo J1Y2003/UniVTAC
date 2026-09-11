@@ -7,10 +7,6 @@ files (JSONL + summary JSON) and per-variant SLURM jobs. If you would rather sta
 inside UniVTAC's own harness, use ``policy/GR00T`` with ``eval_policy.sh``
 instead; both share the same adapters.
 
-Never interactive: no prompts, no GUI, no ``input()``. Rendering is offscreen
-(``--headless``) and every parameter comes from flags or the environment, so it
-runs unchanged under ``sbatch``.
-
 Must run inside UniVTAC's conda environment, with the GR00T inference server
 already listening (``univtac_groot.server.run_server`` in the GR00T environment).
 
@@ -31,6 +27,25 @@ import os
 from pathlib import Path
 import sys
 import time
+import yaml
+import argparse as _argparse
+import importlib
+from typing import NamedTuple
+
+from univtac_groot.env_wrapper import UniVTACGr00tEnv
+from univtac_groot.variants import build_spec
+from univtac_groot.action_adapter import ActionAdapter, GripperConvention
+from univtac_groot.client import Gr00tClient
+from univtac_groot.metrics import ResultWriter
+from univtac_groot.rollout import (
+    BatchingPolicy,
+    RolloutConfig,
+    evaluate,
+    resolve_spec_from_policy,
+)
+
+from isaaclab.app import AppLauncher
+
 
 # Repo root on sys.path so ``univtac_groot`` imports when run as a script.
 _REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -47,41 +62,19 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--task", required=True, help="UniVTAC task name, e.g. insert_hole")
     parser.add_argument(
         "--task-config",
-        default="demo",
+        default="clean",
         help="stem of a file in UniVTAC/task_config (demo, contact, clean)",
     )
     parser.add_argument(
         "--variant",
         default="baseline",
-        choices=["baseline", "baseline_finetuned", "tactile"],
-        help="ablation variant; 'tactile' concatenates the tactile array onto the state",
+        choices=["baseline", "baseline_finetuned"],
+        help="'baseline_finetuned' is the reported model; 'baseline' is zero-shot",
     )
     parser.add_argument(
         "--univtac-root",
         default=os.environ.get("UNIVTAC_ROOT", "."),
         help="path to the UniVTAC checkout (must contain envs/ and task_config/)",
-    )
-
-    # -- tactile ----------------------------------------------------------
-    parser.add_argument(
-        "--tactile-mode",
-        default="depth_pool",
-        choices=["depth_pool", "marker", "video"],
-        help="how tactile enters the observation (--variant tactile only)",
-    )
-    parser.add_argument(
-        "--tactile-sensors",
-        nargs="+",
-        default=["left_tactile", "right_tactile"],
-        help="sensor names in observation['tactile']",
-    )
-    parser.add_argument(
-        "--tactile-pool-grid",
-        nargs=2,
-        type=int,
-        default=[8, 6],
-        metavar=("ROWS", "COLS"),
-        help="pooling grid per sensor; must match the checkpoint's modality config",
     )
 
     # -- server -----------------------------------------------------------
@@ -91,7 +84,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--startup-timeout",
         type=float,
-        default=900.0,
+        default=1800.0,
         help="seconds to wait for the server to finish loading the checkpoint",
     )
     parser.add_argument("--request-timeout-ms", type=int, default=120_000)
@@ -100,8 +93,9 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--execution-horizon",
         type=int,
-        default=None,
-        help="actions executed per chunk before re-planning; default = full chunk",
+        default=16,
+        help="actions executed per chunk before re-planning. Must be identical "
+             "across runs you compare: it sets how closed-loop the controller is",
     )
     parser.add_argument(
         "--action-type", default="qpos", choices=["qpos", "ee", "delta_ee"]
@@ -115,7 +109,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
 
     # -- episodes ---------------------------------------------------------
-    parser.add_argument("--episodes", type=int, default=50)
+    parser.add_argument("--episodes", type=int, default=100)
     parser.add_argument(
         "--start-seed",
         type=int,
@@ -142,6 +136,13 @@ def build_parser() -> argparse.ArgumentParser:
         "--device", default=None, help="Isaac Lab sim device, e.g. cuda:0"
     )
     parser.add_argument(
+        "--no-resume",
+        dest="resume",
+        action="store_false",
+        help="ignore any existing --output file and evaluate the full block again "
+             "(results are appended, so the tally will double-count)",
+    )
+    parser.add_argument(
         "--dry-run",
         action="store_true",
         help="build the spec and talk to the server, but do not start Isaac Sim",
@@ -155,7 +156,7 @@ def resolve_output(args: argparse.Namespace) -> Path:
     Defaults under ``$REPO_ROOT/eval_result`` rather than the working directory:
     the sbatch script runs this with cwd set to ``$UNIVTAC_ROOT``, so a
     cwd-relative default would scatter results into the UniVTAC checkout and
-    hide them from ``scripts/compare_ablation.py``.
+    hide them from ``scripts/results_table.py``.
     """
     if args.output:
         return Path(args.output).expanduser()
@@ -163,20 +164,89 @@ def resolve_output(args: argparse.Namespace) -> Path:
     return _REPO_ROOT / "eval_result" / args.variant / args.task / f"{stamp}.jsonl"
 
 
+class ResumeState(NamedTuple):
+    """What an existing results file says is still left to do."""
+
+    start_seed: int      # first seed not yet attempted
+    already_scored: int  # episodes that counted towards the budget
+
+
+def read_resume_state(output: Path, base_seed: int) -> ResumeState:
+    """Inspect an existing JSONL and work out where to continue.
+
+    `background` preempts with `PreemptMode=REQUEUE`, so a preempted job re-runs
+    this script with the same arguments and `ResultWriter` appends. Without this,
+    every preemption would add a fresh pass from the first seed and inflate the
+    tally.
+
+    Errored and skipped episodes consumed a seed but not the episode budget, so
+    the two are counted separately: a resumed run targets the same number of
+    *scored* episodes a clean run would.
+
+    Raises:
+        ValueError: the file exists but holds no readable episode. Refusing to
+            guess is deliberate -- appending a fresh pass would corrupt the tally.
+    """
+    max_seed, scored, seen = base_seed - 1, 0, set()
+    with open(output, encoding="utf-8") as fh:
+        for line in fh:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                row = json.loads(line)
+            except json.JSONDecodeError:
+                continue          # a kill mid-write leaves one truncated line
+            seed = row.get("seed")
+            if isinstance(seed, int):
+                max_seed = max(max_seed, seed)
+                if seed in seen:
+                    continue      # an earlier pass already counted this seed
+                seen.add(seed)
+            if not row.get("error") and not row.get("skipped"):
+                scored += 1
+    if not seen:
+        raise ValueError("no readable episodes in the file")
+    return ResumeState(start_seed=max_seed + 1, already_scored=scored)
+
+
+def apply_resume(args: argparse.Namespace, output: Path) -> bool:
+    """Adjust `args.start_seed` and `args.episodes` to continue an interrupted run.
+
+    Returns True when there is nothing left to do. Mutates `args` otherwise, so
+    everything downstream sees the reduced workload. An explicit `--start-seed`
+    from the caller wins.
+    """
+    if not args.resume or not output.exists() or output.stat().st_size == 0:
+        return False
+
+    base_seed = 1_000_000 * (1 + args.seed_offset)
+    try:
+        state = read_resume_state(output, base_seed)
+    except (OSError, ValueError) as exc:
+        raise SystemExit(
+            f"error: {output} exists but its resume state is unreadable ({exc}).\n"
+            f"       Move it aside to start over, or pass --no-resume."
+        ) from exc
+
+    if state.already_scored >= args.episodes:
+        print(f"[eval] {output} already holds {state.already_scored}/{args.episodes} "
+              f"scored episodes -- nothing left to run.")
+        return True
+
+    remaining = args.episodes - state.already_scored
+    if args.start_seed is None:
+        args.start_seed = state.start_seed
+    args.episodes = remaining
+    print(f"[eval] RESUMING: {state.already_scored} already scored; running "
+          f"{remaining} more from seed {args.start_seed}.")
+    return False
+
+
 def build_arm_spec(args: argparse.Namespace):
     """Build the observation spec for the requested variant."""
-    from univtac_groot.variants import build_spec
 
-    kwargs = {}
-    if args.variant == "tactile":
-        grid = (int(args.tactile_pool_grid[0]), int(args.tactile_pool_grid[1]))
-        kwargs = {
-            "mode": args.tactile_mode,
-            "sensor_names": tuple(args.tactile_sensors),
-            "pool_grid": grid,
-            "marker_pool": grid,
-        }
-    return build_spec(args.variant, task=args.task, **kwargs)
+    return build_spec(args.variant, task=args.task)
 
 
 def load_instructions(univtac_root: Path, task: str, kind: str = "seen") -> list[str] | None:
@@ -195,7 +265,6 @@ def load_instructions(univtac_root: Path, task: str, kind: str = "seen") -> list
 
 def load_task_config(univtac_root: Path, name: str) -> dict:
     """Read a ``UniVTAC/task_config/<name>.yml`` file."""
-    import yaml
 
     path = Path(name)
     if path.suffix not in (".yml", ".yaml"):
@@ -208,45 +277,21 @@ def load_task_config(univtac_root: Path, name: str) -> dict:
     return yaml.safe_load(path.read_text(encoding="utf-8")) or {}
 
 
-def check_tactile_available(task_config: dict, args: argparse.Namespace) -> None:
-    """Fail early if the task config does not expose the tactile data type needed.
-
-    UniVTAC only populates the data types listed under ``observations.tactile``
-    (``BaseTask._get_observations`` -> ``TactileManager.get_observations``), so a
-    missing entry would surface mid-episode as a ``KeyError`` on seed 1.
-    """
-    if args.variant != "tactile":
-        return
-    available = set((task_config.get("observations") or {}).get("tactile") or [])
-    needed = {"depth_pool": "depth", "marker": "marker", "video": "rgb"}[args.tactile_mode]
-    if needed not in available:
-        raise SystemExit(
-            f"--tactile-mode {args.tactile_mode} needs observations.tactile to include "
-            f"{needed!r}, but {args.task_config} lists {sorted(available) or 'nothing'}. "
-            f"Add it to UniVTAC/task_config/{args.task_config}.yml."
-        )
-
-
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     univtac_root = Path(args.univtac_root).resolve()
 
-    from univtac_groot.action_adapter import ActionAdapter, GripperConvention
-    from univtac_groot.client import Gr00tClient
-    from univtac_groot.metrics import ResultWriter
-    from univtac_groot.rollout import (
-        BatchingPolicy,
-        RolloutConfig,
-        evaluate,
-        resolve_spec_from_policy,
-    )
-
     task_config = load_task_config(univtac_root, args.task_config)
-    check_tactile_available(task_config, args)
 
     spec = build_arm_spec(args)
     output = resolve_output(args)
     print(f"[eval] variant={args.variant} task={args.task} -> {output}")
+
+    # Before anything expensive: a requeued job may have nothing left to do.
+    episodes_target = args.episodes
+    if apply_resume(args, output):
+        print(json.dumps(rewrite_summary(output, episodes_target), indent=2))
+        return 0
 
     # -- connect to the model ------------------------------------------------
     client = Gr00tClient(
@@ -275,13 +320,12 @@ def main(argv: list[str] | None = None) -> int:
         "variant": args.variant,
         "task": args.task,
         "task_config": args.task_config,
-        "tactile_mode": spec.tactile.mode,
         "state_dim": spec.state_dim,
         "state_keys": list(spec.state_keys),
         "video_keys": sorted(spec.all_video_keys),
         "action_type": args.action_type,
         "gripper_invert": gripper_invert,
-        "episodes_requested": args.episodes,
+        "episodes_requested": episodes_target,
         **{k: (list(v) if isinstance(v, tuple) else v) for k, v in horizons.items()},
     }
 
@@ -319,8 +363,41 @@ def main(argv: list[str] | None = None) -> int:
         client.close()
         close_simulation_app()
 
+    summary = rewrite_summary(output, episodes_target)
     print(json.dumps(summary, indent=2))
     return 0
+
+
+def rewrite_summary(output: Path, episodes_target: int) -> dict:
+    """Re-aggregate `<output>.summary.json` from the whole JSONL.
+
+    `ResultWriter.close()` only sees the episodes *this process* added, so after
+    a resume its summary would cover the final leg alone. Recomputing from the
+    file, deduplicated by seed, is the only way the number reflects every pass.
+    """
+    from univtac_groot.metrics import read_jsonl, summarize
+
+    rows = {r.seed: r for r in read_jsonl(output)}   # last write wins
+    path = output.with_suffix(".summary.json")
+    metadata: dict = {}
+    if path.exists():
+        try:
+            metadata = json.loads(path.read_text(encoding="utf-8"))
+        except json.JSONDecodeError:
+            metadata = {}
+    # Drop the aggregates; summarize() recomputes them. Everything else in the
+    # file is run-level context worth keeping.
+    for key in ("episodes_scored", "episodes_errored", "episodes_skipped",
+                "successes", "success_rate", "success_rate_pct", "mean_reward",
+                "mean_steps", "mean_steps_on_success", "truncated",
+                "success_rate_ci95", "wall_seconds", "skip_reasons", "errors"):
+        metadata.pop(key, None)
+    metadata["episodes_requested"] = episodes_target
+
+    summary = summarize(rows.values(), metadata=metadata)
+    path.write_text(json.dumps(summary, indent=2, ensure_ascii=False) + "\n",
+                    encoding="utf-8")
+    return summary
 
 
 def build_env(args, univtac_root: Path, spec, action_adapter, task_config: dict):  # noqa: C901
@@ -330,26 +407,16 @@ def build_env(args, univtac_root: Path, spec, action_adapter, task_config: dict)
     ``AppLauncher`` must run before anything imports ``envs.*``, because those
     modules import ``isaaclab``/``omni`` at module scope.
     """
-    import argparse as _argparse
 
     sys.path.insert(0, str(univtac_root))
 
-    from isaaclab.app import AppLauncher
 
     launcher_parser = _argparse.ArgumentParser()
     AppLauncher.add_app_launcher_args(launcher_parser)
     app_args = launcher_parser.parse_args([])
-    # `livestream = 2`, NOT `headless = True`, which is what eval_policy.py does.
-    # Both run without a display -- livestream implicitly forces headless -- but
-    # they load different Kit experience files, and only livestream's
-    # `isaaclab.python.rendering.kit` carries the extensions the camera-based
-    # GelSight sensors need. Under the headless kit their gel surface renders
-    # empty, `estimate_rigid_transform` gets zero points and returns a NaN
-    # translation, and the gelpads (which are robot collision bodies) land at a
-    # NaN-derived pose -- so cuRobo fails to plan the task's scripted pre-move
-    # for every seed, with "Arm motion planning failed on action 0".
-    app_args.livestream = 2
-    app_args.enable_cameras = True    # RGB + tactile rendering
+
+    app_args.livestream = 2           # essential, no idea why though.
+    app_args.enable_cameras = True    # offscreen RGB rendering
     app_args.num_envs = 1
     if args.device:
         app_args.device = args.device
@@ -357,7 +424,6 @@ def build_env(args, univtac_root: Path, spec, action_adapter, task_config: dict)
     global _SIMULATION_APP
     _SIMULATION_APP = AppLauncher(app_args).app
 
-    import importlib
 
     task_module = importlib.import_module(f"envs.{args.task}")
 
@@ -376,7 +442,6 @@ def build_env(args, univtac_root: Path, spec, action_adapter, task_config: dict)
 
     task = task_module.Task(env_cfg, mode="eval")
 
-    from univtac_groot.env_wrapper import UniVTACGr00tEnv
 
     env = UniVTACGr00tEnv(
         task,

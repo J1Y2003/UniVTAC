@@ -90,9 +90,9 @@ fails `check_observation` on the temporal dimension.
 | Image colour order | `cv2.imdecode(..., IMREAD_COLOR)` → **BGR**; no `cvtColor` anywhere, so UniVTAC's own ACT trains on BGR | `stream_to_img` |
 | State/action derivation | no `joint_state`/`joint_action` on disk — derived as `joint[:-1]` and `joint[1:]`, so an action is the **absolute next joint position** and N frames give N-1 transitions; all other arrays truncated `[:-1]` | `HDF5Handler.batch_gather_hdf5` |
 | `embodiment/joint` width | **9** (7 arm + 2 fingers) — note ACT's `train_config*.yml` declares `state_dim: 8` | verified on disk |
-| `tactile/*/depth` | `(N, 240, 320)` float32 — present in the released data, so `depth_pool` is viable | verified on disk |
+| `tactile/*/depth` | `(N, 240, 320)` float32 — present in the released data | verified on disk |
 | `tactile/*/marker` | `(N, 2, M, 2)` float32 (M=1200 for GelSight Mini in this release) — a *pair* of marker rasters per frame, not `(M, 2\|4)` | verified on disk |
-| Sensor name aliases | `left_tactile` (current) and `left_gsmini` (older dumps) | same file's fallback try/except |
+| Sensor name aliases | `left_tactile` (current) and `left_gsmini` (older dumps); the released `isaac45` data uses `*_gsmini` | verified on disk |
 | Prior VLA integration | SmolVLA runs behind a FastAPI service in its own venv | `policy/smolvla/deploy_policy.py` |
 
 ## Why two processes
@@ -116,10 +116,9 @@ Each of these is load-bearing and each contradicts a plausible first guess.
    is read from the live policy.
 
 3. **UniVTAC's tactile sensors are camera-based.** A reading is a 320x240
-   height map or a 64-marker motion field, not a small numeric array.
-   Flattening either raw exceeds the 132-D state cap, which is why
-   `TactileSpec` pools. UniVTAC is Franka Panda only — no other manipulator
-   appears anywhere in it.
+   height map or a 64-marker motion field, not a small numeric array, so
+   flattening either raw would exceed the 132-D state cap. UniVTAC is Franka
+   Panda only — no other manipulator appears anywhere in it.
 
 4. **`lerobot` is a dataset format here, not a library dependency.** GR00T N1.7
    ships its own `Gr00tPolicy` over `transformers`' `AutoModel`/`AutoProcessor`,
@@ -158,11 +157,6 @@ not write "the cluster's driver" as though it were one value.
 
 * **Gripper sign and scale** for a zero-shot checkpoint — configurable and
   documented, not guessed. See BENCHMARK.md, "Calibration you must check".
-* **`marker` layout** — TacEx marker-motion arrays are commonly `(N, 4)` as
-  `[x, y, dx, dy]` or `(N, 2)`; `MarkerLayout='auto'` infers from the trailing
-  width, and `reduce_marker_field` can be pinned explicitly. The row/column
-  order of the marker raster is not part of UniVTAC's public contract, so
-  `_marker_to_grid` pools rather than claiming a spatial layout.
 * **Video codec** — the demo dataset uses AV1; the converter writes H.264,
   which is far likelier to exist in a cluster ffmpeg build.
 * **Per-task camera sets** — `policy/task_settings.json` marks most tasks

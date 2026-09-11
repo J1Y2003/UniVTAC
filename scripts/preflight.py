@@ -486,35 +486,33 @@ WCKEY = "project-short-name:sub_4dpdata"
 """Required on every sbatch and srun here; the submit filter rejects jobs without it."""
 
 
-def check_bundle_sbatch(report: Report) -> None:
-    """``bundle-sbatch`` is on PATH, and ``MODEL_OUTPUT_DIR`` is NOT set.
+def check_submission(report: Report) -> None:
+    """How jobs get submitted: plain ``sbatch``, with ``bundle-sbatch`` optional.
 
-    Every job is submitted through the launcher now. It creates one output
-    bundle per submission and injects ``MODEL_OUTPUT_DIR`` = ``CODE_OUTPUT_DIR``
-    = ``<bundle>/code-output``; the guide is explicit that we must not supply
-    it. A leftover ``MODEL_OUTPUT_DIR`` in the shell (from ``env.sh``, written
-    for the old unified-folder policy) would be inherited by the job and could
-    send checkpoints somewhere the launcher does not know about, so it is worth
-    a warning rather than a shrug.
+    The scripts in ``slurm/`` submit with plain ``sbatch`` and choose their own
+    output root (see ``docs/SLURM_NOTES.md#output-root``). ``bundle-sbatch`` is
+    the infrastructure team's wrapper; support for it is kept in
+    ``slurm/common.sh`` but nothing here uses it, so its absence is not a
+    failure.
     """
+    # `sbatch` itself is reported by check_slurm, which knows whether this is a
+    # submit host.
     if shutil.which("bundle-sbatch"):
-        report.add(PASS, "bundle-sbatch", "on PATH")
+        report.add(PASS, "bundle-sbatch", "on PATH (optional; not the path used here)")
     else:
         report.add(
-            FAIL, "bundle-sbatch", "not on PATH -- nothing can be submitted",
-            "  Every job here goes through it; plain sbatch is not the\n"
-            "  supported path any more. See\n"
-            "  https://github.com/RLWRLD/bundle-sbatch",
+            SKIP, "bundle-sbatch", "not on PATH -- fine, nothing here uses it",
+            "  slurm/common.sh keeps support for it if you ever need it.",
         )
 
+    # Harmless now that nothing here reads it, but a leftover from the launcher
+    # era is worth surfacing so env.sh gets tidied.
     raw = os.environ.get("MODEL_OUTPUT_DIR", "").strip()
-    if not raw:
-        report.add(PASS, "MODEL_OUTPUT_DIR", "unset (the launcher injects it)")
-    else:
+    if raw:
         report.add(
-            WARN, "MODEL_OUTPUT_DIR", f"{raw} is set, but bundle-sbatch injects it",
-            "  unset MODEL_OUTPUT_DIR   # and drop it from env.sh\n"
-            "  Choosing a checkpoint path is the launcher's job now.",
+            SKIP, "MODEL_OUTPUT_DIR", f"{raw} is set but unused",
+            "  The scripts in slurm/ set OUTPUT_DIR themselves.\n"
+            "  Override the root with OUTPUT_ROOT or CKPT_ROOT instead.",
         )
 
 
@@ -555,19 +553,20 @@ def check_wckey(report: Report) -> None:
         report.add(
             WARN, "wckey",
             f"SBATCH_WCKEY unset -- fine, the submitters pass --wckey={WCKEY} "
-            f"on the bundle-sbatch command line; export it for ad-hoc use",
+            f"on the sbatch command line; export it for ad-hoc use",
         )
 
     if srun_key and srun_key != WCKEY:
         report.add(FAIL, "  SLURM_WCKEY", f"{srun_key!r} (want {WCKEY!r} or unset)",
-                   f"  unset SLURM_WCKEY   # or export SLURM_WCKEY={WCKEY}")
+                   "  unset SLURM_WCKEY   # never export it: it masks the\n"
+                   "                      # runtime check in every .sbatch")
     elif srun_key and not in_job:
         report.add(
             WARN, "  SLURM_WCKEY",
             "exported from your shell -- the job inherits it and it masks the "
             "runtime wckey check inside every .sbatch. Prefer `unset "
-            "SLURM_WCKEY`; the submitters pass --wckey on the bundle-sbatch "
-            "command line.",
+            "SLURM_WCKEY`; the submitters pass --wckey on the sbatch command "
+            "line.",
         )
 
 
@@ -575,7 +574,7 @@ def check_conda(report: Report) -> None:
     """Report the active conda environment.
 
     Which env is active decides what ``python`` means. This script and
-    ``compare_ablation.py`` only need numpy and belong in a dedicated env
+    ``results_table.py`` only need numpy and belong in a dedicated env
     (``univtac-groot``); the *evaluator* must run under the ``UniVTAC`` env, and
     the server under GR00T's uv venv. ``base`` is typically the cluster's shared
     environment -- installing into it affects other users, and it is the usual
@@ -622,7 +621,7 @@ def next_step(*, have_results: bool, deep: bool) -> str:
             "  # then follow docs/RUNBOOK.md step 4"
         )
     return (
-        "  python scripts/compare_ablation.py     # you have results; aggregate them\n"
+        "  python scripts/results_table.py        # you have results; aggregate them\n"
         "  # or run the benchmark: bash slurm/submit_benchmark.sh --dry"
     )
 
@@ -646,7 +645,7 @@ def main(argv: list[str] | None = None) -> int:
     report = Report()
     check_slurm(report)
     check_wckey(report)
-    check_bundle_sbatch(report)
+    check_submission(report)
     check_conda(report)
     check_repo(report)
     check_univtac(report)

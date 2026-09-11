@@ -13,7 +13,7 @@ claim.
 
 Usage:
     python scripts/wandb_report.py 164704
-    python scripts/wandb_report.py 164704 --project univtac-groot-ablation
+    python scripts/wandb_report.py 164704 --project univtac-groot
     python scripts/wandb_report.py 164704 --csv /tmp/run164704
 
 Needs WANDB_API_KEY in the environment (never `wandb login` on the shared
@@ -99,7 +99,7 @@ def main() -> int:
     ap.add_argument("match", help="substring of the run name or id, e.g. 164704")
     ap.add_argument("--entity", default=os.environ.get("WANDB_ENTITY"))
     ap.add_argument("--project", default=os.environ.get("WANDB_PROJECT",
-                                                        "univtac-groot-ablation"))
+                                                        "univtac-groot"))
     ap.add_argument("--csv", metavar="PREFIX",
                     help="also write PREFIX-train.csv and PREFIX-system.csv")
     args = ap.parse_args()

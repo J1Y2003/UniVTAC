@@ -220,33 +220,3 @@ def summarize_jsonl(path: str | Path, **metadata: Any) -> dict[str, Any]:
     return summarize(read_jsonl(path), metadata=metadata)
 
 
-def compare(baseline: Mapping[str, Any], tactile: Mapping[str, Any]) -> dict[str, Any]:
-    """Side-by-side of two run summaries, for the ablation table.
-
-    Reports the absolute difference in success rate and flags whether the two
-    Wilson intervals overlap. Non-overlapping intervals are a conservative
-    signal, not a hypothesis test: with per-task episode counts in the tens,
-    prefer reporting both intervals over claiming significance.
-    """
-    b_rate = float(baseline.get("success_rate", 0.0))
-    t_rate = float(tactile.get("success_rate", 0.0))
-    b_ci = baseline.get("success_rate_ci95")
-    t_ci = tactile.get("success_rate_ci95")
-
-    overlap: bool | None = None
-    if b_ci and t_ci:
-        overlap = not (b_ci[1] < t_ci[0] or t_ci[1] < b_ci[0])
-
-    return {
-        "baseline_success_rate": round(b_rate, 6),
-        "tactile_success_rate": round(t_rate, 6),
-        "delta": round(t_rate - b_rate, 6),
-        "delta_pct_points": round((t_rate - b_rate) * 100.0, 2),
-        "baseline_ci95": b_ci,
-        "tactile_ci95": t_ci,
-        "ci95_overlap": overlap,
-        "episodes": {
-            "baseline": baseline.get("episodes_scored"),
-            "tactile": tactile.get("episodes_scored"),
-        },
-    }

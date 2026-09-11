@@ -62,7 +62,7 @@ class RolloutConfig:
             the seed space forever.
     """
 
-    num_episodes: int = 50
+    num_episodes: int = 100
     start_seed: int | None = None
     seed_offset: int = 0
     max_seed: int | None = None
@@ -215,8 +215,8 @@ def evaluate(
 
     Raises:
         RuntimeError: ``config.max_consecutive_errors`` episodes raised in a
-            row, which indicates a misconfiguration (wrong embodiment tag,
-            missing tactile data type) rather than a hard seed.
+            row, which indicates a misconfiguration (e.g. a wrong embodiment
+            tag) rather than a hard seed.
     """
     config = config or RolloutConfig()
     scored = 0
@@ -339,9 +339,9 @@ def resolve_spec_from_policy(
     if expected_state and sorted(expected_state) != ours_state:
         raise ValueError(
             f"state key mismatch: the checkpoint's embodiment declares "
-            f"{sorted(expected_state)} but this variant supplies {ours_state}. A tactile "
-            f"variant needs a checkpoint finetuned with the matching modality config "
-            f"(configs/modality/univtac_tactile_config.py)."
+            f"{sorted(expected_state)} but this variant supplies {ours_state}. A "
+            f"finetuned variant needs a checkpoint trained with the matching modality "
+            f"config (configs/modality/univtac_baseline_config.py)."
         )
     if expected_language and spec.language_key not in expected_language:
         raise ValueError(
