@@ -1,6 +1,6 @@
 # Usage
 
-Six scripts. Each is a thin wrapper: you pass the flags, it runs the thing.
+Seven scripts. Each is a thin wrapper: you pass the flags, it runs the thing.
 
 | script | what it runs |
 | --- | --- |
@@ -8,7 +8,8 @@ Six scripts. Each is a thin wrapper: you pass the flags, it runs the thing.
 | `slurm/train_bundle.sh` | the same, through `bundle-sbatch` |
 | `slurm/eval.sbatch` | `univtac_groot.server.run_server` + `scripts/run_eval.py` |
 | `slurm/eval_bundle.sh` | the same, through `bundle-sbatch` |
-| `scripts/results_table.py` | success rate per run, from `*.summary.json` |
+| `scripts/results_table.py` | success rate per run, or `--pivot` for tasks x steps |
+| `scripts/results_plot.py` | the same numbers as a graph (needs matplotlib) |
 | `scripts/check_cudnn.py` | is cuDNN the version torch pins |
 
 ```bash
@@ -158,10 +159,40 @@ bash slurm/eval_bundle.sh "$GROOT_MODEL" -- \
 ```bash
 python scripts/results_table.py eval_result
 python scripts/results_table.py eval_result --json table.json
+python scripts/results_table.py eval_result/baseline_finetuned-50k --pivot
+python scripts/results_plot.py  eval_result/baseline_finetuned-50k --output sr.png
 ```
 
 Recursively finds every `*.summary.json` and prints one row each: task, scored
 episodes, success rate, Wilson 95 % interval, error and skip counts.
+
+`--pivot` reshapes those rows into tasks x checkpoint steps with SR% in the
+cells, plus a `mean` row -- the view the step-count decision is made on. The
+step is read from `ckpt<N>` (or `checkpoint-<N>`) in the run's path and the task
+from the summary's own `task` field, so a run whose path carries neither is
+listed by the flat table but cannot appear in the pivot.
+
+Two markers matter: `~` means fewer episodes were scored than requested, i.e.
+the run was cut short and the rate is over a smaller sample; `*` means more than
+one summary landed in that cell, which happens when you point it at a parent
+directory holding two experiments. The cell then shows whichever has more scored
+episodes, and both are named underneath. Point it at one experiment's directory
+to avoid the ambiguity entirely.
+
+The `mean` row is computed only over steps where *every* task reported, so it
+cannot move just because one task is missing a checkpoint.
+
+`results_plot.py` draws the same numbers: success rate against step, one line
+per task, CI95 as a shaded band, the mean heavier and dashed, and a vertical
+marker at the best mean. It needs matplotlib, which nothing else here requires
+-- `pip install --only-binary=:all: matplotlib` into the dev env, never into
+`(base)`. `results_table.py` stays standard-library-only.
+
+**The plot is for choosing one step count for all four tasks, not the best step
+per task.** At 100 episodes the interval is about +/-10 points, so a per-task
+argmax is mostly noise, and it is an asymmetric advantage over ACT's uniform
+4,000 steps. That choice is made on a disjoint seed block (`--seed-offset 1`),
+frozen, and applied uniformly. See docs/BENCHMARK.md, "Choosing the step count".
 
 ## 6. Check cuDNN
 

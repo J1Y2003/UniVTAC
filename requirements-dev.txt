@@ -13,3 +13,8 @@
 
 -r requirements-client.txt
 pytest>=7.4
+
+# Optional: only `scripts/results_plot.py` needs it, and `results_table.py`
+# covers the same numbers without it. Left commented because it roughly doubles
+# the install (pillow, fonttools, kiwisolver, contourpy come with it).
+# matplotlib>=3.7
