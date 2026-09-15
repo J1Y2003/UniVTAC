@@ -87,6 +87,8 @@ _OUTPUT_LINE = re.compile(r"^\[eval\] .*-> (.+)$")
 # path is wrong and the server then dies. Never read it as proof of anything.
 _MODEL_LINE = re.compile(r"^\[server\] loading (\S+) ")
 
+_UNANNOUNCED = "(output path not flushed yet)"
+
 
 def parse_elapsed(text: str) -> int:
     """squeue's %M (``3:04``, ``1:16:53``, ``2-03:04:05``) in seconds; -1 if unparsable."""
@@ -233,18 +235,25 @@ def audit(logs: Path, pattern: str) -> int:
         cause = scan(path)
         # Every cause we match kills the server before any episode is written.
         status = f"died: {cause[0]}" if cause else "ran"
-        key = str(jsonl) if jsonl else "(no results file announced)"
+        key = str(jsonl) if jsonl else _UNANNOUNCED
         groups.setdefault(key, []).append((jobid, status, model or "(none logged)"))
 
     mixed = 0
     for key in sorted(groups):
         entries = groups[key]
-        ran = {model for _, status, model in entries if status == "ran"}
-        on_disk = 0 if key.startswith("(") else count_seeds(Path(key))
-        flag = "  [MIXED]" if len(ran) > 1 else ""
-        if flag:
-            mixed += 1
-        print(f"\n{key}  --  {on_disk} episodes on disk{flag}")
+        if key == _UNANNOUNCED:
+            # Not a results file, so never a mixing verdict. `run_eval.py`
+            # announces its output early, but its stdout is block-buffered into
+            # the `.out`, so a job that is still running -- or was killed before
+            # the buffer flushed -- lands here regardless of what it wrote.
+            print(f"\n{len(entries)} job(s) have not flushed their output path yet "
+                  "(still running, or killed before stdout flushed):")
+        else:
+            ran = {model for _, status, model in entries if status == "ran"}
+            flag = "  [MIXED]" if len(ran) > 1 else ""
+            if flag:
+                mixed += 1
+            print(f"\n{key}  --  {count_seeds(Path(key))} episodes on disk{flag}")
         for jobid, status, model in sorted(entries):
             short = model.split("/jaewon/", 1)[-1]
             print(f"  {jobid:>8}  {status:<28}  {short}")
