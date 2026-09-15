@@ -602,9 +602,10 @@ def check_results(report: Report) -> bool:
         report.add(SKIP, "results", "none yet (expected before the first run)")
         return False
     variants = sorted(p.name for p in results.iterdir() if p.is_dir() and p.name != "raw")
-    files = list(results.rglob("*.jsonl"))
+    files = list(results.rglob("*.json"))
+    files = [f for f in files if not f.name.endswith(".summary.json")]
     if not files:
-        report.add(SKIP, "results", f"{results} exists but holds no .jsonl")
+        report.add(SKIP, "results", f"{results} exists but holds no results file")
         return False
     report.add(PASS, "results", f"{len(files)} file(s), variants={variants}")
     return True

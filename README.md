@@ -111,7 +111,7 @@ sbatch --job-name=univtac-groot-evaluate-one-checkpoint-$TASK-ckpt30000 \
        --partition=background \
   slurm/eval.sbatch --task $TASK --variant baseline_finetuned \
     --univtac-root $UNIVTAC_ROOT --seed-offset 1 \
-    --output eval_result/$TASK-ckpt30000.jsonl
+    --output eval_result/$TASK-ckpt30000.json
 
 # Aggregate (safe on a login node: reads scalars only)
 python scripts/results_table.py eval_result

@@ -87,7 +87,7 @@ sbatch --job-name=univtac-groot-evaluate-one-checkpoint-$TASK-ckpt30000 \
        --partition=background \
   slurm/eval.sbatch \
     --task $TASK --variant baseline_finetuned --univtac-root $UNIVTAC_ROOT \
-    --seed-offset 1 --output eval_result/$TASK-ckpt30000-seed1.jsonl
+    --seed-offset 1 --output eval_result/$TASK-ckpt30000-seed1.json
 ```
 
 Two processes in one job — the GR00T server (Python 3.12) and the UniVTAC
@@ -150,7 +150,7 @@ export JOB_NAME=univtac-groot-evaluate-one-checkpoint-$TASK-ckpt30000
 export PARTITION=background
 bash slurm/eval_bundle.sh "$GROOT_MODEL" -- \
     --task $TASK --variant baseline_finetuned --univtac-root $UNIVTAC_ROOT \
-    --seed-offset 1 --output eval_result/$TASK-ckpt30000-seed1.jsonl
+    --seed-offset 1 --output eval_result/$TASK-ckpt30000-seed1.json
 ```
 
 ## 5. Read the results

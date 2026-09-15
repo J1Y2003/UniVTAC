@@ -16,7 +16,7 @@ Example::
         --task insert_hole --task-config demo --variant baseline \
         --host 127.0.0.1 --port 5555 \
         --episodes 100 --execution-horizon 16 \
-        --output eval_result/baseline/insert_hole.jsonl
+        --output eval_result/baseline/insert_hole.json
 """
 
 from __future__ import annotations
@@ -130,7 +130,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--output",
         default=None,
-        help="results JSONL path; default eval_result/<variant>/<task>/<timestamp>.jsonl",
+        help="results JSONL path; default eval_result/<variant>/<task>/<timestamp>.json",
     )
     parser.add_argument(
         "--device", default=None, help="Isaac Lab sim device, e.g. cuda:0"
@@ -161,7 +161,7 @@ def resolve_output(args: argparse.Namespace) -> Path:
     if args.output:
         return Path(args.output).expanduser()
     stamp = time.strftime("%Y%m%d-%H%M%S")
-    return _REPO_ROOT / "eval_result" / args.variant / args.task / f"{stamp}.jsonl"
+    return _REPO_ROOT / "eval_result" / args.variant / args.task / f"{stamp}.json"
 
 
 class ResumeState(NamedTuple):
