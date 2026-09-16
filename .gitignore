@@ -4,6 +4,9 @@ __pycache__/
 eval_result/
 logs/
 *.log
+
+# results_plot.py's own default --output name; a generated artifact, not source
+sr_vs_steps.png
 .venv/
 .ruff_cache/
 env.sh
