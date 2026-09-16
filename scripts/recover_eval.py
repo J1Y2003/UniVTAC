@@ -126,7 +126,15 @@ def summarize_rows(rows: list[dict], metadata: dict, episodes_requested: int) ->
 
 
 def find_fragments(roots: list[Path]) -> tuple[dict[tuple, list[Path]], list[Path]]:
-    """Group every `*.jsonl` by (task, step, seed_offset); return unmatched too."""
+    """Group every `*.jsonl` by (variant, task, step, seed_offset).
+
+    The variant directory is part of the key: `baseline_finetuned/` and
+    `baseline_finetuned-50k/` are separate experiments whose `checkpoint-10000`
+    is a different set of weights, so their results must never be merged into
+    one run even though task/step/seed match. Merging *does* happen across
+    roots, which is the case worth recovering -- one relative and one absolute
+    `--output` for the same logical run land in two trees.
+    """
     groups: dict[tuple, list[Path]] = {}
     unmatched: list[Path] = []
     seen: set[Path] = set()
@@ -139,13 +147,51 @@ def find_fragments(roots: list[Path]) -> tuple[dict[tuple, list[Path]], list[Pat
             step = _STEP_RE.search(path.stem)
             seed = _SEED_RE.search(path.stem)
             task = path.parent.name
+            variant = path.parent.parent.name
             if not step or not seed:
                 unmatched.append(path)
                 continue
-            groups.setdefault((task, int(step.group(1)), int(seed.group(1))), []).append(path)
+            key = (variant, task, int(step.group(1)), int(seed.group(1)))
+            groups.setdefault(key, []).append(path)
     for key in groups:
         groups[key].sort(key=lambda p: p.stat().st_mtime)   # oldest first: later writes win
     return groups, unmatched
+
+
+def compare_variants(groups: dict[tuple, list[Path]]) -> list[tuple]:
+    """Same (task, step, seed-offset) evaluated under two variant directories.
+
+    Reports whether the shared seeds actually *agree*. Identical outcomes mean
+    one directory is a copy of the other and either can be discarded; outcomes
+    that disagree mean two genuinely different models were evaluated over the
+    same seeds, and picking the wrong directory silently reports the wrong
+    experiment's success rate.
+    """
+    by_run: dict[tuple, list[tuple]] = {}
+    for (variant, task, step, seed_offset), fragments in groups.items():
+        by_run.setdefault((task, step, seed_offset), []).append((variant, fragments))
+
+    findings = []
+    for run, variants in sorted(by_run.items()):
+        if len(variants) < 2:
+            continue
+        outcomes = []
+        for variant, fragments in sorted(variants):
+            merged: dict[int, dict] = {}
+            for frag in fragments:
+                for row in read_rows(frag)[0]:
+                    merged[row["seed"]] = row
+            outcomes.append((variant, merged))
+        for i in range(len(outcomes)):
+            for j in range(i + 1, len(outcomes)):
+                (va, ra), (vb, rb) = outcomes[i], outcomes[j]
+                shared = set(ra) & set(rb)
+                if not shared:
+                    continue
+                disagree = [s for s in sorted(shared)
+                            if bool(ra[s].get("success")) != bool(rb[s].get("success"))]
+                findings.append((run, va, vb, len(shared), disagree))
+    return findings
 
 
 def video_seeds(raw_dir: Path, task: str) -> set[int]:
@@ -190,10 +236,10 @@ def main() -> int:
     raw_dir = Path(args.raw_dir).expanduser() if args.raw_dir else None
     short = []
 
-    for (task, step, seed_offset), fragments in sorted(groups.items()):
+    for (variant, task, step, seed_offset), fragments in sorted(groups.items()):
         merged: dict[int, dict] = {}
         total_bad = 0
-        print(f"\n=== {task}  ckpt{step}  seed-offset {seed_offset} ===")
+        print(f"\n=== {variant}  {task}  ckpt{step}  seed-offset {seed_offset} ===")
         for frag in fragments:
             rows, bad = read_rows(frag)
             total_bad += bad
@@ -204,7 +250,7 @@ def main() -> int:
             print(f"  fragment {frag}: {len(rows)} row(s), {new} new seed(s){note}")
 
         rows = list(merged.values())
-        summary = summarize_rows(rows, {"task": task}, args.episodes)
+        summary = summarize_rows(rows, {"task": task, "variant": variant}, args.episodes)
         scored = summary["episodes_scored"]
         print(f"  merged: {len(rows)} unique seed(s) -> {scored} scored, "
               f"{summary['episodes_errored']} errored, {summary['episodes_skipped']} skipped, "
@@ -226,7 +272,7 @@ def main() -> int:
             need = args.episodes - scored
             next_seed = (max(merged) + 1) if merged else 1_000_000 * (1 + seed_offset)
             print(f"  SHORT by {need} scored episode(s); a resume would start at seed {next_seed}")
-            short.append((task, step, seed_offset, scored, need, next_seed))
+            short.append((variant, task, step, seed_offset, scored, need, next_seed))
         else:
             print("  COMPLETE -- no re-running needed")
 
@@ -245,6 +291,7 @@ def main() -> int:
             for key in _AGGREGATE_KEYS:
                 existing.pop(key, None)
             existing.setdefault("task", task)
+            existing.setdefault("variant", variant)
             summary_path.write_text(
                 json.dumps(summarize_rows(rows, existing, args.episodes),
                            indent=2, ensure_ascii=False) + "\n",
@@ -256,9 +303,24 @@ def main() -> int:
         for path in unmatched:
             print(f"  {path}")
 
+    findings = compare_variants(groups)
+    if findings:
+        print("\nSame task/checkpoint/seed-offset present under two variant directories "
+              "(NOT merged -- different variants can be different weights):")
+        for (task, step, seed_offset), va, vb, shared, disagree in findings:
+            verdict = ("identical outcomes -- one is a copy of the other"
+                       if not disagree
+                       else f"DISAGREE on {len(disagree)} of {shared} shared seed(s) "
+                            f"-- these are different models; pick one deliberately")
+            print(f"  {task} ckpt{step} seed{seed_offset}: {va} vs {vb}, "
+                  f"{shared} shared seed(s), {verdict}")
+            if disagree:
+                print(f"      first disagreeing seeds: {disagree[:10]}"
+                      f"{' ...' if len(disagree) > 10 else ''}")
+
     print(f"\n{len(groups)} run(s) scanned, {len(groups) - len(short)} complete, {len(short)} short.")
-    for task, step, seed_offset, scored, need, next_seed in short:
-        print(f"  {task} ckpt{step} seed{seed_offset}: {scored}/{args.episodes} "
+    for variant, task, step, seed_offset, scored, need, next_seed in short:
+        print(f"  {variant}/{task} ckpt{step} seed{seed_offset}: {scored}/{args.episodes} "
               f"(need {need}, resume at seed {next_seed})")
     if not args.write:
         print("\nreport only -- pass --write to merge fragments and regenerate summary.json")
