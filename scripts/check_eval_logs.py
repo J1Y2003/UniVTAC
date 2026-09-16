@@ -33,6 +33,23 @@ _LOG_RE = re.compile(
     r"-seed(?P<seed>\d+)-(?P<jobid>\d+)\.out$"
 )
 
+# run_eval.py's very first print (scripts/run_eval.py:288), before anything else
+# runs -- the one per-job fact every log carries regardless of how the job ended.
+_OUTPUT_PATH_RE = re.compile(r"^\[eval\] variant=\S+ task=\S+ -> (?P<path>.+)$", re.MULTILINE)
+
+
+def find_output_path(text: str) -> str | None:
+    """The `--output` path this job actually resolved to and wrote toward.
+
+    Episodes themselves are never logged (`evaluate()` only logs a skip or an
+    error), so this is the one thing worth cross-checking across every job in a
+    resubmission chain: if a manually-resubmitted job typo'd `--output`, its
+    episodes landed in a different file than the rest of the chain, and the
+    `.jsonl`-based count would look short with no other visible sign why.
+    """
+    m = _OUTPUT_PATH_RE.search(text)
+    return m.group("path") if m else None
+
 
 def find_last_json_object(text: str) -> dict | None:
     """The last balanced top-level `{...}` in `text` that parses and looks like
@@ -141,6 +158,28 @@ def main() -> int:
 
         if summary is None:
             rows_flagged.append((task, step, seed, last_jobid, last_path))
+
+    # Cross-check every job in each chain (not just the last) for a resolved
+    # --output path that doesn't match the rest of the chain -- see
+    # find_output_path()'s docstring for why this is the one thing logs can
+    # actually tell you.
+    path_mismatches = []
+    for (task, step, seed), jobs in sorted(groups.items(), key=lambda kv: (kv[0][0], kv[0][1], kv[0][2])):
+        by_path: dict[str, list[int]] = {}
+        for jobid, path in jobs:
+            resolved = find_output_path(path.read_text(encoding="utf-8", errors="replace"))
+            by_path.setdefault(resolved or "(not found in log)", []).append(jobid)
+        if len(by_path) > 1:
+            path_mismatches.append((task, step, seed, by_path))
+
+    if path_mismatches:
+        print("\nOutput-path mismatch within a resubmission chain -- these jobs did NOT "
+              "all write to the same file, so a .jsonl-based count will miss episodes "
+              "that landed elsewhere:")
+        for task, step, seed, by_path in path_mismatches:
+            print(f"\n  {task} ckpt{step} seed{seed}:")
+            for path, jobids in sorted(by_path.items(), key=lambda kv: -len(kv[1])):
+                print(f"      {path}  <- jobs {jobids}")
 
     if rows_flagged:
         print("\nJobs whose last attempt never printed a summary (check the .err too):")
