@@ -30,6 +30,12 @@ Nothing checks these for you.
 - **`export TASK=<task>`.** The modality config reads it at import to pick the
   camera set (two views for `insert_tube` and `lift_bottle`, third-person only
   otherwise). Both training and evaluation need it.
+- **`export MODEL_OUTPUT_DIR=/rlwrld-unified-checkpoints/jimin/...`** on every
+  submission, including evaluation. The submit filter rejects a job without it
+  (`❌ ERROR: MODEL_OUTPUT_DIR가 없습니다.`), which reads as the usual
+  "Unspecified error". `bundle-sbatch` injects it, so only plain `sbatch` hits
+  this. Nothing in `slurm/eval.sbatch` reads it — point it at the checkpoint
+  directory being evaluated and keep it inside the `jaewon` subtree.
 
 ---
 

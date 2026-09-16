@@ -169,6 +169,14 @@ unhelpful "Unspecified error":
   So: `--wckey` on every `sbatch` command line (added by `univtac_build` if
   you forget), a runtime re-check in every `.sbatch`, and
   `scripts/preflight.py` failing on a wrong `SBATCH_WCKEY`.
+- **`MODEL_OUTPUT_DIR` must be exported**, under
+  `/rlwrld-unified-checkpoints/$USER/...`, on **every** submission including
+  evaluation, or the filter answers
+  `❌ ERROR: MODEL_OUTPUT_DIR가 없습니다.` `bundle-sbatch` injects it, so only
+  plain `sbatch` trips on this, and a shell that once ran a bundle job hides it.
+  `slurm/eval.sbatch` never reads the value -- it is a filter formality, so
+  point it at the checkpoint directory being evaluated and keep it in the
+  `jaewon` subtree
 - **no** `--cpus-per-task` and **no** `--mem` — memory and CPUs are not
   specifiable here at all; a job takes the node's per-GPU defaults
 - `--time` is **allowed and usually worth setting**. A job without
