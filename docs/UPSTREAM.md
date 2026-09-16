@@ -83,6 +83,7 @@ fails `check_observation` on the temporal dimension.
 | Success signal | `check_success()` → bool, sets `eval_success`; **no shaped reward exists** | `BaseTask.take_action`, `check_success` |
 | Eval seeding | `1_000_000 * (1 + seed)`, walking consecutive seeds; errored episodes decrement `test_num` | `scripts/eval_policy.py::eval_policy` |
 | Env count | forced to 1 | `scripts/eval_policy.py` (`args_cli.num_envs = 1`) |
+| `task_config/clean.yml` writes video + scene dumps | `save_frequency: 2`, `video_frequency: 2` — both nonzero, so `run_eval.py`'s own `video_frequency = task_config.get("video_frequency", 0)` (`scripts/run_eval.py:437`, right under a comment claiming it's "off by default here") is overridden on. Every eval episode run under the default `--task-config clean` writes to `eval_result/raw/<variant>/<task>/<timestamp>/{scene,video}/`, one `.mp4` per episode named by its seed | verified on disk, `$UNIVTAC_ROOT/task_config/clean.yml` |
 | Policy contract | `Policy(args)` / `encode_obs` / `eval(task, obs)` / `reset` under `policy/<Name>/` + `deploy.yml` | `docs/Deploy.md` |
 | Bootstrap order | `AppLauncher` **must** run before importing `envs.*` | `scripts/eval_policy.py` (imports after `app_launcher`) |
 | HDF5 keys (on disk) | `observation/<cam>/rgb`, `tactile/<sensor>/{rgb,rgb_marker,depth,marker,pose}`, `embodiment/{joint,ee}`, `actor/<name>`, `step`, `atom/{id,tag}` | verified against `isaac45/lift_bottle/0.hdf5` |
@@ -163,6 +164,12 @@ not write "the cluster's driver" as though it were one value.
   `camera_type: head`, with `lift_can` and `insert_tube` as `all`. The variants
   request both `head` and `wrist`; drop `wrist` from `video_keys` for
   head-only tasks if the stream turns out to be absent.
+* **Pruning `eval_result/raw/`** — every eval job creates its own fresh
+  timestamped dump directory (`run_eval.py`'s `build_env`, stamped per process
+  start) and nothing ever deletes an old one, so repeated manual resubmissions
+  of the same checkpoint each leave their own set of videos/scene dumps behind.
+  15 GB measured for one dev sweep (2026-09-16). Delete stale timestamps by
+  hand; nothing here does it for you.
 
 ## The download layout is not what the preprocessor reads
 
