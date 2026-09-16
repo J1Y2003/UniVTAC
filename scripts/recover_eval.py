@@ -308,10 +308,15 @@ def main() -> int:
         print("\nSame task/checkpoint/seed-offset present under two variant directories "
               "(NOT merged -- different variants can be different weights):")
         for (task, step, seed_offset), va, vb, shared, disagree in findings:
+            # Only success flags are compared here, never provenance: a
+            # disagreement says the two directories are not copies, not *why*.
+            # Different weights and a stochastic action head both produce it --
+            # `scripts/eval_triage.py --audit` names the model behind each file.
             verdict = ("identical outcomes -- one is a copy of the other"
                        if not disagree
                        else f"DISAGREE on {len(disagree)} of {shared} shared seed(s) "
-                            f"-- these are different models; pick one deliberately")
+                            f"-- not copies; run eval_triage.py --audit to see whether "
+                            f"different checkpoints produced them")
             print(f"  {task} ckpt{step} seed{seed_offset}: {va} vs {vb}, "
                   f"{shared} shared seed(s), {verdict}")
             if disagree:
