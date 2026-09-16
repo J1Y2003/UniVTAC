@@ -238,11 +238,12 @@ def main() -> int:
 
     for (variant, task, step, seed_offset), fragments in sorted(groups.items()):
         merged: dict[int, dict] = {}
-        total_bad = 0
+        total_bad = total_rows = 0
         print(f"\n=== {variant}  {task}  ckpt{step}  seed-offset {seed_offset} ===")
         for frag in fragments:
             rows, bad = read_rows(frag)
             total_bad += bad
+            total_rows += len(rows)
             new = sum(1 for r in rows if r["seed"] not in merged)
             for row in rows:
                 merged[row["seed"]] = row          # last write per seed wins
@@ -255,6 +256,13 @@ def main() -> int:
         print(f"  merged: {len(rows)} unique seed(s) -> {scored} scored, "
               f"{summary['episodes_errored']} errored, {summary['episodes_skipped']} skipped, "
               f"SR {summary['success_rate_pct']}%")
+
+        # A hole is a seed the run walked past without leaving a row -- an
+        # episode whose result line was lost, as opposed to one never attempted.
+        holes = [s for s in range(min(merged), max(merged)) if s not in merged] if merged else []
+        if holes:
+            print(f"  {len(holes)} seed hole(s) inside the covered range "
+                  f"{min(merged)}-{max(merged)}: {holes[:12]}{' ...' if len(holes) > 12 else ''}")
 
         if len(fragments) > 1:
             print(f"  NOTE: {len(fragments)} fragments merged -- these episodes were split "
@@ -278,9 +286,15 @@ def main() -> int:
 
         if args.write:
             target = fragments[-1]
-            target.write_text(
-                "".join(json.dumps(merged[s], ensure_ascii=False) + "\n" for s in sorted(merged)),
-                encoding="utf-8")
+            # Only rewrite the JSONL when merging actually changed something.
+            # One fragment with no duplicate seeds is already canonical, and
+            # rewriting the only copy of the data buys nothing but risk.
+            if len(fragments) > 1 or total_rows > len(merged):
+                target.write_text(
+                    "".join(json.dumps(merged[s], ensure_ascii=False) + "\n"
+                            for s in sorted(merged)),
+                    encoding="utf-8")
+                print(f"  rewrote {target} ({len(merged)} rows, was {total_rows})")
             summary_path = target.with_suffix(".summary.json")
             existing = {}
             if summary_path.exists():
@@ -296,7 +310,7 @@ def main() -> int:
                 json.dumps(summarize_rows(rows, existing, args.episodes),
                            indent=2, ensure_ascii=False) + "\n",
                 encoding="utf-8")
-            print(f"  wrote {target} ({len(merged)} rows) and {summary_path}")
+            print(f"  wrote {summary_path}")
 
     if unmatched:
         print("\nJSONL files skipped (no ckpt<N>/seed<N> in the filename):")
