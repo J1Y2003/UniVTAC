@@ -18,10 +18,12 @@ must be matched exactly, or training and evaluation disagree silently:
 * **Images are JPEG byte streams, not arrays.** Any dataset whose final path
   segment contains ``rgb`` holds one encoded buffer per frame
   (``dict_to_hdf5`` writes them with ``cv2.imencode('.jpg', ...)``).
-  ``stream_to_img`` decodes with ``cv2.IMREAD_COLOR``, which yields **BGR**;
-  UniVTAC's own ACT pipeline then trains on BGR. GR00T's vision backbone
-  expects RGB, so this converter swaps the channels -- see
-  ``decode_image_stream``.
+  ``stream_to_img`` decodes with ``cv2.IMREAD_COLOR``, whose return order is
+  BGR -- but the bytes on disk were written from an RGB array through
+  ``cv2.imencode``, which assumes BGR input, so the two transpositions cancel
+  and **the decoded array is already true RGB**. Pass it straight through; a
+  "BGR to RGB" swap here inverts red and blue against the simulator that
+  evaluation renders from. See ``decode_image_stream``.
 * **State and action are a one-step shift of a single array.** There is no
   ``joint_state``/``joint_action`` pair on disk;
   ``batch_gather_hdf5`` derives them as ``joint[:-1]`` and ``joint[1:]``, so an
@@ -85,14 +87,21 @@ def _first_present(group: Any, candidates: Sequence[str]) -> str | None:
     return None
 
 
-def decode_image_stream(raw: Any, *, bgr_to_rgb: bool = True) -> list[np.ndarray]:
+def decode_image_stream(raw: Any) -> list[np.ndarray]:
     """Decode a UniVTAC image dataset into a list of ``(H, W, 3)`` uint8 frames.
 
     UniVTAC stores camera RGB as one JPEG buffer per frame
     (``HDF5Handler.img_to_stream``), so the dataset is ``(N,)`` of ``|S<max>``
-    rather than an ``(N, H, W, 3)`` array. Mirrors ``stream_to_img``, with one
-    deliberate difference: ``cv2.imdecode`` returns BGR, and GR00T's backbone
-    expects RGB, so the channels are swapped by default.
+    rather than an ``(N, H, W, 3)`` array. Mirrors ``stream_to_img`` exactly.
+
+    **The decoded array is already true RGB -- do not "convert BGR to RGB".**
+    The encode side transposed the channels first: `dict_to_hdf5` hands Isaac
+    Sim's RGB array to ``cv2.imencode``, which treats its input as BGR, so the
+    JPEG on disk holds red in its blue channel. ``imdecode``'s BGR-ordered
+    return cancels that exactly. A swap here trained every checkpoint on
+    red/blue-inverted images while evaluation fed the policy correct ones --
+    see docs/UPSTREAM.md, "Image colour order, relative to the scene". The
+    UniVTAC paper's tables are orange; a blue table means this went wrong.
 
     Accepts an already-decoded array too, so a re-exported dump still works.
     """
@@ -128,8 +137,6 @@ def decode_image_stream(raw: Any, *, bgr_to_rgb: bool = True) -> list[np.ndarray
         image = cv2.imdecode(payload, cv2.IMREAD_COLOR)
         if image is None:
             raise ValueError(f"frame {index}: cv2.imdecode failed on a {payload.size}-byte buffer")
-        if bgr_to_rgb:
-            image = image[..., ::-1]
         frames.append(np.ascontiguousarray(image))
     return frames
 
