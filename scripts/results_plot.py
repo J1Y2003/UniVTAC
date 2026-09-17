@@ -2,10 +2,13 @@
 """Success rate vs checkpoint step, one line per task, from `*.summary.json`.
 
     python scripts/results_plot.py eval_result/baseline_finetuned-50k
+    python scripts/results_plot.py eval_result/baseline_finetuned-50k --seed-offset 1
     python scripts/results_plot.py eval_result/baseline_finetuned-50k --output sr.png
 
 Reads the same files as `scripts/results_table.py --pivot` and shares its
-parsing, so the picture and the table cannot disagree.
+parsing *and its seed-block filter*, so the picture and the table cannot
+disagree. `--seed-offset` defaults to 0, the reported block; the step-count
+decision is made on 1.
 
 The CI95 band is drawn by default and the mean is drawn heavier than the task
 lines on purpose. At 100 episodes the interval is roughly +/-10 points, so a
@@ -26,7 +29,7 @@ import sys
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from results_table import collect, is_partial, pivot_cells  # noqa: E402
+from results_table import collect, is_partial, pivot_cells, select_seed_offset  # noqa: E402
 
 
 def build_series(rows: list[dict]) -> tuple[list[str], list[int], dict]:
@@ -42,6 +45,9 @@ def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("results_dir", help="directory to search for *.summary.json")
+    ap.add_argument("--seed-offset", type=int, default=0,
+                    help="plot only runs from this seed block (default 0, the "
+                         "reported block; 1 is the checkpoint-selection sweep)")
     ap.add_argument("--output", default="sr_vs_steps.png", help="PNG to write")
     ap.add_argument("--title", default=None)
     ap.add_argument("--no-ci", dest="ci", action="store_false",
@@ -54,6 +60,17 @@ def main() -> int:
     if not rows:
         print(f"no *.summary.json under {root}", file=sys.stderr)
         return 1
+
+    rows, unattributable = select_seed_offset(rows, args.seed_offset)
+    if not rows:
+        found = sorted({r["seed_offset"] for r in collect(root)
+                        if r["seed_offset"] is not None})
+        print(f"no runs under {root} are from seed offset {args.seed_offset}."
+              + (f" Offsets present: {found}." if found else ""), file=sys.stderr)
+        return 1
+    if unattributable:
+        print(f"note: {len(unattributable)} run(s) carry no seed<N> in their path "
+              f"and were left out", file=sys.stderr)
 
     tasks, steps, cells = build_series(rows)
     if not cells:
@@ -113,7 +130,8 @@ def main() -> int:
 
     ax.set_xlabel("finetuning step")
     ax.set_ylabel("success rate (%)")
-    ax.set_title(args.title or f"UniVTAC success rate vs checkpoint  ({root.name})")
+    ax.set_title(args.title or f"UniVTAC success rate vs checkpoint  "
+                               f"({root.name}, seed offset {args.seed_offset})")
     ax.set_xticks(steps)
     ax.set_xticklabels([f"{s // 1000}k" for s in steps])
     ax.set_ylim(0, 100)

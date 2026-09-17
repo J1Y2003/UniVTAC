@@ -166,11 +166,20 @@ bash slurm/eval_bundle.sh "$GROOT_MODEL" -- \
 python scripts/results_table.py eval_result
 python scripts/results_table.py eval_result --json table.json
 python scripts/results_table.py eval_result/baseline_finetuned-50k --pivot
-python scripts/results_plot.py  eval_result/baseline_finetuned-50k --output sr.png
+python scripts/results_table.py eval_result/baseline_finetuned-50k --seed-offset 1 --pivot
+python scripts/results_plot.py  eval_result/baseline_finetuned-50k --seed-offset 1 --output sr.png
 ```
 
 Recursively finds every `*.summary.json` and prints one row each: task, scored
 episodes, success rate, Wilson 95 % interval, error and skip counts.
+
+**`--seed-offset` defaults to 0 and both scripts honour it.** Offset 0 is the
+reported block; the step-count sweep lives on 1. Only runs from the requested
+block are read, so a directory holding both (`seed0-ckpt50000.jsonl` next to
+`seed1-ckpt50000.jsonl`) gives two separate, correct tables rather than one that
+averages across blocks. The offset comes from `seed<N>` in the run's path; a run
+whose path carries no `seed<N>` is named and left out rather than assumed to be
+the reported block.
 
 `--pivot` reshapes those rows into tasks x checkpoint steps with SR% in the
 cells, plus a `mean` row -- the view the step-count decision is made on. The

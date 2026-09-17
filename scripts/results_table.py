@@ -3,12 +3,21 @@
 
     python scripts/results_table.py eval_result
     python scripts/results_table.py eval_result --pivot
+    python scripts/results_table.py eval_result --seed-offset 1 --pivot
     python scripts/results_table.py eval_result --json table.json
 
 `--pivot` reshapes the same rows into tasks x checkpoint steps, which is the
 view the step-count decision is made on (docs/BENCHMARK.md, "Choosing the step
 count"). The step comes from `ckpt<N>` or `checkpoint-<N>` in the run's path,
 the task from the summary's own `task` field.
+
+**One seed block at a time.** `--seed-offset` defaults to **0**, the reported
+block, and only runs from that block are read; `--seed-offset 1` gives the
+selection sweep. Mixing blocks in one table would put two different sets of
+episodes in the same cell and average across them, which is never a number
+anyone wants. The offset comes from `seed<N>` in the run's path, so a run whose
+path does not carry one cannot be attributed and is listed rather than guessed
+at.
 
 Standard library only. The graph lives in `scripts/results_plot.py` because it
 needs matplotlib.
@@ -25,12 +34,38 @@ from pathlib import Path
 # `seed1-ckpt20000.summary.json`, `insert_hole-ckpt20000-seed1.json`, and a
 # path that names the checkpoint directory directly all resolve the same way.
 _STEP_RE = re.compile(r"(?:ckpt|checkpoint[-_])(\d+)")
+# `seed1-ckpt20000.summary.json`, `insert_hole-ckpt20000-seed1.json`.
+_SEED_RE = re.compile(r"seed(\d+)")
 
 
 def parse_step(run: str) -> int | None:
     """Checkpoint step from a run path, or None when it carries no `ckpt<N>`."""
     match = _STEP_RE.search(run)
     return int(match.group(1)) if match else None
+
+
+def parse_seed_offset(run: str) -> int | None:
+    """Seed block from a run path, or None when it carries no `seed<N>`.
+
+    The summary itself does not record the offset, so the filename is the only
+    evidence. `None` means unattributable, never "offset 0" -- quietly folding
+    an unmarked run into the reported block is the one mistake this cannot be
+    allowed to make.
+    """
+    match = _SEED_RE.search(run)
+    return int(match.group(1)) if match else None
+
+
+def select_seed_offset(rows: list[dict], offset: int) -> tuple[list[dict], list[dict]]:
+    """Split rows into ``(from this block, unattributable)``.
+
+    Rows belonging to a *different* block are simply dropped: they are
+    attributable, just not wanted. Unattributable ones come back so the caller
+    can name them instead of silently ignoring them.
+    """
+    keep = [r for r in rows if r["seed_offset"] == offset]
+    unattributable = [r for r in rows if r["seed_offset"] is None]
+    return keep, unattributable
 
 
 def collect(root: Path) -> list[dict]:
@@ -49,6 +84,7 @@ def collect(root: Path) -> list[dict]:
             "task": d.get("task"),
             "variant": d.get("variant"),
             "step": parse_step(run),
+            "seed_offset": parse_seed_offset(run),
             "scored": d.get("episodes_scored"),
             "requested": d.get("episodes_requested"),
             "successes": d.get("successes"),
@@ -163,6 +199,9 @@ def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("results_dir", help="directory to search for *.summary.json")
+    ap.add_argument("--seed-offset", type=int, default=0,
+                    help="read only runs from this seed block (default 0, the "
+                         "reported block; 1 is the checkpoint-selection sweep)")
     ap.add_argument("--pivot", action="store_true",
                     help="tasks x checkpoint steps, SR%% in the cells")
     ap.add_argument("--json", help="also write the flat rows here")
@@ -174,7 +213,26 @@ def main() -> int:
         print(f"no *.summary.json under {root}", file=sys.stderr)
         return 1
 
+    rows, unattributable = select_seed_offset(rows, args.seed_offset)
+    if not rows:
+        found = sorted({r["seed_offset"] for r in collect(root)
+                        if r["seed_offset"] is not None})
+        print(f"no runs under {root} are from seed offset {args.seed_offset}."
+              + (f" Offsets present: {found}." if found else "")
+              + (f" {len(unattributable)} run(s) carry no seed<N> in their path."
+                 if unattributable else ""), file=sys.stderr)
+        return 1
+
+    print(f"seed offset {args.seed_offset} "
+          f"({'reported block' if args.seed_offset == 0 else 'selection block'}), "
+          f"{len(rows)} run(s)\n")
     status = print_pivot(rows) if args.pivot else (print_flat(rows) or 0)
+
+    if unattributable:
+        print(f"\n{len(unattributable)} run(s) carry no seed<N> in their path and were "
+              f"left out rather than assumed to be offset {args.seed_offset}:")
+        for row in unattributable:
+            print(f"    {row['run']}")
 
     if args.json:
         Path(args.json).write_text(json.dumps(rows, indent=2) + "\n", encoding="utf-8")
