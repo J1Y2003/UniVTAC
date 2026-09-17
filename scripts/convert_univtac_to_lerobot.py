@@ -1,7 +1,7 @@
 """Convert UniVTAC demonstration HDF5 into the GR00T LeRobot v2 format.
 
 Run this on UniVTAC's collected demonstrations, then finetune with
-``slurm/finetune.sbatch``.
+``slurm/train.sbatch``. See docs/USAGE.md, "Other scripts", for the invocation.
 
 Input — UniVTAC's raw collection dumps, keyed as in
 ``policy/_base_data_preprocessor.py``::

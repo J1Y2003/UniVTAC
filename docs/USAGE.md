@@ -13,9 +13,12 @@ Seven scripts. Each is a thin wrapper: you pass the flags, it runs the thing.
 | `scripts/check_cudnn.py` | is cuDNN the version torch pins |
 
 ```bash
+cp env.example.sh env.sh   # first time only; env.sh is gitignored
 source env.sh
-mkdir -p logs          # #SBATCH --output writes here
+mkdir -p logs              # #SBATCH --output writes here
 ```
+
+Setting up the machine itself is README.md, "Set up a new machine".
 
 ---
 

@@ -34,28 +34,55 @@ smoke tests.
 
 ## Running it end to end
 
+Four jobs per task: one finetune, three evaluations. Full flag lists and the
+site rules are in [USAGE.md](USAGE.md).
+
 ```bash
-# Convert (RUNBOOK.md covers the download first). Once per task.
-env TASK=insert_hole TASK_CONFIG=clean UNIVTAC_JOB_CONFIG=1 \
-  sbatch --job-name=univtac-groot-convert-univtac-hdf5-demonstrations-to-lerobot-v2 \
-         --wckey=project-short-name:sub_4dpdata slurm/convert.sbatch
+source env.sh && mkdir -p logs
+export TASK=insert_hole
 
-# Finetune: 30,000 steps, retaining checkpoints 10k/20k/30k.
-TASKS=insert_hole EXTRA_TASKS="" bash slurm/submit_benchmark.sh
+# 1. Download, then convert. Once per task; both are run by hand.
+env TASKS=$TASK sbatch --partition=cpu \
+  --job-name=univtac-groot-download-univtac-demonstration-data-from-modelscope \
+  slurm/download_data.sbatch
+$UNIVTAC_PYTHON scripts/convert_univtac_to_lerobot.py --task $TASK \
+    --raw-dir $UNIVTAC_ROOT/data/$TASK/clean \
+    --out $DATA_ROOT/univtac-$TASK-baseline_finetuned \
+    --variant baseline_finetuned --univtac-root $UNIVTAC_ROOT --fps 20
 
-# Evaluate each retained checkpoint, one job each, on a DEV seed block.
+# 2. Finetune: 30,000 steps, retaining checkpoints 10k/20k/30k. ~6.2 h.
+export MODEL_OUTPUT_DIR=$OUTPUT_ROOT/$TASK-baseline_finetuned
+sbatch --job-name=univtac-groot-per-task-finetune-vision-only-$TASK \
+       --partition=sjw_alinlab --time=9:00:00 \
+  slurm/train.sbatch --base-model-path nvidia/GR00T-N1.7-3B \
+    --dataset-path $DATA_ROOT/univtac-$TASK-baseline_finetuned \
+    --output-dir $MODEL_OUTPUT_DIR --embodiment-tag NEW_EMBODIMENT \
+    --modality-config-path $REPO_ROOT/configs/modality/univtac_baseline_config.py \
+    --num-gpus 1 --max-steps 30000 --save-steps 10000 --save-total-limit 4
+
+# 3. Evaluate each retained checkpoint, one job each, on a DEV seed block.
+#    Evaluation goes on `background`, never on `sjw_alinlab` (lab policy).
+export EMBODIMENT_TAG=NEW_EMBODIMENT PORT=25555
 for N in 10000 20000 30000; do
-  bash slurm/eval_checkpoint.sh --task insert_hole --seed-offset 1 \
-      --checkpoint <output_dir>/checkpoint-$N
+  export GROOT_MODEL=$OUTPUT_ROOT/$TASK-baseline_finetuned/checkpoint-$N
+  export MODEL_OUTPUT_DIR=$GROOT_MODEL
+  sbatch --job-name=univtac-groot-evaluate-one-checkpoint-$TASK-ckpt$N \
+         --partition=background \
+    slurm/eval.sbatch --task $TASK --variant baseline_finetuned \
+      --univtac-root $UNIVTAC_ROOT --seed-offset 1 \
+      --output eval_result/$TASK-ckpt$N-seed1.json
 done
 
-# Table
-python scripts/results_table.py
+# 4. Table
+python scripts/results_table.py eval_result --seed-offset 1 --pivot
 ```
 
-`benchmark_task.sbatch` pins the recipe (GPU count, `MAX_STEPS`, lr, weight
-decay) on its first run for a task and refuses a mismatch afterwards, so a
-resubmission cannot silently train under different conditions.
+**Nothing pins the recipe.** The job scripts validate nothing, by design: every
+flag above is yours to pass, and a resubmission that changes one trains under
+different conditions without complaint. Two matter on a resume -- keep
+`--output-dir` identical, so `--resume-from-checkpoint` finds the previous
+checkpoints, and keep `--num-gpus` identical, because it multiplies the
+effective batch size.
 
 ## Cameras are per task
 
@@ -104,12 +131,17 @@ secondhand value:
 To sweep them deliberately:
 
 ```bash
-LEARNING_RATE=1e-5 WEIGHT_DECAY=1e-4 bash slurm/submit_benchmark.sh
+sbatch --job-name=<over 50 chars> --partition=sjw_alinlab --time=9:00:00 \
+  slurm/train.sbatch --learning-rate 1e-5 --weight-decay 1e-4 <the rest>
 ```
 
-`benchmark_task.sbatch` records both in its pinned recipe and refuses a
-resubmission that changes them, so a walltime kill cannot resume under
-different optimiser settings.
+Everything after `slurm/train.sbatch` is handed to `launch_finetune.py`
+untouched, so use whatever flag names the `--help` above reports.
+
+Nothing records what a run was trained with, so a resubmission that drops or
+changes an optimiser flag resumes under the new value silently. Sweep into a
+**different** `--output-dir`, and sweep on `lift_bottle` -- see "Do not select a
+checkpoint or a hyperparameter on the reported rollouts" below.
 
 **Training data is all 100 released episodes per task** (`0.hdf5`..`99.hdf5`).
 At 30,000 steps x batch 64 that is 1,920,000 samples over ~28,932, so ~66 epochs

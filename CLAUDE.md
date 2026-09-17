@@ -67,13 +67,19 @@ export `HF_TOKEN` / `WANDB_API_KEY` in the submitting shell -- `--export=ALL`
 carries them in.
 
 **`sbatch` copies the script to `/var/spool/slurm/d/`,** so
-`dirname "${BASH_SOURCE[0]}"` resolves to the spool, not the repo. All
-`slurm/*.sbatch` resolve `REPO_ROOT` from `SLURM_SUBMIT_DIR` first and validate
-it contains `univtac_groot/spec.py`. Do not "simplify" that back.
+`dirname "${BASH_SOURCE[0]}"` resolves to the spool, not the repo.
+`slurm/download_data.sbatch` therefore resolves `REPO_ROOT` from
+`SLURM_SUBMIT_DIR` first and validates it contains `univtac_groot/spec.py`. Do
+not "simplify" that back. `train.sbatch` and `eval.sbatch` sidestep it by taking
+`REPO_ROOT` from the environment (`env.sh`) and never deriving a path from their
+own location — which is why an unset `REPO_ROOT` fails them immediately under
+`set -u` rather than silently reading the spool.
 
-**`--export=ALL` carries your whole shell environment.** A stray `DRY_RUN=1`
-left over from testing makes the job exit in seconds having trained nothing;
-the submitters pin `DRY_RUN=0` for this reason.
+**`--export=ALL` carries your whole shell environment.** Nothing here filters
+it, so a leftover variable from testing reaches the job verbatim. The three
+that actively cause damage are `SBATCH_WCKEY`, `SBATCH_PARTITION` and
+`SLURM_WCKEY` — each outranks the flag or header you meant to use. `env.sh`
+unsets the last two for this reason.
 
 **cuDNN: ask the library, not pip.** `CUDNN_STATUS_NOT_INITIALIZED` means the
 GR00T venv's cuDNN is not the `9.10.2.21` that torch 2.9.0+cu128 pins. It is
@@ -92,7 +98,7 @@ byte streams**; and state/action are a **one-step shift of a single
 `embodiment/joint` array**. `docs/UPSTREAM.md` records each with its source --
 add to it rather than re-deriving.
 
-## Six scripts, each a thin wrapper
+## Seven scripts, each a thin wrapper
 
 `docs/USAGE.md` is the reference, with a runnable example for each.
 
@@ -103,7 +109,16 @@ add to it rather than re-deriving.
 | `slurm/eval.sbatch` | `run_server` + `run_eval.py` |
 | `slurm/eval_bundle.sh` | the same, through `bundle-sbatch` |
 | `scripts/results_table.py` | success rate per run |
+| `scripts/results_plot.py` | the same numbers as a graph |
 | `scripts/check_cudnn.py` | the cuDNN pin |
+
+Two more job scripts are one-offs rather than part of the benchmark loop:
+`slurm/download_data.sbatch` (demonstrations from ModelScope, `--partition=cpu`,
+**no `#SBATCH` directives at all** — pass `--job-name`, `--partition` and
+`--output` yourself) and `slurm/install_univtac.sbatch` (the simulator stack).
+The `scripts/` directory also holds the diagnostics — `preflight.py`,
+`eval_progress.py`, `eval_triage.py`, `check_eval_logs.py`, `recover_eval.py`,
+`wandb_report.py` — which are tools, not wrappers.
 
 Each shell script is under ten lines and does one thing: `exec` the real
 program with the flags it was handed. **They validate nothing.** There is no
@@ -161,14 +176,16 @@ unhelpful "Unspecified error":
   outranks a `#SBATCH` header, so keep it correct.
 
   **Do not export `SLURM_WCKEY`.** SLURM sets it *inside* a job to report the
-  wckey the job actually got, which is what every `.sbatch` re-checks at
-  runtime before doing any work. The job inherits your shell's environment, so
-  an exported value masks that check. `srun` takes `--wckey` on the command
-  line instead, and every documented `srun` here does.
+  wckey the job actually got, which is what `slurm/install_univtac.sbatch`
+  re-checks at runtime before doing any work. The job inherits your shell's
+  environment, so an exported value masks that check. `srun` takes `--wckey` on
+  the command line instead, and every documented `srun` here does.
 
-  So: `--wckey` on every `sbatch` command line (added by `univtac_build` if
-  you forget), a runtime re-check in every `.sbatch`, and
-  `scripts/preflight.py` failing on a wrong `SBATCH_WCKEY`.
+  So: `--wckey` on every `sbatch` command line, a runtime re-check in
+  `install_univtac.sbatch` only (`train.sbatch` and `eval.sbatch` validate
+  nothing, per the section above -- if the wckey is wrong there, the submit
+  filter catches it, not the script), and `scripts/preflight.py` failing on a
+  wrong `SBATCH_WCKEY`.
 - **`MODEL_OUTPUT_DIR` must be exported**, under
   `/rlwrld-unified-checkpoints/$USER/...`, on **every** submission including
   evaluation, or the filter answers
@@ -203,7 +220,8 @@ unhelpful "Unspecified error":
   Same precedence trap as the wckey: `--partition` follows
   **command line > `SBATCH_PARTITION` > `#SBATCH` directive**, so an exported
   `SBATCH_PARTITION` would silently override the header on exactly these two
-  jobs. `env.example.sh` leaves it commented out for that reason.
+  jobs. `env.example.sh` explicitly `unset`s it for that reason, alongside
+  `SLURM_WCKEY`.
 
 Because `--cpus-per-task` is rejected, `SLURM_CPUS_PER_TASK` is `1` inside a
 job even when it really holds 12 CPUs. Size thread pools off

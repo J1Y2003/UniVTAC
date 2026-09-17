@@ -30,9 +30,12 @@ You need **two separate environments** on a Linux machine with an NVIDIA GPU.
 
 ### 1. UniVTAC environment (conda env `UniVTAC`, Python 3.10)
 
+Clone it as `UniVTAC-sim`: this repo is also called `UniVTAC`, and the two side
+by side is how `$UNIVTAC_ROOT` ends up pointing at the wrong one.
+
 ```bash
-git clone https://github.com/univtac/UniVTAC.git
-cd UniVTAC
+git clone https://github.com/univtac/UniVTAC.git UniVTAC-sim
+cd UniVTAC-sim
 bash scripts/install.sh        # builds Isaac Sim, Isaac Lab, TacEx, cuRobo
 ```
 
@@ -157,10 +160,11 @@ hf auth login                       # writes $HF_HOME/token
 
 Two cautions:
 
-* **`HF_HOME` moves the token file too.** `slurm/eval_task.sbatch` defaults
-  `HF_HOME` to scratch, so a token stored under the default
-  `~/.cache/huggingface` is not visible inside the job. Exporting `HF_TOKEN`
-  sidesteps this, and the job warns when neither is present.
+* **`HF_HOME` moves the token file too**, so a token stored under a redirected
+  `HF_HOME` is invisible to a job that does not also export it. Nothing here
+  sets `HF_HOME` for you, and nothing warns when a token is missing -- the
+  first sign is the server dying with a 401. Export `HF_TOKEN` in the
+  submitting shell and `--export=ALL` carries it in.
 * **Never put the token in a tracked file or in an `#SBATCH` line** -- job
   scripts are often world-readable. Keep it in your environment
   (`chmod 600` any file that holds it); the job inherits it from the
@@ -192,7 +196,7 @@ export GROOT_PYTHON=/path/to/Isaac-GR00T/.venv/bin/python   # uv's venv
 ```
 
 `GROOT_PYTHON` is the **uv venv's** interpreter, not a system python — that is
-where `uv sync` installed `gr00t`. `slurm/eval_task.sbatch` sets
+where `uv sync` installed `gr00t`. `slurm/eval.sbatch` sets
 `PYTHONPATH=$REPO_ROOT` when launching the server so `univtac_groot.server` is
 importable alongside `gr00t`.
 
@@ -209,16 +213,17 @@ an interactive allocation to run them in.
 
 ```bash
 # 1. This repo's logic — login node is fine: no GPU, no Isaac Sim, no gr00t
-pip install -r requirements-dev.txt && pytest tests -q          # expect 94 passed
+pip install -r requirements-dev.txt && pytest tests -q          # expect 84 passed
 
 # 2. GR00T imports in its own env
-/path/to/Isaac-GR00T/.venv/bin/python -c "import gr00t; print('ok')"
+$GROOT_PYTHON -c "import gr00t; print('ok')"
 
 # 3. UniVTAC imports in its own env (must not print an Isaac Sim error)
-conda run -n UniVTAC python -c "import isaaclab, tacex; print('ok')"
+$UNIVTAC_PYTHON -c "import isaaclab, tacex; print('ok')"
 
 # 4. Server comes up live and reports the checkpoint's real contract
-PYTHONUNBUFFERED=1 PYTHONPATH=$REPO_ROOT $GROOT_PYTHON -u \n    -m univtac_groot.server.run_server \
+PYTHONUNBUFFERED=1 PYTHONPATH=$REPO_ROOT $GROOT_PYTHON -u \
+    -m univtac_groot.server.run_server \
     --model-path nvidia/GR00T-N1.7-3B \
     --embodiment-tag OXE_DROID_RELATIVE_EEF_RELATIVE_JOINT --port 5555
 
@@ -250,9 +255,10 @@ Checkpoints belong in the cluster's unified folder:
 
 Our area under the Kakao root is **`/rlwrld-unified-checkpoints/jimin/jaewon`**
 (`jimin` is the shared account, `jaewon` is ours within it). That is what
-`univtac_output_root` in `slurm/common.sh` resolves to, overridable with
-`OUTPUT_ROOT`, and `finetune.sbatch` refuses an `OUTPUT_DIR` outside
-`/rlwrld-unified-checkpoints` unless `ALLOW_NONSTANDARD_OUTPUT=1`.
+`OUTPUT_ROOT` in `env.sh` points at, and it is the operator's job to keep
+`--output-dir` inside it -- nothing validates the path. The parent belongs to
+the account owner, so a checkpoint written outside the `jaewon` subtree lands
+in someone else's tree.
 
 One directory per `<task>-<variant>`, the same path on every submission, which
 is what lets a resubmitted finetune find its own previous checkpoints and
@@ -279,10 +285,10 @@ finetune: ~6.2 h per task is cheaper than a shadow copy of everything.
 | `CUDNN_STATUS_NOT_INITIALIZED`, cuDNN debug log says `cudaGetDeviceCount(&count) != cudaSuccess` with `GPU=NULL` and compute capability `0.0` | **The cuDNN in the GR00T venv is not the one torch pins.** Reads like a driver problem and is not. Run `python scripts/preflight.py --deep`, which checks it; fix per [cuDNN](#3-cudnn-must-match-torchs-pin). |
 | `cuDNN error: CUDNN_STATUS_NOT_INITIALIZED` on the first `get_action` | The server inherited `LD_LIBRARY_PATH`/`CUDA_HOME` from the UniVTAC conda env (CUDA 12.4) while its torch is cu128. Launch it with `env -u LD_LIBRARY_PATH -u CUDA_HOME -u CUDA_PATH`; the job scripts do this automatically. Check free VRAM first, since genuine OOM reports the same error. |
 | `Arm motion planning failed on action 0` | cuRobo, not GR00T. Verify UniVTAC's own expert works: `bash collect_data.sh grasp_classify demo 0` |
-| `ValueError: Fast download using 'hf_transfer' is enabled (HF_HUB_ENABLE_HF_TRANSFER=1) but 'hf_transfer' package is not available` | The flag is a hard error, not a fallback, and it fires mid-download inside the *server* log so it reads like a checkpoint fault. `eval_task.sbatch` now probes `GROOT_PYTHON` for the package and only enables the flag when present. Override with `HF_HUB_ENABLE_HF_TRANSFER=0`, or install it: `$GROOT_PYTHON -m pip install hf_transfer` (worth it for the ~15 GB of weights). |
-| `GPU 파티션에는 GPU를 요청한 잡만 제출할 수 있습니다` | A CPU-only job went to a GPU partition. Add `--partition=cpu`. Applies to `download_data.sbatch` and `convert.sbatch`; both set it in their headers, but an exported `SBATCH_PARTITION` beats a `#SBATCH` directive, so pass it on the command line too. |
-| `sbatch: error: ... Batch job submission failed: Unspecified error` | This cluster's submit filter enforces site rules and rejects the job before it queues. Known rules: a job name **longer than 50 characters**, `--wckey=project-short-name:sub_4dpdata` (the `project-short-name:` prefix is **literal**, not a placeholder -- without it the filter answers `WCKey를 project-short-name:<name> 형식으로 지정해야 합니다`), and **no** `--cpus-per-task` or `--mem` (jobs take the node's per-GPU defaults). `--time` is allowed, but must not exceed the partition maximum. `bash slurm/submit_benchmark.sh --print` shows the exact command without submitting, and `sbatch --test-only` rehearses one. |
-| Port already in use with concurrent jobs | `eval_task.sbatch` derives a per-job port from `SLURM_JOB_ID`; pass `PORT=` to override |
+| `ValueError: Fast download using 'hf_transfer' is enabled (HF_HUB_ENABLE_HF_TRANSFER=1) but 'hf_transfer' package is not available` | The flag is a hard error, not a fallback, and it fires mid-download inside the *server* log so it reads like a checkpoint fault. Nothing here sets or probes it, so it can only reach the job from your own environment via `--export=ALL`. Unset it, set `HF_HUB_ENABLE_HF_TRANSFER=0`, or install the package: `env -u CONDA_PREFIX -u VIRTUAL_ENV uv pip install --python $GROOT_PYTHON hf_transfer` (worth it for the ~15 GB of weights). |
+| `GPU 파티션에는 GPU를 요청한 잡만 제출할 수 있습니다` | A CPU-only job went to a GPU partition. Add `--partition=cpu`. Applies to `slurm/download_data.sbatch` and to any `sbatch`-wrapped conversion: `download_data.sbatch` carries **no `#SBATCH` directives at all**, so `--partition`, `--job-name` and `--output` must all be on the command line. |
+| `sbatch: error: ... Batch job submission failed: Unspecified error` | This cluster's submit filter enforces site rules and rejects the job before it queues. Known rules, all of which you must satisfy: a job name **longer than 50 characters** (a floor, not a ceiling -- a *short* name is what gets rejected), `--wckey=project-short-name:sub_4dpdata` (the `project-short-name:` prefix is **literal**, not a placeholder -- without it the filter answers `WCKey를 project-short-name:<name> 형식으로 지정해야 합니다`), an exported `MODEL_OUTPUT_DIR` under `/rlwrld-unified-checkpoints/$USER/...`, and **no** `--cpus-per-task` or `--mem` (jobs take the node's per-GPU defaults). `--time` is allowed, but must not exceed the partition maximum. `sbatch --test-only` rehearses a submission without queueing it. |
+| Port already in use with concurrent jobs | Nothing derives a port for you: `slurm/eval.sbatch` uses `PORT` verbatim from your environment, so two concurrent evals sharing a value collide. Export a distinct `PORT` per job. |
 
 ---
 
@@ -297,19 +303,20 @@ that. What runs where:
 | `pytest tests -q` | **login node** | ~2 s, pure numpy, no GPU |
 | `scripts/results_table.py` | **login node** | seconds; reads the result JSONs only |
 | `--help`, editing, git | **login node** | free |
-| UniVTAC install (`scripts/install.sh`) | **compute node** | builds libuipc/cuRobo from source — hours of `nvcc`/CMake |
-| `data/download.sh` (assets) | **compute or transfer node** | large download + unpack |
-| Dataset conversion | **`slurm/convert.sbatch`** | CPU-only, minutes–hours (video re-encode) |
-| Finetuning | **`slurm/finetune.sbatch`** | GPU, hours |
-| Evaluation (server + Isaac Sim) | **`slurm/eval_task.sbatch`** | GPU, both processes in one job |
+| UniVTAC install | **`slurm/install_univtac.sbatch`** | builds libuipc/cuRobo from source — hours of `nvcc`/CMake |
+| Demonstration data download | **`slurm/download_data.sbatch`** (`--partition=cpu`) | large download + unpack, ~24 GB per task |
+| Dataset conversion | **by hand, or wrap in `sbatch --partition=cpu`** | CPU-only, minutes–hours (video re-encode) |
+| Finetuning | **`slurm/train.sbatch`** | GPU, ~6.2 h per task |
+| Evaluation (server + Isaac Sim) | **`slurm/eval.sbatch`** | GPU, both processes in one job |
 | `run_eval.py --dry-run` | **compute node** | needs the live server, so it is GPU work |
 
 Two entries deserve emphasis:
 
-**The UniVTAC install is itself a heavy CPU job.** `scripts/install.sh` compiles
-libuipc and cuRobo from source. Do not run it on the login node — use an
-interactive allocation (below) or wrap it in a batch job. This surprises people
-because "installing dependencies" sounds like login-node work.
+**The UniVTAC install is itself a heavy CPU job.** Upstream's `scripts/install.sh`
+compiles libuipc and cuRobo from source. Do not run it on the login node — that
+is what `slurm/install_univtac.sbatch` is for, and `srun`'s 3-hour `debug` cap
+is unlikely to be enough. This surprises people because "installing
+dependencies" sounds like login-node work.
 
 **`--dry-run` is not login-node work.** It queries a live GR00T server for the
 checkpoint's modality config, so it needs the GPU job that hosts the server.
@@ -321,15 +328,32 @@ session where you started the server, or as the first step of a batch job.
 Batch turnaround is painful while you are still finding the right flags. Grab an
 interactive shell on a compute node and iterate there:
 
+`srun` here is restricted to the `debug` partition, which caps at **3 hours** —
+enough to find the right flags, not enough for a real run. `--wckey` goes on
+the `srun` command line; never export `SLURM_WCKEY`, which masks the runtime
+check.
+
 ```bash
-# Adjust the partition/account names to your cluster.
-srun --gres=gpu:1 --wckey=project-short-name:sub_4dpdata --pty bash
+source env.sh
+srun --partition=debug --gres=gpu:1 --wckey=project-short-name:sub_4dpdata \
+     --pty bash
 
-# Then, inside the allocation, run the two processes in one shell:
-export REPO_ROOT=~/UniVTAC-GR00T UNIVTAC_ROOT=~/UniVTAC
-PYTHONPATH=$REPO_ROOT ~/Isaac-GR00T/.venv/bin/python     -m univtac_groot.server.run_server     --model-path nvidia/GR00T-N1.7-3B     --embodiment-tag OXE_DROID_RELATIVE_EEF_RELATIVE_JOINT --port 5555 &
+# Then, inside the allocation, run the two processes in one shell.
+# Scrub the CUDA variables for the server only: UniVTAC's conda env points at
+# CUDA 12.4 and GR00T's torch is cu128.
+export TASK=insert_hole
+env -u LD_LIBRARY_PATH -u CUDA_HOME -u CUDA_PATH -u CONDA_PREFIX \
+    PYTHONPATH="$REPO_ROOT" "$GROOT_PYTHON" -u \
+    -m univtac_groot.server.run_server \
+    --model-path nvidia/GR00T-N1.7-3B \
+    --embodiment-tag OXE_DROID_RELATIVE_EEF_RELATIVE_JOINT \
+    --host 127.0.0.1 --port 5555 \
+    --modality-config-path "$REPO_ROOT/configs/modality/univtac_baseline_config.py" &
 
-conda run -n UniVTAC python $REPO_ROOT/scripts/run_eval.py     --task insert_hole --variant baseline --univtac-root $UNIVTAC_ROOT     --port 5555 --dry-run          # then drop --dry-run for --episodes 1
+PYTHONPATH="$REPO_ROOT:$UNIVTAC_ROOT" "$UNIVTAC_PYTHON" \
+    "$REPO_ROOT/scripts/run_eval.py" \
+    --task insert_hole --variant baseline --univtac-root "$UNIVTAC_ROOT" \
+    --host 127.0.0.1 --port 5555 --dry-run   # then drop it for --episodes 1
 ```
 
 Leaving the server running while you re-run the evaluator is the whole point:
@@ -341,12 +365,12 @@ allocation.
 
 The eval job hosts Isaac Sim (scene plus offscreen rendering) *and* GR00T N1.7
 (~7 GB in bf16, plus activations) on the same allocation. Budget roughly 24 GB
-of VRAM for a single-GPU run. If your nodes are tighter than that, ask for two
-with `GPUS=2 bash slurm/eval_checkpoint.sh ...`.
+of VRAM for a single-GPU run, which an A100 80GB covers comfortably.
 
-`eval_task.sbatch` counts the GPUs SLURM allocated and puts the model on
-`cuda:1` and the simulator on `cuda:0` automatically; override with
-`SERVER_DEVICE=` / `SIM_DEVICE=` if you want a different split.
+`slurm/eval.sbatch` requests exactly one GPU (`#SBATCH --gres=gpu:1`) and both
+processes share it. It does **not** count allocated GPUs or split the model and
+simulator across devices -- there is no `SERVER_DEVICE`/`SIM_DEVICE` here. To
+split them you would have to edit the script.
 
 Both processes always live in the **same job on the same node**, talking over
 `127.0.0.1`. That is deliberate: no cross-node networking to arrange, no
@@ -360,24 +384,28 @@ job step, run the server as its own job and pass its node name as
 [USAGE.md](USAGE.md) is the ordered path. In short:
 
 ```bash
+source env.sh && mkdir -p logs
 python scripts/preflight.py --deep       # login node, free
 pytest tests -q                          # login node, free
-bash slurm/submit_benchmark.sh --dry     # full preflight, submits nothing
-bash slurm/submit_benchmark.sh           # one finetune per task
-# then, once a finetune finishes, one eval job per checkpoint:
-bash slurm/eval_checkpoint.sh --task insert_hole --seed-offset 1 \
-    --checkpoint $OUTPUT_ROOT/insert_hole-baseline_finetuned/checkpoint-30000
+sbatch --test-only --job-name=<over 50 chars> --partition=sjw_alinlab \
+       --time=9:00:00 slurm/train.sbatch <flags>   # rehearses, queues nothing
 ```
 
-Jobs are submitted with plain `sbatch`. `slurm/common.sh` encodes the site
-rules -- the wckey, the job-name floor, the rejected options -- and validates
-before anything is sent. Submitting a job script by hand works too, as long as
-you pass `UNIVTAC_JOB_CONFIG=1` and the job's configuration; see the header of
-each script. [USAGE.md](USAGE.md) is the reference.
+Then submit for real, one task at a time, and once a finetune finishes, one
+eval job per retained checkpoint. [USAGE.md](USAGE.md) has the full command for
+each; [BENCHMARK.md](BENCHMARK.md#running-it-end-to-end) has all four jobs for
+one task in sequence.
+
+**Jobs are submitted with plain `sbatch`, and nothing validates them.** There is
+no `common.sh`, no submitter that assembles a command, no preflight inside a job
+and no configuration sentinel. The site rules above -- the wckey, the job-name
+floor, `MODEL_OUTPUT_DIR`, the rejected options -- are yours to satisfy on every
+command line. That is the design, not an oversight: `scripts/preflight.py`
+checks what it can from a login node, and the rest is the operator's.
 
 Results are written to JSONL as each episode completes, so a job killed at its
 walltime still leaves a usable partial file — `results_table.py` re-aggregates
-whatever is there, and `eval_task.sbatch` resumes from `max(seed)+1` rather
+whatever is there, and `scripts/run_eval.py` resumes from `max(seed)+1` rather
 than replaying the block.
 
 ## Note on video codecs

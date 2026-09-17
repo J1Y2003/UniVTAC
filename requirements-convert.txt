@@ -10,8 +10,10 @@
 # Keep `--only-binary=:all:`: a pyarrow sdist fallback would build Arrow C++
 # from source, which is a tens-of-minutes multi-core compile.
 #
-# The conversion itself is CPU-heavy: run it via slurm/convert.sbatch, never
-# on a login node.
+# The conversion itself is CPU-heavy: run it in an allocation, never on a login
+# node. There is no wrapper -- call scripts/convert_univtac_to_lerobot.py
+# directly (docs/USAGE.md, "Other scripts"), or wrap it in
+# `sbatch --partition=cpu` to queue it.
 
 -r requirements-client.txt
 h5py>=3.9              # reading UniVTAC's collection dumps

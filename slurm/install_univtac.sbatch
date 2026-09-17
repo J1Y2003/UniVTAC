@@ -29,8 +29,11 @@ if [[ -n "${SLURM_JOB_ID:-}" && "${SLURM_WCKEY:-project-short-name:sub_4dpdata}"
   echo "       Every job here must be accounted to 'project-short-name:sub_4dpdata'." >&2
   echo "       Something in your environment overrode the #SBATCH header --" >&2
   echo "       almost certainly a stale SBATCH_WCKEY in env.sh. Fix it with:" >&2
-  echo "         export SBATCH_WCKEY=project-short-name:sub_4dpdata SLURM_WCKEY=project-short-name:sub_4dpdata" >&2
-  echo "       then resubmit. 'python scripts/preflight.py' also checks this." >&2
+  echo "         export SBATCH_WCKEY=project-short-name:sub_4dpdata" >&2
+  echo "       Do NOT export SLURM_WCKEY: SLURM sets it inside the job to" >&2
+  echo "       report the wckey actually applied, which is what this check" >&2
+  echo "       reads, so exporting it would mask the very problem above." >&2
+  echo "       Then resubmit. 'python scripts/preflight.py' also checks this." >&2
   exit 2
 fi
 
@@ -113,7 +116,8 @@ STATUS=$?
 
 echo "----------------------------------------------------------"
 if [[ ${STATUS} -eq 0 ]]; then
-  echo "[job] install finished. Verify, then continue with docs/RUNBOOK.md step 3:"
+  echo "[job] install finished. Verify, then continue with docs/SETUP.md,"
+  echo "[job] 'Preflight, cheapest first', step 3:"
   echo "  conda activate UniVTAC && python -c 'import isaaclab, tacex; print(\"ok\")'"
 else
   echo "[job] install exited ${STATUS}."

@@ -8,7 +8,7 @@ subprocess import probes. No GPU, no Isaac Sim, no model loading.
 
 Each check prints PASS / FAIL / SKIP and, on the first failure, the exact
 command to fix it. Run this whenever you are unsure where you are in the
-sequence; the full runbook is docs/RUNBOOK.md.
+sequence; the ordered reference is docs/USAGE.md.
 """
 
 from __future__ import annotations
@@ -55,11 +55,11 @@ class Report:
         failures = sum(1 for s, _, _ in self.rows if s == FAIL)
         if failures:
             print(f"{failures} check(s) failed. Next step:\n")
-            print(self.first_fix or "  see docs/RUNBOOK.md")
+            print(self.first_fix or "  see docs/USAGE.md")
             print()
             return 1
         print("All checks passed. Next step:\n")
-        print(self.first_fix or "  see docs/RUNBOOK.md")
+        print(self.first_fix or "  see docs/USAGE.md")
         print()
         return 0
 
@@ -489,11 +489,11 @@ WCKEY = "project-short-name:sub_4dpdata"
 def check_submission(report: Report) -> None:
     """How jobs get submitted: plain ``sbatch``, with ``bundle-sbatch`` optional.
 
-    The scripts in ``slurm/`` submit with plain ``sbatch`` and choose their own
-    output root (see ``docs/SLURM_NOTES.md#output-root``). ``bundle-sbatch`` is
-    the infrastructure team's wrapper; support for it is kept in
-    ``slurm/common.sh`` but nothing here uses it, so its absence is not a
-    failure.
+    The scripts in ``slurm/`` are submitted with plain ``sbatch``, and the
+    output root is whatever ``--output-dir`` you pass (see CLAUDE.md,
+    "Cluster rules"). ``bundle-sbatch`` is the infrastructure team's wrapper,
+    reachable through the ``*_bundle.sh`` entry points but not the default
+    path, so its absence is not a failure.
     """
     # `sbatch` itself is reported by check_slurm, which knows whether this is a
     # submit host.
@@ -502,17 +502,23 @@ def check_submission(report: Report) -> None:
     else:
         report.add(
             SKIP, "bundle-sbatch", "not on PATH -- fine, nothing here uses it",
-            "  slurm/common.sh keeps support for it if you ever need it.",
+            "  slurm/{train,eval}_bundle.sh need it; nothing else here does.",
         )
 
-    # Harmless now that nothing here reads it, but a leftover from the launcher
-    # era is worth surfacing so env.sh gets tidied.
+    # No script here reads it, but the submit filter rejects any job without
+    # it -- including evaluation, where it is a pure formality.
     raw = os.environ.get("MODEL_OUTPUT_DIR", "").strip()
     if raw:
+        report.add(PASS, "MODEL_OUTPUT_DIR", raw)
+    else:
         report.add(
-            SKIP, "MODEL_OUTPUT_DIR", f"{raw} is set but unused",
-            "  The scripts in slurm/ set OUTPUT_DIR themselves.\n"
-            "  Override the root with OUTPUT_ROOT or CKPT_ROOT instead.",
+            WARN, "MODEL_OUTPUT_DIR", "unset",
+            "  The submit filter rejects a job without it:\n"
+            "    ERROR: MODEL_OUTPUT_DIR가 없습니다.\n"
+            "  Export it per submission, under /rlwrld-unified-checkpoints/$USER/:\n"
+            "    export MODEL_OUTPUT_DIR=$OUTPUT_ROOT/<task>-baseline_finetuned\n"
+            "  Nothing in slurm/ reads the value; for eval, point it at the\n"
+            "  checkpoint being evaluated.",
         )
 
 
@@ -589,7 +595,7 @@ def check_conda(report: Report) -> None:
             WARN,
             "conda env",
             f"base ({interpreter}) - do not pip install here on a shared cluster; "
-            f"see docs/RUNBOOK.md step 2 (conda create -n univtac-groot)",
+            f"see README.md (conda create -n univtac-groot)",
         )
     else:
         report.add(PASS, "conda env", f"{env} ({interpreter})")
@@ -619,11 +625,11 @@ def next_step(*, have_results: bool, deep: bool) -> str:
         return (
             "  # Interactive first run (COMPUTE node - evaluation is GPU work):\n"
             "  srun --gres=gpu:1 --wckey=project-short-name:sub_4dpdata --pty bash\n"
-            "  # then follow docs/RUNBOOK.md step 4"
+            "  # then follow docs/SETUP.md, 'Preflight, cheapest first'"
         )
     return (
-        "  python scripts/results_table.py        # you have results; aggregate them\n"
-        "  # or run the benchmark: bash slurm/submit_benchmark.sh --dry"
+        "  python scripts/results_table.py eval_result   # you have results; aggregate\n"
+        "  # or submit the next job: see docs/USAGE.md"
     )
 
 

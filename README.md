@@ -22,13 +22,19 @@ GUI, or needs a login-node GPU.
 
 ### Start here
 
+On the **cluster**, where jobs are submitted:
+
 ```bash
-$EDITOR env.sh && chmod 600 env.sh   # paths + two tokens; gitignored
+cp env.example.sh env.sh             # env.sh is gitignored; it never travels with a clone
+$EDITOR env.sh && chmod 600 env.sh   # paths + two tokens
 source env.sh                        # per session, not ~/.bashrc
 mkdir -p logs                        # #SBATCH --output does not create it
 ```
 
-**[docs/USAGE.md](docs/USAGE.md) — a runnable example for each of the six
+Setting up a machine from nothing — including the git and SSH steps — is
+[Set up a new machine](#set-up-a-new-machine) below.
+
+**[docs/USAGE.md](docs/USAGE.md) — a runnable example for each of the seven
 scripts**, plus the site rules you have to satisfy yourself.
 
 [docs/BENCHMARK.md](docs/BENCHMARK.md) is the one to read before quoting a
@@ -63,24 +69,88 @@ Both processes always live in the **same job on the same node**, talking over
 The UniVTAC-side client needs only `numpy`, `pyzmq`, `msgpack` and
 `msgpack-numpy` — it never imports `gr00t` or torch-heavy code.
 
-## Install
+## Set up a new machine
 
-**[docs/SETUP.md](docs/SETUP.md) is the full prerequisite list.** The short
-version:
+Two machines, and it matters which is which. The **workstation** edits code,
+runs the tests and reads results; it needs no GPU, no Isaac Sim and no `gr00t`,
+and a few minutes of setup. The **cluster** runs everything that costs
+anything, and is hours of setup. Nothing below runs on the cluster on your
+behalf — you run it there yourself.
+
+### 1. Workstation (any Linux; commands are Ubuntu 24.04)
 
 ```bash
-# 1. UniVTAC, Python 3.10 (builds Isaac Sim, Isaac Lab, TacEx, cuRobo -- hours)
-git clone https://github.com/univtac/UniVTAC.git && cd UniVTAC && bash scripts/install.sh
+sudo apt update && sudo apt install -y git git-lfs python3-venv
+git lfs install
+```
+
+Ubuntu 24.04 ships Python 3.12 as **`python3`** — there is no `python` on
+`PATH` unless you install `python-is-python3`, so read every `python` in these
+docs as `python3` or work inside the venv below, where `python` exists. The
+same release enforces PEP 668, so a bare `pip install` into the system
+interpreter is refused with `externally-managed-environment`. The venv is not
+optional.
+
+**SSH.** The git remote here is `git@github.com-kaist:J1Y2003/UniVTAC` — that
+host is an *alias*, not a domain, so a clone fails with
+`Could not resolve hostname` until `~/.ssh/config` defines it. Copy your
+existing `~/.ssh/config` and the keys it names (`id_ed25519_github_kaist` for
+GitHub, `id_ed25519` for the cluster) from the old machine, or generate new
+ones and register them with GitHub and the cluster. SSH silently ignores a key
+that is group- or world-readable:
+
+```bash
+chmod 700 ~/.ssh && chmod 600 ~/.ssh/id_ed25519* ~/.ssh/config
+chmod 644 ~/.ssh/*.pub
+ssh -T git@github.com-kaist          # "You've successfully authenticated" = alias + key work
+```
+
+**Clone and test.**
+
+```bash
+git clone git@github.com-kaist:J1Y2003/UniVTAC.git && cd UniVTAC
+python3 -m venv .venv && source .venv/bin/activate   # .venv is gitignored
+pip install -r requirements-dev.txt
+pytest tests -q                                      # expect 84 passed, ~2 s
+```
+
+That is the whole workstation. The numeric core is pure numpy, so a green test
+suite here means the contract is right before you spend a GPU allocation.
+`scripts/results_table.py` also runs here against a `eval_result/` you have
+copied down — it is standard-library-only by design.
+
+Two things deliberately do **not** come down with a clone, because they are
+gitignored: `env.sh` (use `env.example.sh`) and `eval_result/`. Copy the latter
+from the cluster with `rsync` if you want to aggregate locally.
+
+### 2. Cluster
+
+**[docs/SETUP.md](docs/SETUP.md) is the full prerequisite list.** The short
+version — three checkouts with confusingly similar names:
+
+```bash
+# 0. This repo. Jobs are submitted from here.
+git clone git@github.com-kaist:J1Y2003/UniVTAC.git
+cd UniVTAC && cp env.example.sh env.sh && $EDITOR env.sh && chmod 600 env.sh
+
+# 1. The simulator ($UNIVTAC_ROOT), Python 3.10.
+#    Builds Isaac Sim, Isaac Lab, TacEx, cuRobo -- hours, and a compute job,
+#    not login-node work.
+git clone https://github.com/univtac/UniVTAC.git UniVTAC-sim
+cd UniVTAC-sim && bash scripts/install.sh
 bash data/download.sh                       # scene assets, via modelscope
 
-# 2. Isaac-GR00T, Python 3.12, separate environment
+# 2. GR00T ($GROOT_ROOT), Python 3.12, separate environment
 sudo apt install git-lfs && git lfs install # BEFORE cloning
-git clone https://github.com/NVIDIA/Isaac-GR00T.git && cd Isaac-GR00T
-uv sync --python 3.12                       # needs ffmpeg 4-7, not 8
+git clone https://github.com/NVIDIA/Isaac-GR00T.git
+cd Isaac-GR00T && uv sync --python 3.12     # needs ffmpeg 4-7, not 8
 
 # 3. This repo's client dependencies, into the UniVTAC environment
 conda activate UniVTAC && pip install -r requirements-client.txt
 ```
+
+Then `source env.sh && python scripts/preflight.py --deep`, which checks the
+above and prints the next command.
 
 Three things bite almost everyone: `nvidia/Cosmos-Reason2-2B` is **gated**, so
 the server dies at load with a 401 unless `HF_TOKEN` has access — export it,
@@ -88,6 +158,23 @@ never run `hf auth login`, which overwrites the shared account's stored token;
 `torchcodec` cannot load **FFmpeg 8**, which recent Ubuntu ships; and a cuDNN
 that is not the pinned `9.10.2.21` costs ~86x silently, which is why
 `scripts/check_cudnn.py` runs inside every GPU job.
+
+### 3. Day to day
+
+Edit and test on the workstation, push, pull on the cluster, submit there:
+
+```bash
+# workstation
+git add -p && git commit && git push
+
+# cluster
+cd ~/UniVTAC && git pull && source env.sh
+```
+
+Keep it one-directional. The cluster checkout is a place to run from, not to
+edit in — a local edit there is invisible to the workstation and to git, and
+the eval JSON records the commit that produced it, so an uncommitted change on
+the cluster makes a result unreproducible.
 
 ## Quickstart
 
@@ -174,8 +261,13 @@ scripts/
   check_cudnn.py                 cuDNN pin guard; runs inside every GPU job
   run_eval.py                    Headless eval driver
   results_table.py               Success rate per task, from the library
+  results_plot.py                The same numbers as a graph (needs matplotlib)
   convert_univtac_to_lerobot.py  UniVTAC HDF5 -> GR00T LeRobot v2
   wandb_report.py                Read a run's training + system metrics back
+  eval_progress.py               How far along the running evals are
+  eval_triage.py                 Why a run's episodes errored or were skipped
+  check_eval_logs.py             Cross-check logs/ against eval_result/
+  recover_eval.py                Rebuild a summary from a damaged JSONL
 slurm/
   train.sbatch            exec launch_finetune.py with your flags
   train_bundle.sh         the same, through bundle-sbatch

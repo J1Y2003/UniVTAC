@@ -1,0 +1,15 @@
+# Normalise text to LF in the repository, whatever the working tree does.
+* text=auto
+
+# Never hand a CRLF shell script to the cluster. bash answers
+# `bad interpreter: /bin/bash^M`, and SLURM reports it as an opaque job
+# failure, so pin these regardless of anyone's core.autocrlf.
+*.sh      text eol=lf
+*.sbatch  text eol=lf
+*.py      text eol=lf
+
+*.png binary
+*.mp4 binary
+*.h5 binary
+*.hdf5 binary
+*.parquet binary

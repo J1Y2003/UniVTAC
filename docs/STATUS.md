@@ -3,45 +3,56 @@
 Current state, decisions in force, and the reference tables worth checking
 before re-diagnosing something.
 
-Last updated 2026-09-09.
+Last updated 2026-09-17.
 
 ## In flight
 
-**`slurm/` was rewritten around plain `sbatch`.** The infrastructure team's
-`bundle-sbatch` wrapper is still supported in `slurm/common.sh` but nothing
-submits through it: it names output directories by ULID under the shared
-account root, and we keep our work under `OUTPUT_ROOT`
-(`/rlwrld-unified-checkpoints/$USER/jaewon`) instead. Jobs 166346-166349
-predate both this and the partition split, so they are wrong twice over:
-cancel them.
+**`slurm/` is six thin wrappers around plain `sbatch`, and they validate
+nothing.** The rewrite is done: `common.sh`, the submitters (`submit_benchmark.sh`,
+`eval_checkpoint.sh`), recipe pinning and the `UNIVTAC_JOB_CONFIG` sentinel were
+all removed. Each script `exec`s the real program with the flags it was handed,
+and satisfying the site rules on every command line is the operator's job. See
+CLAUDE.md, "Six scripts, each a thin wrapper".
 
-The shape is now **finetune first, evaluate later**, not two jobs chained:
+`bundle-sbatch` survives only as the `*_bundle.sh` entry points, because it is
+the announced path. Nothing routes through it by default: it names its own
+output directories by ULID under the shared account root, and we keep our work
+under `OUTPUT_ROOT` (`/rlwrld-unified-checkpoints/$USER/jaewon`). Jobs
+166346-166349 predate both this and the partition split, so they are wrong twice
+over: cancel them.
+
+The shape is **finetune first, evaluate later**, not two jobs chained — so four
+jobs per task, one finetune and three evaluations:
 
 ```bash
-bash slurm/submit_benchmark.sh          # one finetune per task, sjw_alinlab
+export TASK=insert_hole
+sbatch --job-name=univtac-groot-per-task-finetune-vision-only-$TASK \
+       --partition=sjw_alinlab --time=9:00:00 slurm/train.sbatch <flags>
 
-# then, per checkpoint, on background:
-bash slurm/eval_checkpoint.sh --task insert_hole --seed-offset 1     --checkpoint <output_dir>/checkpoint-10000
+# then, per retained checkpoint, on background:
+sbatch --job-name=univtac-groot-evaluate-one-checkpoint-$TASK-ckpt10000 \
+       --partition=background slurm/eval.sbatch <flags>
 ```
 
+[BENCHMARK.md](BENCHMARK.md#running-it-end-to-end) has all four in sequence with
+the full flag lists.
+
 Evaluation cannot be queued in advance -- an eval job has to declare an existing
-physical checkpoint directory, and `--parsable` belongs to the launcher so there
-is no job id for a `--dependency`. Each eval writes one self-describing JSON to
-`~/jaewon/workspace/eval_results/<task>-<variant>/`, building a library indexed
-by task, checkpoint and seed block.
+physical checkpoint directory. Each eval writes one self-describing JSON under
+`eval_result/<task>-<variant>/`, building a library indexed by task, checkpoint
+and seed block.
 
 `background` preempts with `PreemptMode=REQUEUE`, so an eval job re-runs its
-script from the top. It resumes from the JSONL rather than appending a second
-pass from the first seed; results are deduplicated by seed either way.
+script from the top. `scripts/run_eval.py` resumes from the JSONL rather than
+appending a second pass from the first seed; results are deduplicated by seed
+either way.
 
-**Not yet verified against the real launcher** (this conversion was written and
-tested against a stub, since Claude does not touch the cluster):
+**Not yet verified on the cluster** (written and tested against a stub, since
+Claude does not touch the cluster):
 
-* that the submitting shell's environment reaches the job. Every job script now
-  refuses to run without `UNIVTAC_JOB_CONFIG=1` rather than silently taking
-  default values, so the failure mode is loud.
-* the `--after <jobid>` dependency path, which has not been exercised against
-  a real finetune job id.
+* that the submitting shell's environment reaches the job through `--export=ALL`.
+  Nothing guards this any more — a missing variable surfaces as an unbound-variable
+  error from `set -u`, or as a job that trains the wrong thing.
 * the resume-after-requeue arithmetic against a real preemption. It is tested
   against synthesised partial, duplicated and truncated result files, but not
   yet against Slurm actually requeueing a job.
@@ -55,7 +66,8 @@ tested against a stub, since Claude does not touch the cluster):
   views on `insert_tube` and `lift_bottle`, third-person only elsewhere), split
   100-per-camera across `observation.images.head` and `.wrist`. Raw side: 100
   HDF5 per task under `data/isaac45/<task>/hdf5`, with the `data/<task>/clean`
-  symlink bridge that `convert.sbatch` reads.
+  symlink bridge that `scripts/convert_univtac_to_lerobot.py` reads via
+  `--raw-dir`.
 * **`lift_bottle` converts.** `state` 17-D, `action` 8-D, **310 rows per
   episode** (311 frames minus 1, from the `joint[:-1]`/`joint[1:]` shift).
   Converted datasets are ~31 MB.
@@ -120,9 +132,11 @@ harder problem than its baseline. Revisit after the per-task numbers exist.
 
 **Evaluation on `background`, training on `sjw_alinlab`.** Lab policy: no
 evaluation on the lab partition. A job holds one allocation on one partition,
-so each task is two jobs. Unverified and worth checking before a long eval
-lands there: whether `background` preempts, since `scripts/run_eval.py` has no
-resume and would restart from the first seed.
+so each task is four jobs: one finetune and three evaluations. `background`
+preempts with `PreemptMode=REQUEUE`, which is why `scripts/run_eval.py` resumes
+from `max(seed)+1` instead of replaying the block — without that, every
+preemption would append a fresh pass from the first seed and inflate the tally.
+Still unverified against a real preemption.
 
 **Observation: images, 17-D state, language instruction.** Only
 `baseline_finetuned` is trained; `baseline` runs the released weights zero-shot
@@ -156,7 +170,7 @@ whether a result is plausible.
 | `401` on `nvidia/Cosmos-Reason2-2B` | no `HF_TOKEN` in the job. Preflight probes read access |
 | `hf_transfer` `ValueError` | the flag is a hard error without the package. Probed before being set |
 | `results=/var/spool/slurm/d/...` | `sbatch` copies the script to the spool; `REPO_ROOT` prefers `SLURM_SUBMIT_DIR` |
-| a per-task convert loop converts only one task | all jobs share one `.venv-convert`, and `python -m venv` writes `bin/python` before pip installs anything, so the losers skip the build and run with no `pyarrow`. `convert.sbatch` serialises on a flock and gates on the imports |
+| a per-task convert loop converts only one task | parallel conversions sharing one `.venv-convert` race: `python -m venv` writes `bin/python` before pip installs anything, so the losers see an interpreter, skip the build and run with no `pyarrow`. Conversion is run by hand now — convert one task at a time, or give each its own venv |
 | job pending for hours | ordinary queue wait on a shared account, not partition tier |
 | `Batch job submission failed: Unspecified error` | a submit-filter rule; see CLAUDE.md, "Cluster rules" |
 
